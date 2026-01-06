@@ -33,6 +33,9 @@ const-crypto = "0.3"
 lazy_static = "1.4"
 
 
+[dev-dependencies]
+
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(target_os, values("solana"))',
