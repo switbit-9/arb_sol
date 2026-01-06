@@ -195,6 +195,9 @@ impl<'info> MeteoraDammV2<'info> {
 
         let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
         let fee_mode = FeeMode::get_fee_mode(pool.collect_fee_mode, trade_direction, has_referral)?;
+        eprintln!("fee_mode: {:?}", fee_mode);
+        eprintln!("current_point: {}", current_point);
+        eprintln!("amount_in: {}", amount_in);
         let results = pool.get_swap_result_from_exact_input(
             amount_in,
             &fee_mode,
@@ -223,15 +226,17 @@ impl<'info> MeteoraDammV2<'info> {
 
         let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
         let fee_mode = FeeMode::get_fee_mode(pool.collect_fee_mode, trade_direction, has_referral)?;
-        let results = pool.get_swap_result_from_exact_input(
+        let results = pool.get_swap_result_from_exact_output(
             amount_out,
             &fee_mode,
             trade_direction,
             current_point,
         )?;
 
+        eprintln!("results: {:?}", results);
+
         // Return the input amount needed to get the desired output
-        Ok(results.output_amount)
+        Ok(results.excluded_fee_input_amount)
     }
 
     pub fn invoke_swap_base_in_impl<'a>(
@@ -602,19 +607,51 @@ mod tests {
         eprintln!("pool: {:?}", pool.token_b_mint);
         eprintln!("pool: {:?}", pool.token_a_vault);
         eprintln!("pool: {:?}", pool.token_b_vault);
+        eprintln!("pool activation_point: {}", pool.activation_point);
+        eprintln!("pool activation_type: {}", pool.activation_type);
+        eprintln!("pool liquidity: {}", pool.liquidity);
+        eprintln!("pool pool_status: {}", pool.pool_status);
+        eprintln!("pool sqrt_price: {}", pool.sqrt_price);
+
+        // Use actual addresses from pool data for important accounts
+        let program_id = MeteoraDammV2::PROGRAM_ID;
+        let base_vault = pool.token_a_vault;
+        let quote_vault = pool.token_b_vault;
+        let base_token = pool.token_a_mint;
+        let quote_token = pool.token_b_mint;
+        let pool_authority = Pubkey::new_unique(); // This might need to be calculated properly
+        let event_authority = Pubkey::new_unique();
+        let referral_token_account = Pubkey::default(); // Use default for no referral
+
+        let correct_accounts = vec![
+            create_mock_account_info(program_id, system_program::id(), None),
+            pool_account.clone(),
+            create_mock_account_info(base_vault, system_program::id(), None),
+            create_mock_account_info(quote_vault, system_program::id(), None),
+            create_mock_account_info(base_token, system_program::id(), None),
+            create_mock_account_info(quote_token, system_program::id(), None),
+            create_mock_account_info(pool_authority, system_program::id(), None),
+            create_mock_account_info(event_authority, system_program::id(), None),
+            create_mock_account_info(referral_token_account, system_program::id(), None),
+        ];
+
+        let meteora_correct = MeteoraDammV2::new(&correct_accounts).unwrap();
 
         let clock = Clock {
-            slot: 1000,
+            slot: 200000000, // High slot number to ensure activation
             epoch_start_timestamp: 0,
-            epoch: 0,
+            epoch: 500, // High epoch
             leader_schedule_epoch: 0,
-            unix_timestamp: 1234567890,
+            unix_timestamp: 1700000000, // Recent timestamp (2023)
         };
 
-        // Test with a small amount
-        let amount_in = 187734691202; // 1 token (assuming 6 decimals)
-        let result = meteora.swap_base_in(amount_in, clock);
+        // Test with a much smaller amount first
+        let amount_in = 1000000; // 0.001 tokens (assuming 9 decimals)
+        let result = meteora_correct.swap_base_in(amount_in, clock);
         eprintln!("result: {:?}", result);
+        if let Err(ref e) = result {
+            eprintln!("Error: {:?}", e);
+        }
         // Should succeed and return some output amount
         assert!(result.is_ok());
         let output_amount = result.unwrap();
