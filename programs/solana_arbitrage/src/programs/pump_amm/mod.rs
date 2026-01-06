@@ -251,7 +251,7 @@ impl<'info> PumpAmm<'info> {
     /// Calculate quote output amount for a given base input amount
     /// Formula: quote_amount_out = quote_reserve - (base_reserve * quote_reserve) / (base_reserve + base_amount_in)
     /// Then applies lp_fee (0.2%), protocol_fee (0.05%), and multiplies by 1.0023
-    pub fn swap_base_out_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
         // Get reserves from vaults
 
         let base_reserve = self.base_vault_account.amount;

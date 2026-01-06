@@ -62,10 +62,10 @@ pub mod solar_b {
         }
         let rest = &all_accounts[5..];
 
-        let instances = parse_accounts(rest, &data)?;
+        let _instances = parse_accounts(rest, &data)?;
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
-        // run_arbitrage(payer, first_accounts, &instances, 1_000_000_000, None)?;
+        // run_arbitrage(payer, first_accounts, &_instances, 1_000_000_000, None)?;
 
         Ok(())
     }
@@ -241,11 +241,11 @@ pub fn run_arbitrage<'info>(
     start_token: Option<Pubkey>,
 ) -> Result<()> {
     let clock = Clock::get()?;
-    let current_epoch = clock.epoch;
+    let _current_epoch = clock.epoch;
 
     // Extract the 5 accounts from the slice
-    let mint_1 = &first_accounts[1];
-    let mint_2 = &first_accounts[2];
+    let _mint_1 = &first_accounts[1];
+    let _mint_2 = &first_accounts[2];
     // let mint_1_token_program = &first_accounts[3];
     // let mint_2_token_program = &first_accounts[4];
     // let user_mint_1_token_account = &first_accounts[5];

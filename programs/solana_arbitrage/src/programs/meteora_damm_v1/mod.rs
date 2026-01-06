@@ -141,7 +141,7 @@ impl<'info> MeteoraDammV1<'info> {
         Ok(0)
     }
 
-    pub fn swap_base_out_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
         Ok(0)
     }
 

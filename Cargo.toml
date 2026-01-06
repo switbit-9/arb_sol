@@ -1,6 +1,12 @@
 [workspace]
-members = ["programs/*"]
+members = [
+    "programs/*"]
 resolver = "2"
+
+[workspace.dependencies]
+anchor-lang = "0.32.1"
+anchor-spl = "0.32.1"
+bytemuck = "1.14"
 
 [profile.release]
 overflow-checks = true
