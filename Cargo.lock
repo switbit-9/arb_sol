@@ -2967,6 +2967,7 @@ dependencies = [
  "anchor-spl",
  "bytemuck",
  "const-crypto",
+ "lazy_static",
  "num",
  "num-traits",
  "num_enum",

@@ -1,7 +1,6 @@
 pub mod constants;
 pub mod errors;
 pub mod meteora_damm_v1;
-// Commented out to avoid anchor build issues with damm_v2
 pub mod meteora_damm_v2;
 pub mod programs;
 pub mod pump_amm;
@@ -9,7 +8,6 @@ pub mod types;
 
 pub use errors::SolarBError;
 pub use meteora_damm_v1::MeteoraDammV1;
-// Commented out to avoid anchor build issues with damm_v2
 pub use meteora_damm_v2::MeteoraDammV2;
 pub use programs::ProgramMeta;
 pub use pump_amm::PumpAmm;
