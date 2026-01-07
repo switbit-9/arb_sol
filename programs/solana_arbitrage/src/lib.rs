@@ -7,7 +7,7 @@ pub mod utils;
 
 use arbitrage::algo_2::{check_arbitrage, ArbitragePath};
 use arbitrage::base::{Edge, EdgeSide, Pool};
-use programs::{MeteoraDammV1, MeteoraDlmm, ProgramMeta, PumpAmm, SolarBError};
+use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, SolarBError};
 use utils::utils::parse_token_account;
 
 declare_id!("DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT");
@@ -111,78 +111,70 @@ fn parse_accounts<'info>(
     Ok(instances)
 }
 
+// Helper functions to reduce stack usage by splitting initialization
+#[inline(never)]
+fn create_pump_amm<'info>(
+    payload_accounts: &[AccountInfo<'info>],
+) -> Result<Box<dyn ProgramMeta + 'info>> {
+    let pr = PumpAmm::new(payload_accounts)?;
+    Ok(Box::new(pr))
+}
+
+#[inline(never)]
+fn create_meteora_damm_v2<'info>(
+    payload_accounts: &[AccountInfo<'info>],
+) -> Result<Box<dyn ProgramMeta + 'info>> {
+    let pr = MeteoraDammV2::new(payload_accounts)?;
+    Ok(Box::new(pr))
+}
+
+#[inline(never)]
+fn create_meteora_damm_v1<'info>(
+    payload_accounts: &[AccountInfo<'info>],
+) -> Result<Box<dyn ProgramMeta + 'info>> {
+    let pr = MeteoraDammV1::new(payload_accounts)?;
+    Ok(Box::new(pr))
+}
+
+#[inline(never)]
+fn create_meteora_dlmm<'info>(
+    payload_accounts: &[AccountInfo<'info>],
+) -> Result<Box<dyn ProgramMeta + 'info>> {
+    let pr = MeteoraDlmm::new(payload_accounts)?;
+    Ok(Box::new(pr))
+}
+
 pub fn find_program_instance<'info>(
     program_id: &Pubkey,
     payload_accounts: &[AccountInfo<'info>],
 ) -> Result<Box<dyn ProgramMeta + 'info>> {
-    // msg!(
-    //     "Creating program for program_id: {}, accounts.len(): {}",
-    //     program_id,
-    //     payload_accounts.len()
-    // );
-    // if program_id == &RaydiumCPMM::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing RaydiumCPMM with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = RaydiumCPMM::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
-    // if program_id == &RaydiumAmm::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing RaydiumAmm with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = RaydiumAmm::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
-    // if program_id == &RaydiumClmm::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing RaydiumClmm with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = RaydiumClmm::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
     if program_id == &PumpAmm::PROGRAM_ID {
         msg!(
             "Initializing PumpAmm with {} accounts",
             payload_accounts.len()
         );
-        let pr = PumpAmm::new(payload_accounts)?;
-        return Ok(Box::new(pr));
+        return create_pump_amm(payload_accounts);
     }
-    // if program_id == &Whirlpools::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing Whirlpools with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = Whirlpools::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
-    // if program_id == &MeteoraDammV2::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing MeteoraDammV2 with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = MeteoraDammV2::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
+    if program_id == &MeteoraDammV2::PROGRAM_ID {
+        msg!(
+            "Initializing MeteoraDammV2 with {} accounts",
+            payload_accounts.len()
+        );
+        return create_meteora_damm_v2(payload_accounts);
+    }
     if program_id == &MeteoraDammV1::PROGRAM_ID {
         msg!(
             "Initializing MeteoraDammV1 with {} accounts",
             payload_accounts.len()
         );
-        let pr = MeteoraDammV1::new(payload_accounts)?;
-        return Ok(Box::new(pr));
+        return create_meteora_damm_v1(payload_accounts);
     }
     if program_id == &MeteoraDlmm::PROGRAM_ID {
         msg!(
             "Initializing MeteoraDlmm with {} accounts",
             payload_accounts.len()
         );
-        let pr = MeteoraDlmm::new(payload_accounts)?;
-        return Ok(Box::new(pr));
+        return create_meteora_dlmm(payload_accounts);
     }
     Err(error!(SolarBError::UnknownProgram))
 }

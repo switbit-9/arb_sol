@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_swap_quote_exact_in() {
+    async fn test_dlmm_swap_quote_exact_in() {
         use anchor_client::Cluster;
         use solana_client::nonblocking::rpc_client::RpcClient;
         use std::collections::HashMap;

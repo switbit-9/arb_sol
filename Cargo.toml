@@ -24,6 +24,7 @@ spl-memo = "4.0.0"
 overflow-checks = true
 lto = "fat"
 codegen-units = 1
+opt-level = "s"        # Optimize for size to reduce symbol name lengths
 [profile.release.build-override]
 opt-level = 3
 incremental = false
