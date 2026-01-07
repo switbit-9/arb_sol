@@ -7,8 +7,8 @@ pub mod utils;
 
 use arbitrage::algo_2::{check_arbitrage, ArbitragePath};
 use arbitrage::base::{Edge, EdgeSide, Pool};
-use programs::{MeteoraDammV1, ProgramMeta, PumpAmm, SolarBError};
-use utils::parse_token_account;
+use programs::{MeteoraDammV1, MeteoraDlmm, ProgramMeta, PumpAmm, SolarBError};
+use utils::utils::parse_token_account;
 
 declare_id!("DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT");
 
@@ -62,7 +62,7 @@ pub mod solar_b {
         }
         let rest = &all_accounts[5..];
 
-        let _instances = parse_accounts(rest, &data)?;
+        let instances = parse_accounts(rest, &data)?;
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
         // run_arbitrage(payer, first_accounts, &_instances, 1_000_000_000, None)?;
@@ -176,14 +176,14 @@ pub fn find_program_instance<'info>(
         let pr = MeteoraDammV1::new(payload_accounts)?;
         return Ok(Box::new(pr));
     }
-    // if program_id == &MeteoraDlmm::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing MeteoraDlmm with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = MeteoraDlmm::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
+    if program_id == &MeteoraDlmm::PROGRAM_ID {
+        msg!(
+            "Initializing MeteoraDlmm with {} accounts",
+            payload_accounts.len()
+        );
+        let pr = MeteoraDlmm::new(payload_accounts)?;
+        return Ok(Box::new(pr));
+    }
     Err(error!(SolarBError::UnknownProgram))
 }
 

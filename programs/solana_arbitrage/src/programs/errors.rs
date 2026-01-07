@@ -20,4 +20,6 @@ pub enum SolarBError {
     NoProfitFound,
     #[msg("insufficient funds in payer account")]
     InsufficientFunds,
+    #[msg("TransferFee calculation error")]
+    TransferFeeCalculationError,
 }
