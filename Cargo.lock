@@ -60,7 +60,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d52a2c365c0245cbb8959de725fc2b44c754b673fdf34c9a7f9d4a25c35a7bf1"
 dependencies = [
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "solana-epoch-schedule",
  "solana-hash",
  "solana-pubkey 2.4.0",
@@ -143,15 +143,15 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.8.12"
+version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
 dependencies = [
  "cfg-if",
- "getrandom 0.3.4",
+ "getrandom 0.2.16",
  "once_cell",
  "version_check",
- "zerocopy",
+ "zerocopy 0.7.35",
 ]
 
 [[package]]
@@ -2238,7 +2238,7 @@ version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
 dependencies = [
- "ahash 0.8.12",
+ "ahash 0.8.11",
 ]
 
 [[package]]
@@ -3579,7 +3579,7 @@ version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
- "zerocopy",
+ "zerocopy 0.8.31",
 ]
 
 [[package]]
@@ -4740,7 +4740,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbbe35141711500d113dfc7aa79eb250c4458f04e759a67ba4bffc3e6cddc402"
 dependencies = [
  "agave-io-uring",
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "bincode",
  "blake3",
  "bv",
@@ -5069,7 +5069,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ca69a299a6c969b18ea381a02b40c9e4dda04b2af0d15a007c1184c82163bbb"
 dependencies = [
  "agave-feature-set",
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "log",
  "solana-bpf-loader-program",
  "solana-compute-budget-program",
@@ -5287,7 +5287,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b24b35813c678ed40ca91f989a3c9e1780e6aef0139e15731785bca1189443c3"
 dependencies = [
  "agave-feature-set",
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "log",
  "solana-bincode",
  "solana-borsh",
@@ -5477,7 +5477,7 @@ version = "2.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93b93971e289d6425f88e6e3cb6668c4b05df78b3c518c249be55ced8efd6b6d"
 dependencies = [
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "lazy_static",
  "solana-epoch-schedule",
  "solana-hash",
@@ -5956,7 +5956,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37192c0be5c222ca49dbc5667288c5a8bb14837051dd98e541ee4dad160a5da9"
 dependencies = [
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "bincode",
  "bv",
  "bytes",
@@ -6582,7 +6582,7 @@ dependencies = [
  "agave-feature-set",
  "agave-precompiles",
  "agave-reserved-account-keys",
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "aquamarine",
  "arrayref",
  "assert_matches",
@@ -7200,7 +7200,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "006180b920e8d8c1dab4f6a0fda248b5b97d912eda4c872534d178bc31231bec"
 dependencies = [
- "ahash 0.8.12",
+ "ahash 0.8.11",
  "log",
  "percentage",
  "serde",
@@ -7866,7 +7866,6 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "anyhow",
- "bincode",
  "bytemuck",
  "const-crypto",
  "dlmm",
@@ -9782,11 +9781,31 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
+version = "0.7.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b9b4fd18abc82b8136838da5d50bae7bdea537c574d8dc1a34ed098d6c166f0"
+dependencies = [
+ "zerocopy-derive 0.7.35",
+]
+
+[[package]]
+name = "zerocopy"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd74ec98b9250adb3ca554bdde269adf631549f51d8a8f8f0a10b50f1cb298c3"
 dependencies = [
- "zerocopy-derive",
+ "zerocopy-derive 0.8.31",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.7.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.113",
 ]
 
 [[package]]

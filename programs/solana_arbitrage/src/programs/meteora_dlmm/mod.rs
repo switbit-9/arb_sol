@@ -2,7 +2,6 @@ use super::super::programs::ProgramMeta;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{account_info::next_account_info, pubkey::Pubkey};
 
-pub const DLMM_PROGRAM_ID: Pubkey = pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
@@ -23,7 +22,7 @@ pub struct MeteoraDlmm<'info> {
 
 impl<'info> ProgramMeta for MeteoraDlmm<'info> {
     fn get_id(&self) -> &Pubkey {
-        &DLMM_PROGRAM_ID
+        &Self::PROGRAM_ID
     }
 
     fn get_vaults(&self) -> (&AccountInfo<'_>, &AccountInfo<'_>) {
@@ -95,7 +94,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 }
 
 impl<'info> MeteoraDlmm<'info> {
-    pub const PROGRAM_ID: Pubkey = DLMM_PROGRAM_ID;
+    pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
         let program_id = next_account_info(&mut iter)?;
@@ -250,13 +249,8 @@ mod tests {
     }
 
     /// Get on chain clock
-    async fn get_clock(
-        rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-    ) -> std::result::Result<Clock, Box<dyn std::error::Error>> {
-        use solana_sdk::sysvar::clock as clock_sysvar;
-        let clock_account = rpc_client.get_account(&clock_sysvar::ID).await?;
-        let clock_state: Clock = bincode::deserialize(clock_account.data.as_ref())?;
-        Ok(clock_state)
+    fn get_clock() -> std::result::Result<Clock, Box<dyn std::error::Error>> {
+        Clock::get().map_err(Into::into)
     }
 
     /// Convert raw RPC account to InterfaceAccount<Mint>
@@ -426,7 +420,7 @@ mod tests {
         // 1 SOL -> USDC
         let in_sol_amount = 1_000_000_000;
 
-        let clock1 = get_clock(&rpc_client).await.unwrap();
+        let clock1 = get_clock().unwrap();
 
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
 
@@ -450,7 +444,7 @@ mod tests {
         let mint_x_account2 = mint_accounts2[0].take().unwrap();
         let mint_y_account2 = mint_accounts2[1].take().unwrap();
 
-        let clock2 = get_clock(&rpc_client).await.unwrap();
+        let clock2 = get_clock().unwrap();
 
         let mint_x_interface = account_to_interface_mint(mint_x_account2, lb_pair.token_x_mint);
         let mint_y_interface = account_to_interface_mint(mint_y_account2, lb_pair.token_y_mint);
@@ -493,7 +487,7 @@ mod tests {
         }
 
         // Fetch clock again for the quote call (clock2 was moved in swap_base_in/swap_base_out)
-        let clock3 = get_clock(&rpc_client).await.unwrap();
+        let clock3 = get_clock().unwrap();
 
         let quote_result = dlmm::quote_exact_in(
             sol_usdc,

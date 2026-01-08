@@ -5,19 +5,6 @@ use anchor_lang::solana_program::{
 };
 use bytemuck;
 
-lazy_static::lazy_static! {
-    pub static ref PROGRAM_ID: Pubkey = {
-        let bytes = [
-            202, 173, 213, 232, 67, 75, 181, 53,
-            88, 180, 220, 112, 105, 107, 171, 119,
-            215, 173, 214, 67, 75, 181, 53, 88,
-            180, 220, 112, 105, 107, 171, 119, 215
-        ];
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Pubkey::new_from_array(arr)
-    };
-}
 // Expose the damm_v2 module
 pub mod damm_v2;
 
@@ -58,9 +45,8 @@ pub struct MeteoraDammV2<'info> {
 
 impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     fn get_id(&self) -> &Pubkey {
-        &PROGRAM_ID
+        &Self::PROGRAM_ID
     }
-
     fn get_vaults(&self) -> (&AccountInfo<'_>, &AccountInfo<'_>) {
         unsafe {
             (
@@ -130,15 +116,8 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 }
 
 impl<'info> MeteoraDammV2<'info> {
-    pub const PROGRAM_ID: Pubkey = {
-        let bytes = [
-            202, 173, 213, 232, 67, 75, 181, 53, 88, 180, 220, 112, 105, 107, 171, 119, 215, 173,
-            214, 67, 75, 181, 53, 88, 180, 220, 112, 105, 107, 171, 119, 215,
-        ];
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Pubkey::new_from_array(arr)
-    };
+    pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
         let program_id = next_account_info(&mut iter)?; // 0
