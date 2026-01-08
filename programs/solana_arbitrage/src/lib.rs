@@ -294,10 +294,10 @@ pub fn run_arbitrage<'info>(
         instances,
         payer,
         &first_accounts[1], // mint_1
-        &first_accounts[2], // mint_2
-        &first_accounts[3], // mint_1_token_program
-        &first_accounts[4], // mint_2_token_program
-        &first_accounts[5], // user_mint_1_token_account
+        &first_accounts[2], // mint_1_token_program
+        &first_accounts[3], // user_mint_1_token_account
+        &first_accounts[4], // mint_2
+        &first_accounts[5], // mint_2_token_program
         &first_accounts[6], // user_mint_2_token_account
     )?;
 
@@ -318,7 +318,17 @@ pub fn execute_arbitrage_path<'info>(
     let mut current_amount = arbitrage_path.start_amount;
 
     // Execute swaps sequentially with real-time calculation (most CU efficient for on-chain)
-    for (_i, edge) in arbitrage_path.edges.iter().enumerate() {
+    for (i, edge) in arbitrage_path.edges.iter().enumerate() {
+        msg!(
+            "Processing edge {}: program={:?}, side={:?}, left_mint={:?}, right_mint={:?}, current_amount={}",
+            i,
+            edge.program,
+            edge.side,
+            edge.left.mint_account,
+            edge.right.mint_account,
+            current_amount
+        );
+
         // Find program instance by ID once
         let program_instance = instances
             .iter()
@@ -331,7 +341,14 @@ pub fn execute_arbitrage_path<'info>(
         // Calculate and invoke swap directly through trait - no downcasting needed!
         let amount_out = match edge.side {
             EdgeSide::LeftToRight => {
+                msg!("Calculating swap_base_in for edge {}", i);
                 let amount = program_instance.swap_base_in(current_amount as u64, clock)?;
+                msg!(
+                    "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
+                    program_instance.get_id(),
+                    current_amount,
+                    amount
+                );
                 program_instance.invoke_swap_base_in(
                     current_amount as u64,
                     Some(amount),
@@ -343,10 +360,18 @@ pub fn execute_arbitrage_path<'info>(
                     mint_1_token_program.clone(),
                     mint_2_token_program.clone(),
                 )?;
+                msg!("Swap base in completed for edge {}", i);
                 amount
             }
             EdgeSide::RightToLeft => {
+                msg!("Calculating swap_base_out for edge {}", i);
                 let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
+                msg!(
+                    "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
+                    program_instance.get_id(),
+                    current_amount,
+                    amount
+                );
                 program_instance.invoke_swap_base_out(
                     current_amount as u64,
                     Some(amount),
@@ -358,11 +383,17 @@ pub fn execute_arbitrage_path<'info>(
                     mint_1_token_program.clone(),
                     mint_2_token_program.clone(),
                 )?;
+                msg!("Swap base out completed for edge {}", i);
                 amount
             }
         };
 
         current_amount = amount_out as u128;
+        msg!(
+            "Edge {} completed, new current_amount={}",
+            i,
+            current_amount
+        );
     }
 
     let final_profit = current_amount as i128 - arbitrage_path.start_amount as i128;
