@@ -81,4 +81,7 @@ pub trait ProgramMeta {
         mint_1_token_program: AccountInfo<'a>,
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()>;
+
+    /// Log account information for debugging
+    fn log_accounts(&self) -> Result<()>;
 }

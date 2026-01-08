@@ -1,23 +1,23 @@
 use super::super::programs::ProgramMeta;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{account_info::next_account_info, pubkey::Pubkey};
-
+use anchor_spl::token::spl_token::native_mint;
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
     pub program_id: AccountInfo<'info>,
     pub lb_pair: AccountInfo<'info>,
-    pub bin_array_bitmap_extension: Option<AccountInfo<'info>>,
-    pub reserve_x: AccountInfo<'info>,
-    pub reserve_y: AccountInfo<'info>,
-    pub token_x_mint: AccountInfo<'info>,
-    pub token_y_mint: AccountInfo<'info>,
+    pub base_vault: AccountInfo<'info>,
+    pub quote_vault: AccountInfo<'info>,
+    pub base_token: AccountInfo<'info>,
+    pub quote_token: AccountInfo<'info>,
     pub oracle: AccountInfo<'info>,
-    pub bin_array_lower: AccountInfo<'info>,
-    pub bin_array_upper: AccountInfo<'info>,
-    pub user_token_x: AccountInfo<'info>,
-    pub user_token_y: AccountInfo<'info>,
+    pub host_fee_in: AccountInfo<'info>,
+    pub memo: AccountInfo<'info>,
     pub event_authority: AccountInfo<'info>,
+    pub bitmap_extension: AccountInfo<'info>,
+    pub bin_arrays_buy: Option<Vec<AccountInfo<'info>>>,
+    pub bin_arrays_sell: Option<Vec<AccountInfo<'info>>>,
 }
 
 impl<'info> ProgramMeta for MeteoraDlmm<'info> {
@@ -28,8 +28,8 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
     fn get_vaults(&self) -> (&AccountInfo<'_>, &AccountInfo<'_>) {
         unsafe {
             (
-                &*(&self.reserve_x as *const AccountInfo<'info> as *const AccountInfo<'_>),
-                &*(&self.reserve_y as *const AccountInfo<'info> as *const AccountInfo<'_>),
+                &*(&self.base_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
+                &*(&self.quote_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
             )
         }
     }
@@ -91,40 +91,114 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
             mint_2_token_program,
         )
     }
+
+    fn log_accounts(&self) -> Result<()> {
+        msg!(
+            "Meteora DLMM accounts: program_id={}, lb_pair={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, memo={}, event_authority={}, bitmap_extension={}",
+            self.program_id.key,
+            self.lb_pair.key,
+            self.base_vault.key,
+            self.quote_vault.key,
+            self.base_token.key,
+            self.quote_token.key,
+            self.oracle.key,
+            self.host_fee_in.key,
+            self.memo.key,
+            self.event_authority.key,
+            self.bitmap_extension.key,
+        );
+        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
+            for (i, account) in bin_arrays_buy.iter().enumerate() {
+                msg!("bin_arrays_buy[{}]={}", i, account.key);
+            }
+        }
+        if let Some(bin_arrays_sell) = &self.bin_arrays_sell {
+            for (i, account) in bin_arrays_sell.iter().enumerate() {
+                msg!("bin_arrays_sell[{}]={}", i, account.key);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<'info> MeteoraDlmm<'info> {
-    pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+    pub const PROGRAM_ID: Pubkey =
+        Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
-        let program_id = next_account_info(&mut iter)?;
-        let lb_pair = next_account_info(&mut iter)?;
-        let bin_array_bitmap_extension = next_account_info(&mut iter)?;
-        let reserve_x = next_account_info(&mut iter)?;
-        let reserve_y = next_account_info(&mut iter)?;
-        let token_x_mint = next_account_info(&mut iter)?;
-        let token_y_mint = next_account_info(&mut iter)?;
-        let oracle = next_account_info(&mut iter)?;
-        let bin_array_lower = next_account_info(&mut iter)?;
-        let bin_array_upper = next_account_info(&mut iter)?;
-        let user_token_x = next_account_info(&mut iter)?;
-        let user_token_y = next_account_info(&mut iter)?;
-        let event_authority = next_account_info(&mut iter)?;
+        let program_id = next_account_info(&mut iter)?; // 0
+        let lb_pair = next_account_info(&mut iter)?; // 1
+        let base_vault = next_account_info(&mut iter)?; // 2
+        let quote_vault = next_account_info(&mut iter)?; // 3
+        let base_token = next_account_info(&mut iter)?; // 4
+        let quote_token = next_account_info(&mut iter)?; // 5
+        let oracle = next_account_info(&mut iter)?; // 6
+        let host_fee_in = next_account_info(&mut iter)?; // 7
+        let memo = next_account_info(&mut iter)?; // 8
+        let event_authority = next_account_info(&mut iter)?; // 9
+        let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
+
+        // Handle bin_arrays: they are split by SOL MINT account
+        // Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
+        // We've consumed 11 accounts (0-10), so remaining start at index 11
+        // NOTE: Temporarily disabled bin_arrays to avoid AccountInfo cloning issues
+        // let (bin_arrays_buy, bin_arrays_sell) = (None, None);
+        let (bin_arrays_buy, bin_arrays_sell) = if accounts.len() > 11 {
+            let remaining = &accounts[11..];
+            let sol_mint = native_mint::id();
+
+            // Find position of SOL MINT separator
+            let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
+
+            match sol_mint_pos {
+                Some(pos) => {
+                    // Split at SOL MINT position
+                    let buy_slice = &remaining[..pos];
+                    let after_sol = &remaining[pos + 1..]; // Skip SOL MINT itself
+                    (
+                        if buy_slice.is_empty() {
+                            None
+                        } else {
+                            // Create Vec by cloning AccountInfo - safe since all have same lifetime
+                            Some(buy_slice.iter().cloned().collect())
+                        },
+                        if after_sol.is_empty() {
+                            None
+                        } else {
+                            Some(after_sol.iter().cloned().collect())
+                        },
+                    )
+                }
+                None => {
+                    // No SOL MINT found, all remaining are buy arrays
+                    (
+                        if remaining.is_empty() {
+                            None
+                        } else {
+                            Some(remaining.iter().cloned().collect())
+                        },
+                        None,
+                    )
+                }
+            }
+        } else {
+            (None, None)
+        };
 
         Ok(MeteoraDlmm {
             program_id: program_id.clone(),
             lb_pair: lb_pair.clone(),
-            bin_array_bitmap_extension: Some(bin_array_bitmap_extension.clone()),
-            reserve_x: reserve_x.clone(),
-            reserve_y: reserve_y.clone(),
-            token_x_mint: token_x_mint.clone(),
-            token_y_mint: token_y_mint.clone(),
+            base_vault: base_vault.clone(),
+            quote_vault: quote_vault.clone(),
+            base_token: base_token.clone(),
+            quote_token: quote_token.clone(),
             oracle: oracle.clone(),
-            bin_array_lower: bin_array_lower.clone(),
-            bin_array_upper: bin_array_upper.clone(),
-            user_token_x: user_token_x.clone(),
-            user_token_y: user_token_y.clone(),
+            host_fee_in: host_fee_in.clone(),
+            memo: memo.clone(),
             event_authority: event_authority.clone(),
+            bitmap_extension: bin_array_bitmap_extension.clone(),
+            bin_arrays_buy: bin_arrays_buy.clone(),
+            bin_arrays_sell: bin_arrays_sell.clone(),
         })
     }
 

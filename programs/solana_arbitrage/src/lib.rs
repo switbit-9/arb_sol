@@ -10,7 +10,7 @@ use arbitrage::base::{Edge, EdgeSide, Pool};
 use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, SolarBError};
 use utils::utils::parse_token_account;
 
-declare_id!("DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT");
+declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InstructionData {
@@ -46,26 +46,39 @@ pub mod solar_b {
         //     /// exec first path
         // }
         // msg!("Context {:?}", ctx);
-        msg!("Instruction data {:?}", &data.accounts_length);
+        msg!(
+            "Instruction data {:?} {:?}",
+            ctx.remaining_accounts.len(),
+            &data.accounts_length
+        );
         // msg!("Remaining accounts {:?}", ctx.remaining_accounts);
 
-        // Collect all remaining accounts into a Vec
-        let all_accounts: Vec<_> = ctx.remaining_accounts.iter().cloned().collect();
-
-        // Split into first 5 accounts and the rest
-        require!(all_accounts.len() >= 5, SolarBError::InsufficientAccounts);
-        let first_accounts = &all_accounts[..7];
+        // Work directly with remaining_accounts slice - don't clone AccountInfo
+        require!(
+            ctx.remaining_accounts.len() >= 7,
+            SolarBError::InsufficientAccounts
+        );
+        let first_accounts = &ctx.remaining_accounts[..7];
 
         let payer = &first_accounts[0];
         if payer.lamports() == 0 {
             return Err(error!(SolarBError::InsufficientFunds));
         }
-        let rest = &all_accounts[5..];
+        let rest = &ctx.remaining_accounts[7..];
+
+        msg!(
+            "Total accounts: {}, First 7 accounts, Rest: {}",
+            ctx.remaining_accounts.len(),
+            rest.len()
+        );
 
         let instances = parse_accounts(rest, &data)?;
+        // for instance in instances {
+        //     instance.as_ref().log_accounts()?;
+        // }
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
-        // run_arbitrage(payer, first_accounts, &_instances, 1_000_000_000, None)?;
+        run_arbitrage(payer, first_accounts, &instances, 1_000_000_000, None)?;
 
         Ok(())
     }
@@ -91,15 +104,15 @@ fn parse_accounts<'info>(
         );
 
         let segment = &accounts[index..index + span];
-        let (program_account, payload_accounts) = segment
-            .split_first()
-            .ok_or(SolarBError::InsufficientAccounts)?;
-        // msg!(
-        //     "Parsing accounts for program {:?} - payload_accounts.len(): {}",
-        //     program_account.key,
-        //     payload_accounts.len()
-        // );
-        let instance = find_program_instance(program_account.key, payload_accounts)?;
+        let program_account = segment[0].clone();
+        msg!(
+            "Parsing program {:?} with {} accounts (span={}, index={})",
+            program_account.key,
+            segment.len(),
+            span,
+            index
+        );
+        let instance: Box<dyn ProgramMeta> = find_program_instance(program_account.key, segment)?;
         // TODO: Implement find_program_instance to create ProgramMeta instances
         instances.push(instance);
         // instance.log_accounts()?;
@@ -111,70 +124,82 @@ fn parse_accounts<'info>(
     Ok(instances)
 }
 
-// Helper functions to reduce stack usage by splitting initialization
-#[inline(never)]
-fn create_pump_amm<'info>(
-    payload_accounts: &[AccountInfo<'info>],
-) -> Result<Box<dyn ProgramMeta + 'info>> {
-    let pr = PumpAmm::new(payload_accounts)?;
-    Ok(Box::new(pr))
-}
-
-#[inline(never)]
-fn create_meteora_damm_v2<'info>(
-    payload_accounts: &[AccountInfo<'info>],
-) -> Result<Box<dyn ProgramMeta + 'info>> {
-    let pr = MeteoraDammV2::new(payload_accounts)?;
-    Ok(Box::new(pr))
-}
-
-#[inline(never)]
-fn create_meteora_damm_v1<'info>(
-    payload_accounts: &[AccountInfo<'info>],
-) -> Result<Box<dyn ProgramMeta + 'info>> {
-    let pr = MeteoraDammV1::new(payload_accounts)?;
-    Ok(Box::new(pr))
-}
-
-#[inline(never)]
-fn create_meteora_dlmm<'info>(
-    payload_accounts: &[AccountInfo<'info>],
-) -> Result<Box<dyn ProgramMeta + 'info>> {
-    let pr = MeteoraDlmm::new(payload_accounts)?;
-    Ok(Box::new(pr))
-}
-
 pub fn find_program_instance<'info>(
     program_id: &Pubkey,
     payload_accounts: &[AccountInfo<'info>],
 ) -> Result<Box<dyn ProgramMeta + 'info>> {
+    // msg!(
+    //     "Creating program for program_id: {}, accounts.len(): {}",
+    //     program_id,
+    //     payload_accounts.len()
+    // );
+    // if program_id == &RaydiumCPMM::PROGRAM_ID {
+    //     msg!(
+    //         "Initializing RaydiumCPMM with {} accounts",
+    //         payload_accounts.len()
+    //     );
+    //     let pr = RaydiumCPMM::new(payload_accounts)?;
+    //     return Ok(Box::new(pr));
+    // }
+    // if program_id == &RaydiumAmm::PROGRAM_ID {
+    //     msg!(
+    //         "Initializing RaydiumAmm with {} accounts",
+    //         payload_accounts.len()
+    //     );
+    //     let pr = RaydiumAmm::new(payload_accounts)?;
+    //     return Ok(Box::new(pr));
+    // }
+    // if program_id == &RaydiumClmm::PROGRAM_ID {
+    //     msg!(
+    //         "Initializing RaydiumClmm with {} accounts",
+    //         payload_accounts.len()
+    //     );
+    //     let pr = RaydiumClmm::new(payload_accounts)?;
+    //     return Ok(Box::new(pr));
+    // }
     if program_id == &PumpAmm::PROGRAM_ID {
         msg!(
             "Initializing PumpAmm with {} accounts",
             payload_accounts.len()
         );
-        return create_pump_amm(payload_accounts);
+        let pr = PumpAmm::new(payload_accounts)?;
+        return Ok(Box::new(pr));
     }
+    // if program_id == &Whirlpools::PROGRAM_ID {
+    //     msg!(
+    //         "Initializing Whirlpools with {} accounts",
+    //         payload_accounts.len()
+    //     );
+    //     let pr = Whirlpools::new(payload_accounts)?;
+    //     return Ok(Box::new(pr));
+    // }
     if program_id == &MeteoraDammV2::PROGRAM_ID {
         msg!(
             "Initializing MeteoraDammV2 with {} accounts",
             payload_accounts.len()
         );
-        return create_meteora_damm_v2(payload_accounts);
+        let pr = MeteoraDammV2::new(payload_accounts)?;
+        return Ok(Box::new(pr));
     }
     if program_id == &MeteoraDammV1::PROGRAM_ID {
         msg!(
             "Initializing MeteoraDammV1 with {} accounts",
             payload_accounts.len()
         );
-        return create_meteora_damm_v1(payload_accounts);
+        let pr = MeteoraDammV1::new(payload_accounts)?;
+        return Ok(Box::new(pr));
     }
     if program_id == &MeteoraDlmm::PROGRAM_ID {
         msg!(
             "Initializing MeteoraDlmm with {} accounts",
             payload_accounts.len()
         );
-        return create_meteora_dlmm(payload_accounts);
+        require!(
+            payload_accounts.len() >= 13,
+            SolarBError::InsufficientAccounts
+        );
+        let pr = MeteoraDlmm::new(payload_accounts)?;
+        return Ok(Box::new(pr));
     }
     Err(error!(SolarBError::UnknownProgram))
 }
@@ -348,4 +373,397 @@ pub fn execute_arbitrage_path<'info>(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+
+    // Helper function to create a mock AccountInfo
+    fn create_mock_account_info(
+        key: Pubkey,
+        owner: Pubkey,
+        lamports: u64,
+        data: Option<Vec<u8>>,
+    ) -> AccountInfo<'static> {
+        let data_vec = if let Some(provided_data) = data {
+            Box::leak(Box::new(provided_data))
+        } else {
+            Box::leak(Box::new(Vec::new()))
+        };
+        let lamports_static = Box::leak(Box::new(lamports));
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+
+        AccountInfo::new(
+            key_static,
+            false, // is_signer
+            false, // is_writable
+            lamports_static,
+            data_vec,
+            owner_static,
+            false, // executable
+            0,     // rent_epoch
+        )
+    }
+
+    // Helper to create multiple mock accounts
+    fn create_mock_accounts(count: usize, owner: Pubkey) -> Vec<AccountInfo<'static>> {
+        (0..count)
+            .map(|_| {
+                let key = Pubkey::new_unique();
+                create_mock_account_info(key, owner, 1000, None)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_accounts_success_single_program() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // Create MeteoraDammV2 program accounts (9 accounts: program_id + 8 payload)
+        let program_id = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        // Add 8 more accounts for MeteoraDammV2
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [9, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 1);
+        assert!(*instances[0].get_id() == program_id);
+    }
+
+    #[test]
+    fn test_parse_accounts_success_multiple_programs() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // First program: MeteoraDammV2 (9 accounts)
+        let program_id_1 = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id_1, owner, 0, None));
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        // Second program: MeteoraDlmm (13 accounts)
+        let program_id_2 = MeteoraDlmm::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id_2, owner, 0, None));
+        for _ in 0..12 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [9, 13, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 2);
+        assert!(*instances[0].get_id() == program_id_1);
+        assert!(*instances[1].get_id() == program_id_2);
+    }
+
+    #[test]
+    fn test_parse_accounts_skips_zero_span() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // Create one program
+        let program_id = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        // Zero spans should be skipped
+        let data = InstructionData {
+            accounts_length: [9, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 1);
+    }
+
+    #[test]
+    fn test_parse_accounts_insufficient_accounts() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // Only provide 5 accounts when 9 are needed
+        let program_id = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..4 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [9, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_err());
+        // Just verify it's an error - Anchor error types are complex to match
+    }
+
+    #[test]
+    fn test_parse_accounts_trailing_accounts() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // Create program with 9 accounts
+        let program_id = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        // Add an extra account that shouldn't be there
+        accounts.push(create_mock_account_info(
+            Pubkey::new_unique(),
+            owner,
+            0,
+            None,
+        ));
+
+        let data = InstructionData {
+            accounts_length: [9, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_err());
+        // Just verify it's an error - Anchor error types are complex to match
+    }
+
+    #[test]
+    fn test_parse_accounts_unknown_program() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // Use an unknown program ID
+        let unknown_program_id = Pubkey::new_unique();
+        accounts.push(create_mock_account_info(unknown_program_id, owner, 0, None));
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [9, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_err());
+        // Just verify it's an error - Anchor error types are complex to match
+    }
+
+    #[test]
+    fn test_parse_accounts_invalid_accounts_length() {
+        let accounts = create_mock_accounts(5, system_program::id());
+
+        // Use a span that's too large to convert from u32 to usize
+        // On most platforms this won't happen, but we test the error path
+        let data = InstructionData {
+            accounts_length: [u32::MAX, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        // This should either error on conversion or on insufficient accounts
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_accounts_empty_segment() {
+        let accounts = Vec::new();
+
+        let data = InstructionData {
+            accounts_length: [0, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 0);
+    }
+
+    #[test]
+    fn test_parse_accounts_meteora_damm_v1() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // MeteoraDammV1 needs 10 accounts (no program_id in payload, starts with pool_id)
+        let program_id = MeteoraDammV1::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..9 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [10, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 1);
+        assert!(*instances[0].get_id() == program_id);
+    }
+
+    #[test]
+    fn test_parse_accounts_meteora_dlmm() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // MeteoraDlmm needs 13 accounts
+        let program_id = MeteoraDlmm::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..12 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [13, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 1);
+        assert!(*instances[0].get_id() == program_id);
+    }
+
+    #[test]
+    fn test_parse_accounts_insufficient_accounts_for_program() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // MeteoraDlmm needs 13 accounts, but only provide 10
+        let program_id = MeteoraDlmm::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id, owner, 0, None));
+        for _ in 0..9 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        let data = InstructionData {
+            accounts_length: [10, 0, 0, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_err());
+        // Just verify it's an error - Anchor error types are complex to match
+    }
+
+    #[test]
+    fn test_parse_accounts_multiple_programs_with_zero_spans() {
+        let owner = system_program::id();
+        let mut accounts = Vec::new();
+
+        // First program
+        let program_id_1 = MeteoraDammV2::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id_1, owner, 0, None));
+        for _ in 0..8 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        // Second program
+        let program_id_2 = MeteoraDlmm::PROGRAM_ID;
+        accounts.push(create_mock_account_info(program_id_2, owner, 0, None));
+        for _ in 0..12 {
+            accounts.push(create_mock_account_info(
+                Pubkey::new_unique(),
+                owner,
+                0,
+                None,
+            ));
+        }
+
+        // Mix of zero and non-zero spans
+        let data = InstructionData {
+            accounts_length: [9, 0, 13, 0, 0],
+            epoch: 0,
+        };
+
+        let result = parse_accounts(&accounts, &data);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert!(instances.len() == 2);
+        assert!(*instances[0].get_id() == program_id_1);
+        assert!(*instances[1].get_id() == program_id_2);
+    }
 }

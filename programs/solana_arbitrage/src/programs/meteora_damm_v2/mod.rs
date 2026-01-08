@@ -113,10 +113,26 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             mint_2_token_program,
         )
     }
+
+    fn log_accounts(&self) -> Result<()> {
+        msg!(
+            "Meteora DAMM v2 accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, pool_authority={}, event_authority={}, referral_token_account={}",
+            self.pool_id.key,
+            self.base_vault.key,
+            self.quote_vault.key,
+            self.base_token.key,
+            self.quote_token.key,
+            self.pool_authority.key,
+            self.event_authority.key,
+            self.referral_token_account.key,
+        );
+        Ok(())
+    }
 }
 
 impl<'info> MeteoraDammV2<'info> {
-    pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
+    pub const PROGRAM_ID: Pubkey =
+        Pubkey::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
 
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
@@ -141,21 +157,6 @@ impl<'info> MeteoraDammV2<'info> {
             event_authority: event_authority.clone(),
             referral_token_account: referral_token_account.clone(),
         })
-    }
-
-    pub fn log_accounts(&self) -> Result<()> {
-        msg!(
-            "Meteora DAMM v2 accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, pool_authority={}, event_authority={}, referral_token_account={}",
-            self.pool_id.key,
-            self.base_vault.key,
-            self.quote_vault.key,
-            self.base_token.key,
-            self.quote_token.key,
-            self.pool_authority.key,
-            self.event_authority.key,
-            self.referral_token_account.key,
-        );
-        Ok(())
     }
 
     pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {

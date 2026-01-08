@@ -273,6 +273,10 @@ mod tests {
         ) -> Result<()> {
             Ok(()) // Mock implementation
         }
+
+        fn log_accounts(&self) -> Result<()> {
+            Ok(()) // Mock implementation
+        }
     }
 
     #[test]

@@ -88,6 +88,23 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
             mint_2_token_program,
         )
     }
+
+    fn log_accounts(&self) -> Result<()> {
+        msg!(
+            "Meteora DAMM v1 accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, bitmap_extension={}, memo={}, event_authority={}",
+            self.pool_id.key,
+            self.base_vault.key,
+            self.quote_vault.key,
+            self.base_token.key,
+            self.quote_token.key,
+            self.oracle.key,
+            self.host_fee_in.key,
+            self.bitmap_extension.key,
+            self.memo.key,
+            self.event_authority.key,
+        );
+        Ok(())
+    }
 }
 
 impl<'info> MeteoraDammV1<'info> {
@@ -118,23 +135,6 @@ impl<'info> MeteoraDammV1<'info> {
             memo: memo.clone(),
             event_authority: event_authority.clone(),
         })
-    }
-
-    pub fn log_accounts(&self) -> Result<()> {
-        msg!(
-            "Meteora DAMM v1 accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, bitmap_extension={}, memo={}, event_authority={}",
-            self.pool_id.key,
-            self.base_vault.key,
-            self.quote_vault.key,
-            self.base_token.key,
-            self.quote_token.key,
-            self.oracle.key,
-            self.host_fee_in.key,
-            self.bitmap_extension.key,
-            self.memo.key,
-            self.event_authority.key,
-        );
-        Ok(())
     }
 
     pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {

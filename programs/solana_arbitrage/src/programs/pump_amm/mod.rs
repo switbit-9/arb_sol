@@ -31,7 +31,6 @@ pub struct PumpAmm<'info> {
     pub pump_amm_global: AccountInfo<'info>,
     pub system_program: AccountInfo<'info>,
     pub associated_token_instruction_program: AccountInfo<'info>,
-    pub pump_amm_event_authority: AccountInfo<'info>,
     pub global_vol_accumulator: AccountInfo<'info>,
     pub base_vault_account: TokenAccount,
     pub quote_vault_account: TokenAccount,
@@ -112,6 +111,41 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             mint_2_token_program,
         )
     }
+
+    fn log_accounts(&self) -> Result<()> {
+        let vault_ata_key = self
+            .vault_ata
+            .as_ref()
+            .map(|a| a.key)
+            .unwrap_or(self.pool_id.key);
+        let vault_authority_key = self
+            .vault_authority
+            .as_ref()
+            .map(|a| a.key)
+            .unwrap_or(self.pool_id.key);
+        msg!(
+            "Pump AMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, protocol_fee_recipient={}, protocol_fee_token_account={}, event_authority={}, fee_config={}, fee_program={}, user_volume_accumulator={}, pump_amm_global={}, system_program={}, associated_token_instruction_program={}, global_vol_accumulator={}, vault_ata={}, vault_authority={}",
+            self.program_id.key,
+            self.pool_id.key,
+            self.base_vault.key,
+            self.quote_vault.key,
+            self.base_token.key,
+            self.quote_token.key,
+            self.protocol_fee_recipient.key,
+            self.protocol_fee_token_account.key,
+            self.event_authority.key,
+            self.fee_config.key,
+            self.fee_program.key,
+            self.user_volume_accumulator.key,
+            self.pump_amm_global.key,
+            self.system_program.key,
+            self.associated_token_instruction_program.key,
+            self.global_vol_accumulator.key,
+            vault_ata_key,
+            vault_authority_key,
+        );
+        Ok(())
+    }
 }
 
 impl<'info> PumpAmm<'info> {
@@ -120,28 +154,27 @@ impl<'info> PumpAmm<'info> {
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
         let account_length = accounts.len();
-        let program_id = next_account_info(&mut iter)?; // 1
-        let pool_id = next_account_info(&mut iter)?; // 2
-        let base_vault = next_account_info(&mut iter)?; // 3
-        let quote_vault = next_account_info(&mut iter)?; // 4
-        let base_token = next_account_info(&mut iter)?; // 5
-        let quote_token = next_account_info(&mut iter)?; // 6
-        let protocol_fee_recipient = next_account_info(&mut iter)?; // 8
-        let protocol_fee_token_account = next_account_info(&mut iter)?; // 9
-        let event_authority = next_account_info(&mut iter)?; // 10
+        let program_id = next_account_info(&mut iter)?; // 0
+        let pool_id = next_account_info(&mut iter)?; // 1
+        let base_vault = next_account_info(&mut iter)?; // 2
+        let quote_vault = next_account_info(&mut iter)?; // 3
+        let base_token = next_account_info(&mut iter)?; // 4
+        let quote_token = next_account_info(&mut iter)?; // 5
+        let protocol_fee_recipient = next_account_info(&mut iter)?; // 6
+        let protocol_fee_token_account = next_account_info(&mut iter)?; // 7
+        let event_authority = next_account_info(&mut iter)?; // 8
                                                              // let coin_creator = next_account_info(&mut iter)?; // 11
-        let fee_config = next_account_info(&mut iter)?; // 12
-        let fee_program = next_account_info(&mut iter)?; // 13
-        let user_volume_accumulator = next_account_info(&mut iter)?; // 14
-        let pump_amm_global = next_account_info(&mut iter)?; // 15
-        let system_program = next_account_info(&mut iter)?; // 16
-        let associated_token_instruction_program = next_account_info(&mut iter)?; // 17
-        let pump_amm_event_authority = next_account_info(&mut iter)?; // 18
-        let global_vol_accumulator = next_account_info(&mut iter)?; // 19
+        let fee_config = next_account_info(&mut iter)?; // 9
+        let fee_program = next_account_info(&mut iter)?; // 10
+        let user_volume_accumulator = next_account_info(&mut iter)?; // 11
+        let pump_amm_global = next_account_info(&mut iter)?; // 12
+        let system_program = next_account_info(&mut iter)?; // 13
+        let associated_token_instruction_program = next_account_info(&mut iter)?; // 14
+        let global_vol_accumulator = next_account_info(&mut iter)?; // 15
 
-        let (vault_ata, vault_authority) = if account_length >= 23 {
-            let vault_ata_account = next_account_info(&mut iter)?; // 23
-            let vault_authority_account = next_account_info(&mut iter)?; // 24
+        let (vault_ata, vault_authority) = if account_length >= 16 {
+            let vault_ata_account = next_account_info(&mut iter)?; // 16
+            let vault_authority_account = next_account_info(&mut iter)?; // 17
             (
                 Some(vault_ata_account.clone()),
                 Some(vault_authority_account.clone()),
@@ -172,7 +205,6 @@ impl<'info> PumpAmm<'info> {
             pump_amm_global: pump_amm_global.clone(),
             system_program: system_program.clone(),
             associated_token_instruction_program: associated_token_instruction_program.clone(),
-            pump_amm_event_authority: pump_amm_event_authority.clone(),
             global_vol_accumulator: global_vol_accumulator.clone(),
             base_vault_account: base_vault_account,
             quote_vault_account: quote_vault_account,
@@ -183,36 +215,6 @@ impl<'info> PumpAmm<'info> {
         let base_vault = parse_token_account(&self.base_vault)?;
         let quote_vault = parse_token_account(&self.quote_vault)?;
         Ok((base_vault.amount as u128, quote_vault.amount as u128))
-    }
-
-    pub fn log_accounts(&self) -> Result<()> {
-        let vault_ata_key = self
-            .vault_ata
-            .as_ref()
-            .map(|a| a.key)
-            .unwrap_or(self.pool_id.key);
-        let vault_authority_key = self
-            .vault_authority
-            .as_ref()
-            .map(|a| a.key)
-            .unwrap_or(self.pool_id.key);
-        msg!(
-            "Pump AMM accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, protocol_fee_recipient={}, protocol_fee_token_account={}, event_authority={}, vault_ata={}, vault_authority={}, fee_config={}, fee_program={}",
-            self.pool_id.key,
-            self.base_vault.key,
-            self.quote_vault.key,
-            self.base_token.key,
-            self.quote_token.key,
-            self.protocol_fee_recipient.key,
-            self.protocol_fee_token_account.key,
-            self.event_authority.key,
-            // self.coin_creator.key,
-            vault_ata_key,
-            vault_authority_key,
-            self.fee_config.key,
-            self.fee_program.key,
-        );
-        Ok(())
     }
 
     /// Calculate base output amount for a given quote input amount
@@ -353,7 +355,7 @@ impl<'info> PumpAmm<'info> {
             AccountMeta::new_readonly(*quote_token_program.key, false),
             AccountMeta::new_readonly(*self.system_program.key, false),
             AccountMeta::new_readonly(*self.associated_token_instruction_program.key, false),
-            AccountMeta::new_readonly(*self.pump_amm_event_authority.key, false),
+            AccountMeta::new_readonly(*self.event_authority.key, false),
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         if let (Some(ref vault_ata), Some(ref vault_authority)) =
@@ -388,7 +390,7 @@ impl<'info> PumpAmm<'info> {
             self.protocol_fee_token_account.to_account_info(),
             self.system_program.to_account_info(),
             self.associated_token_instruction_program.to_account_info(),
-            self.pump_amm_event_authority.to_account_info(),
+            self.event_authority.to_account_info(),
         ];
 
         if let (Some(ref vault_ata), Some(ref vault_authority)) =
@@ -468,7 +470,7 @@ impl<'info> PumpAmm<'info> {
             AccountMeta::new_readonly(*quote_token_program.key, false),
             AccountMeta::new_readonly(*self.system_program.key, false),
             AccountMeta::new_readonly(*self.associated_token_instruction_program.key, false),
-            AccountMeta::new_readonly(*self.pump_amm_event_authority.key, false),
+            AccountMeta::new_readonly(*self.event_authority.key, false),
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         if let (Some(ref vault_ata), Some(ref vault_authority)) =
@@ -501,7 +503,7 @@ impl<'info> PumpAmm<'info> {
             self.protocol_fee_token_account.to_account_info(),
             self.system_program.to_account_info(),
             self.associated_token_instruction_program.to_account_info(),
-            self.pump_amm_event_authority.to_account_info(),
+            self.event_authority.to_account_info(),
         ];
 
         if let (Some(ref vault_ata), Some(ref vault_authority)) =

@@ -8,6 +8,9 @@ skip-lint = false
 [programs.localnet]
 solana_arbitrage = "DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT"
 
+[programs.devnet]
+solana_arbitrage = "7yEijpnFZdSGuynyZps2wrKDwYzKyaosCXevNisZ378z"
+
 [registry]
 url = "https://api.apr.dev"
 
