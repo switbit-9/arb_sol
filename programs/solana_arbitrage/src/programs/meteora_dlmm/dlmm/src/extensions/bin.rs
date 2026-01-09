@@ -109,7 +109,7 @@ impl BinExtension for Bin {
             )
         } else {
             let fee = lb_pair.compute_fee_from_amount(amount_in)?;
-            let amount_in_after_fee = amount_in.checked_sub(fee).context("overflow")?;
+            let amount_in_after_fee: u64 = amount_in.checked_sub(fee).context("overflow")?;
             let amount_out = Bin::get_amount_out(amount_in_after_fee, price, swap_for_y)?;
             (
                 amount_in,

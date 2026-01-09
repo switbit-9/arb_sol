@@ -220,6 +220,7 @@ impl<'info> MeteoraDlmm<'info> {
                 anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
             ));
         }
+        msg!("0");
         let pool_data_slice = &pool_data[8..];
         let lb_pair_size = std::mem::size_of::<LbPair>();
         if pool_data_slice.len() < lb_pair_size {
@@ -234,42 +235,118 @@ impl<'info> MeteoraDlmm<'info> {
         }
         let pool_id_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
         let pool_id_key = *self.pool_id.key;
+        msg!("1");
+        msg!("LbPair size: {} bytes", std::mem::size_of::<LbPair>());
+        msg!("Pool data slice len: {} bytes", pool_data_slice.len());
 
         // Deserialize bitmap extension if available
         let bitmap_extension: Option<BinArrayBitmapExtension> =
             if *self.bitmap_extension.key == Self::PROGRAM_ID {
+                msg!("Bitmap extension: None (program_id placeholder)");
                 None
             } else if self.bitmap_extension.data_len() > 8 {
+                let bitmap_size = std::mem::size_of::<BinArrayBitmapExtension>();
+                msg!(
+                    "Bitmap extension account data_len: {} bytes",
+                    self.bitmap_extension.data_len()
+                );
+                msg!("BinArrayBitmapExtension struct size: {} bytes", bitmap_size);
                 Some(bytemuck::pod_read_unaligned(
                     &self.bitmap_extension.try_borrow_data()?[8..],
                 ))
             } else {
+                msg!(
+                    "Bitmap extension: None (data_len too short: {})",
+                    self.bitmap_extension.data_len()
+                );
                 None
             };
+        msg!("2");
 
-        // Deserialize bin arrays into HashMap (only buy arrays, using commons types)
-        let bin_arrays: HashMap<Pubkey, BinArray> = self
-            .bin_arrays_buy
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .filter_map(|account_info| {
-                let data = account_info.try_borrow_data().ok()?;
-                if data.len() < 8 {
-                    return None;
+        let bin_array_struct_size = std::mem::size_of::<BinArray>();
+        msg!("BinArray struct size: {} bytes", bin_array_struct_size);
+
+        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
+            msg!("bin_arrays_buy count: {}", bin_arrays_buy.len());
+            for (i, account) in bin_arrays_buy.iter().enumerate() {
+                msg!(
+                    "arr[{}]={}, data_len={}",
+                    i,
+                    account.key,
+                    account.data_len()
+                );
+            }
+        }
+
+        // Deserialize ONLY the first bin array to reduce stack usage (BinArray is 10128 bytes!)
+        let mut bin_arrays = HashMap::<Pubkey, BinArray>::new();
+        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
+            if let Some(first_account) = bin_arrays_buy.first() {
+                msg!(
+                    "Processing first bin_array: {}, data_len={}",
+                    first_account.key,
+                    first_account.data_len()
+                );
+                if let Ok(data) = first_account.try_borrow_data() {
+                    if data.len() >= 8 {
+                        let bin_array_data = &data[8..];
+                        let bin_array_size = std::mem::size_of::<BinArray>();
+                        if bin_array_data.len() >= bin_array_size {
+                            let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
+                            bin_arrays.insert(*first_account.key, bin_array);
+                            msg!("Successfully deserialized first BinArray");
+                        } else {
+                            msg!(
+                                "First BinArray data too short: {} bytes (expected {})",
+                                bin_array_data.len(),
+                                bin_array_size
+                            );
+                        }
+                    }
                 }
-                let bin_array_data = &data[8..];
-                let bin_array_size = std::mem::size_of::<BinArray>();
-                if bin_array_data.len() < bin_array_size {
-                    return None;
-                }
-                let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
-                Some((*account_info.key, bin_array))
-            })
-            .collect();
+            }
+        }
+
+        msg!("bin_arrays HashMap len: {}", bin_arrays.len());
+        msg!(
+            "HashMap overhead estimate: ~{} bytes",
+            bin_arrays.len()
+                * (8 + std::mem::size_of::<Pubkey>() + std::mem::size_of::<BinArray>() + 24)
+        );
 
         let swap_for_y = true;
-
+        msg!("3");
+        msg!("Before quote_exact_in - Stack usage estimate:");
+        msg!(
+            "  - LbPair (pool_id_state): {} bytes",
+            std::mem::size_of::<LbPair>()
+        );
+        msg!(
+            "  - BinArray in HashMap: {} bytes x {} = {} bytes",
+            std::mem::size_of::<BinArray>(),
+            bin_arrays.len(),
+            std::mem::size_of::<BinArray>() * bin_arrays.len()
+        );
+        if bitmap_extension.is_some() {
+            msg!(
+                "  - BinArrayBitmapExtension: {} bytes",
+                std::mem::size_of::<BinArrayBitmapExtension>()
+            );
+        } else {
+            msg!("  - BinArrayBitmapExtension: 0 bytes (None)");
+        }
+        msg!("  - HashMap overhead: ~{} bytes", bin_arrays.len() * 32);
+        let estimated_stack: usize = std::mem::size_of::<LbPair>()
+            + (std::mem::size_of::<BinArray>() * bin_arrays.len())
+            + bitmap_extension
+                .as_ref()
+                .map(|_| std::mem::size_of::<BinArrayBitmapExtension>())
+                .unwrap_or(0)
+            + (bin_arrays.len() * 32);
+        msg!(
+            "  - Total estimated: ~{} bytes / 4096 bytes limit",
+            estimated_stack
+        );
         // Helper to load mints and call quote_exact_in, working around lifetime variance
         // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
         // the lifetime annotation, not the actual data or memory layout
@@ -301,7 +378,7 @@ impl<'info> MeteoraDlmm<'info> {
                     &pool_id_state,
                     amount_in,
                     swap_for_y,
-                    bin_arrays,
+                    &bin_arrays,
                     bitmap_extension.as_ref(),
                     &clock,
                     mint_x_ref,
@@ -324,6 +401,7 @@ impl<'info> MeteoraDlmm<'info> {
                 anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
             ));
         }
+        msg!("0");
         let pool_data_slice = &pool_data[8..];
         let lb_pair_size = std::mem::size_of::<LbPair>();
         if pool_data_slice.len() < lb_pair_size {
@@ -333,42 +411,107 @@ impl<'info> MeteoraDlmm<'info> {
         }
         let lb_pair_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
         let lb_pair_key = *self.pool_id.key;
+        msg!("1");
+        msg!("LbPair size: {} bytes", std::mem::size_of::<LbPair>());
+        msg!("Pool data slice len: {} bytes", pool_data_slice.len());
 
+        msg!("bitmap_extension.key: {:?}", self.bitmap_extension.key);
         // Deserialize bitmap extension if available
         let bitmap_extension: Option<BinArrayBitmapExtension> =
             if *self.bitmap_extension.key == Self::PROGRAM_ID {
+                msg!("Bitmap extension: None (program_id placeholder)");
                 None
             } else if self.bitmap_extension.data_len() > 8 {
+                let bitmap_size = std::mem::size_of::<BinArrayBitmapExtension>();
+                msg!(
+                    "Bitmap extension account data_len: {} bytes",
+                    self.bitmap_extension.data_len()
+                );
+                msg!("BinArrayBitmapExtension struct size: {} bytes", bitmap_size);
                 Some(bytemuck::pod_read_unaligned(
                     &self.bitmap_extension.try_borrow_data()?[8..],
                 ))
             } else {
+                msg!(
+                    "Bitmap extension: None (data_len too short: {})",
+                    self.bitmap_extension.data_len()
+                );
                 None
             };
+        msg!("2");
 
-        // Deserialize bin arrays into HashMap (only sell arrays, using commons types)
-        let bin_arrays: HashMap<Pubkey, BinArray> = self
-            .bin_arrays_sell
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .filter_map(|account_info| {
-                let data = account_info.try_borrow_data().ok()?;
-                if data.len() < 8 {
-                    return None;
+        let bin_array_struct_size = std::mem::size_of::<BinArray>();
+        msg!("BinArray struct size: {} bytes", bin_array_struct_size);
+
+        // Deserialize ONLY the first bin array to reduce stack usage (BinArray is 10128 bytes!)
+        let mut bin_arrays = HashMap::<Pubkey, BinArray>::new();
+        if let Some(bin_arrays_sell) = &self.bin_arrays_sell {
+            if let Some(first_account) = bin_arrays_sell.first() {
+                msg!(
+                    "Processing first bin_array: {}, data_len={}",
+                    first_account.key,
+                    first_account.data_len()
+                );
+                if let Ok(data) = first_account.try_borrow_data() {
+                    if data.len() >= 8 {
+                        let bin_array_data = &data[8..];
+                        let bin_array_size = std::mem::size_of::<BinArray>();
+                        if bin_array_data.len() >= bin_array_size {
+                            let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
+                            bin_arrays.insert(*first_account.key, bin_array);
+                            msg!("Successfully deserialized first BinArray");
+                        } else {
+                            msg!(
+                                "First BinArray data too short: {} bytes (expected {})",
+                                bin_array_data.len(),
+                                bin_array_size
+                            );
+                        }
+                    }
                 }
-                let bin_array_data = &data[8..];
-                let bin_array_size = std::mem::size_of::<BinArray>();
-                if bin_array_data.len() < bin_array_size {
-                    return None;
-                }
-                let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
-                Some((*account_info.key, bin_array))
-            })
-            .collect();
+            }
+        }
+
+        msg!("bin_arrays HashMap len: {}", bin_arrays.len());
+        msg!(
+            "HashMap overhead estimate: ~{} bytes",
+            bin_arrays.len()
+                * (8 + std::mem::size_of::<Pubkey>() + std::mem::size_of::<BinArray>() + 24)
+        );
 
         let swap_for_y = false;
-
+        msg!("3");
+        msg!("Before quote_exact_in - Stack usage estimate:");
+        msg!(
+            "  - LbPair (lb_pair_state): {} bytes",
+            std::mem::size_of::<LbPair>()
+        );
+        msg!(
+            "  - BinArray in HashMap: {} bytes x {} = {} bytes",
+            std::mem::size_of::<BinArray>(),
+            bin_arrays.len(),
+            std::mem::size_of::<BinArray>() * bin_arrays.len()
+        );
+        if bitmap_extension.is_some() {
+            msg!(
+                "  - BinArrayBitmapExtension: {} bytes",
+                std::mem::size_of::<BinArrayBitmapExtension>()
+            );
+        } else {
+            msg!("  - BinArrayBitmapExtension: 0 bytes (None)");
+        }
+        msg!("  - HashMap overhead: ~{} bytes", bin_arrays.len() * 32);
+        let estimated_stack: usize = std::mem::size_of::<LbPair>()
+            + (std::mem::size_of::<BinArray>() * bin_arrays.len())
+            + bitmap_extension
+                .as_ref()
+                .map(|_| std::mem::size_of::<BinArrayBitmapExtension>())
+                .unwrap_or(0)
+            + (bin_arrays.len() * 32);
+        msg!(
+            "  - Total estimated: ~{} bytes / 4096 bytes limit",
+            estimated_stack
+        );
         // Helper to load mints and call quote_exact_in, working around lifetime variance
         // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
         // the lifetime annotation, not the actual data or memory layout
@@ -398,7 +541,7 @@ impl<'info> MeteoraDlmm<'info> {
                     &lb_pair_state,
                     amount_in,
                     swap_for_y,
-                    bin_arrays,
+                    &bin_arrays,
                     bitmap_extension.as_ref(),
                     &clock,
                     mint_x_ref,
@@ -972,7 +1115,7 @@ mod tests {
             &pool_id,
             in_sol_amount,
             swap_for_y,
-            bin_arrays.clone(),
+            &bin_arrays,
             None,
             &clock2,
             &mint_x_interface,
@@ -1012,7 +1155,7 @@ mod tests {
             &pool_id,
             amount_out_2,
             swap_for_y_reverse,
-            bin_arrays.clone(),
+            &bin_arrays,
             None,
             &clock3,
             &mint_x_interface,
