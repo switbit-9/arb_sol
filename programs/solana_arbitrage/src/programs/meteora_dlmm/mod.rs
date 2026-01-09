@@ -1,12 +1,22 @@
 use super::super::programs::ProgramMeta;
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{account_info::next_account_info, pubkey::Pubkey};
+use anchor_lang::solana_program::{
+    account_info::next_account_info,
+    instruction::{AccountMeta, Instruction},
+    program::invoke,
+    program_error::ProgramError,
+    pubkey::Pubkey,
+};
 use anchor_spl::token::spl_token::native_mint;
+use dlmm::dlmm::accounts::{BinArray, BinArrayBitmapExtension, LbPair};
+use dlmm::quote::quote_exact_in;
+use dlmm::token::load_mint;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
     pub program_id: AccountInfo<'info>,
-    pub lb_pair: AccountInfo<'info>,
+    pub pool_id: AccountInfo<'info>,
     pub base_vault: AccountInfo<'info>,
     pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
@@ -94,9 +104,9 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn log_accounts(&self) -> Result<()> {
         msg!(
-            "Meteora DLMM accounts: program_id={}, lb_pair={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, memo={}, event_authority={}, bitmap_extension={}",
+            "Meteora DLMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, memo={}, event_authority={}, bitmap_extension={}",
             self.program_id.key,
-            self.lb_pair.key,
+            self.pool_id.key,
             self.base_vault.key,
             self.quote_vault.key,
             self.base_token.key,
@@ -127,7 +137,7 @@ impl<'info> MeteoraDlmm<'info> {
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
         let program_id = next_account_info(&mut iter)?; // 0
-        let lb_pair = next_account_info(&mut iter)?; // 1
+        let pool_id = next_account_info(&mut iter)?; // 1
         let base_vault = next_account_info(&mut iter)?; // 2
         let quote_vault = next_account_info(&mut iter)?; // 3
         let base_token = next_account_info(&mut iter)?; // 4
@@ -187,7 +197,7 @@ impl<'info> MeteoraDlmm<'info> {
 
         Ok(MeteoraDlmm {
             program_id: program_id.clone(),
-            lb_pair: lb_pair.clone(),
+            pool_id: pool_id.clone(),
             base_vault: base_vault.clone(),
             quote_vault: quote_vault.clone(),
             base_token: base_token.clone(),
@@ -202,51 +212,416 @@ impl<'info> MeteoraDlmm<'info> {
         })
     }
 
-    pub fn swap_base_in_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
-        // TODO: Implement proper DLMM quote calculation
-        // For now, return a mock value
-        msg!("DLMM swap_base_in calculation not yet implemented, returning mock value");
-        Ok(amount_in / 100) // Mock: assume 1% price impact
+    pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+        let pool_data = self.pool_id.try_borrow_data()?;
+        if pool_data.len() < 8 {
+            msg!("Pool ID account data too short: {} bytes", pool_data.len());
+            return Err(anchor_lang::error::Error::from(
+                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
+            ));
+        }
+        let pool_data_slice = &pool_data[8..];
+        let lb_pair_size = std::mem::size_of::<LbPair>();
+        if pool_data_slice.len() < lb_pair_size {
+            msg!(
+                "Pool ID data too short for LbPair: {} bytes (expected {})",
+                pool_data_slice.len(),
+                lb_pair_size
+            );
+            return Err(anchor_lang::error::Error::from(
+                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
+            ));
+        }
+        let pool_id_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
+        let pool_id_key = *self.pool_id.key;
+
+        // Deserialize bitmap extension if available
+        let bitmap_extension: Option<BinArrayBitmapExtension> =
+            if *self.bitmap_extension.key == Self::PROGRAM_ID {
+                None
+            } else if self.bitmap_extension.data_len() > 8 {
+                Some(bytemuck::pod_read_unaligned(
+                    &self.bitmap_extension.try_borrow_data()?[8..],
+                ))
+            } else {
+                None
+            };
+
+        // Deserialize bin arrays into HashMap (only buy arrays, using commons types)
+        let bin_arrays: HashMap<Pubkey, BinArray> = self
+            .bin_arrays_buy
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter_map(|account_info| {
+                let data = account_info.try_borrow_data().ok()?;
+                if data.len() < 8 {
+                    return None;
+                }
+                let bin_array_data = &data[8..];
+                let bin_array_size = std::mem::size_of::<BinArray>();
+                if bin_array_data.len() < bin_array_size {
+                    return None;
+                }
+                let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
+                Some((*account_info.key, bin_array))
+            })
+            .collect();
+
+        let swap_for_y = true;
+
+        // Helper to load mints and call quote_exact_in, working around lifetime variance
+        // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
+        // the lifetime annotation, not the actual data or memory layout
+        let quote = {
+            // Work around lifetime variance: cast references to AccountInfo to match expected lifetime
+            let base_token_ref: &AccountInfo<'info> =
+                unsafe { &*(&self.base_token as *const AccountInfo<'info>) };
+            let quote_token_ref: &AccountInfo<'info> =
+                unsafe { &*(&self.quote_token as *const AccountInfo<'info>) };
+
+            let mint_x_account = load_mint(base_token_ref).map_err(|e| {
+                msg!("Failed to load mint X: {:?}", e);
+                anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+            })?;
+            let mint_y_account = load_mint(quote_token_ref).map_err(|e| {
+                msg!("Failed to load mint Y: {:?}", e);
+                anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+            })?;
+
+            unsafe {
+                let mint_x_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
+                    &*(&mint_x_account
+                        as *const InterfaceAccount<'_, anchor_spl::token_interface::Mint>);
+                let mint_y_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
+                    &*(&mint_y_account
+                        as *const InterfaceAccount<'_, anchor_spl::token_interface::Mint>);
+                quote_exact_in(
+                    pool_id_key,
+                    &pool_id_state,
+                    amount_in,
+                    swap_for_y,
+                    bin_arrays,
+                    bitmap_extension.as_ref(),
+                    &clock,
+                    mint_x_ref,
+                    mint_y_ref,
+                )
+            }
+        }
+        .map_err(|e| {
+            msg!("Quote error: {:?}", e);
+            anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+        })?;
+        Ok(quote.amount_out)
     }
 
-    pub fn swap_base_out_impl(&self, amount_out: u64, _clock: Clock) -> Result<u64> {
-        // TODO: Implement proper DLMM quote calculation
-        // For now, return a mock value
-        msg!("DLMM swap_base_out calculation not yet implemented, returning mock value");
-        Ok(amount_out * 101) // Mock: assume 1% price impact
+    pub fn swap_base_out_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+        let pool_data = self.pool_id.try_borrow_data()?;
+        if pool_data.len() < 8 {
+            msg!("Pool ID account data too short: {} bytes", pool_data.len());
+            return Err(anchor_lang::error::Error::from(
+                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
+            ));
+        }
+        let pool_data_slice = &pool_data[8..];
+        let lb_pair_size = std::mem::size_of::<LbPair>();
+        if pool_data_slice.len() < lb_pair_size {
+            return Err(anchor_lang::error::Error::from(
+                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
+            ));
+        }
+        let lb_pair_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
+        let lb_pair_key = *self.pool_id.key;
+
+        // Deserialize bitmap extension if available
+        let bitmap_extension: Option<BinArrayBitmapExtension> =
+            if *self.bitmap_extension.key == Self::PROGRAM_ID {
+                None
+            } else if self.bitmap_extension.data_len() > 8 {
+                Some(bytemuck::pod_read_unaligned(
+                    &self.bitmap_extension.try_borrow_data()?[8..],
+                ))
+            } else {
+                None
+            };
+
+        // Deserialize bin arrays into HashMap (only sell arrays, using commons types)
+        let bin_arrays: HashMap<Pubkey, BinArray> = self
+            .bin_arrays_sell
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter_map(|account_info| {
+                let data = account_info.try_borrow_data().ok()?;
+                if data.len() < 8 {
+                    return None;
+                }
+                let bin_array_data = &data[8..];
+                let bin_array_size = std::mem::size_of::<BinArray>();
+                if bin_array_data.len() < bin_array_size {
+                    return None;
+                }
+                let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
+                Some((*account_info.key, bin_array))
+            })
+            .collect();
+
+        let swap_for_y = false;
+
+        // Helper to load mints and call quote_exact_in, working around lifetime variance
+        // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
+        // the lifetime annotation, not the actual data or memory layout
+        let quote = {
+            // Work around lifetime variance: cast references to AccountInfo to match expected lifetime
+            let base_token_ref: &AccountInfo<'info> =
+                unsafe { &*(&self.base_token as *const AccountInfo<'info>) };
+            let quote_token_ref: &AccountInfo<'info> =
+                unsafe { &*(&self.quote_token as *const AccountInfo<'info>) };
+
+            let mint_x_account = load_mint(base_token_ref).map_err(|_e| {
+                anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+            })?;
+            let mint_y_account = load_mint(quote_token_ref).map_err(|_e| {
+                anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+            })?;
+
+            unsafe {
+                let mint_x_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
+                    &*(&mint_x_account
+                        as *const InterfaceAccount<'_, anchor_spl::token_interface::Mint>);
+                let mint_y_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
+                    &*(&mint_y_account
+                        as *const InterfaceAccount<'_, anchor_spl::token_interface::Mint>);
+                quote_exact_in(
+                    lb_pair_key,
+                    &lb_pair_state,
+                    amount_in,
+                    swap_for_y,
+                    bin_arrays,
+                    bitmap_extension.as_ref(),
+                    &clock,
+                    mint_x_ref,
+                    mint_y_ref,
+                )
+            }
+        }
+        .map_err(|e| {
+            msg!("Quote error: {:?}", e);
+            anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
+        })?;
+        Ok(quote.amount_out)
     }
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
-        _max_amount_in: u64,
-        _amount_out: Option<u64>,
-        _payer: AccountInfo<'a>,
-        _user_mint_1_token_account: AccountInfo<'a>,
-        _user_mint_2_token_account: AccountInfo<'a>,
-        _mint_1_account: AccountInfo<'a>,
-        _mint_2_account: AccountInfo<'a>,
-        _mint_1_token_program: AccountInfo<'a>,
-        _mint_2_token_program: AccountInfo<'a>,
+        amount_in: u64,
+        amount_out: Option<u64>,
+        payer: AccountInfo<'a>,
+        user_mint_1_token_account: AccountInfo<'a>,
+        user_mint_2_token_account: AccountInfo<'a>,
+        mint_1_account: AccountInfo<'a>,
+        mint_2_account: AccountInfo<'a>,
+        mint_1_token_program: AccountInfo<'a>,
+        mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        // TODO: Implement CPI call to DLMM swap instruction
-        msg!("DLMM swap_base_in CPI not yet implemented");
+        let (
+            base_token_program,
+            quote_token_program,
+            user_base_token_account,
+            user_quote_token_account,
+        ) = if mint_1_account.key == self.base_token.key {
+            (
+                mint_1_token_program,
+                mint_2_token_program,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+            )
+        } else if mint_2_account.key == self.base_token.key {
+            (
+                mint_2_token_program,
+                mint_1_token_program,
+                user_mint_2_token_account,
+                user_mint_1_token_account,
+            )
+        } else {
+            return Err(ProgramError::InvalidAccountData.into());
+        };
+
+        let amount_out_value = amount_out.unwrap_or(0);
+
+        let mut metas = vec![
+            AccountMeta::new(*self.pool_id.key, false),
+            AccountMeta::new_readonly(*self.bitmap_extension.key, false),
+            AccountMeta::new(*self.base_vault.key, false),
+            AccountMeta::new(*self.quote_vault.key, false),
+            AccountMeta::new(*user_base_token_account.key, false),
+            AccountMeta::new(*user_quote_token_account.key, false),
+            AccountMeta::new_readonly(*self.base_token.key, false),
+            AccountMeta::new_readonly(*self.quote_token.key, false),
+            AccountMeta::new_readonly(*self.oracle.key, false), // ?
+            AccountMeta::new(*self.host_fee_in.key, false),     // ?
+            AccountMeta::new(*payer.key, true),
+            AccountMeta::new_readonly(*base_token_program.key, false),
+            AccountMeta::new_readonly(*quote_token_program.key, false),
+            AccountMeta::new_readonly(*self.memo.key, false),
+            AccountMeta::new_readonly(*self.event_authority.key, false),
+            AccountMeta::new_readonly(Self::PROGRAM_ID, false),
+        ];
+        // Add bin arrays (buy arrays for swap_base_in)
+        if let Some(bin_arrays) = &self.bin_arrays_buy {
+            for account in bin_arrays {
+                metas.push(AccountMeta::new(*account.key, false));
+            }
+        }
+
+        let mut data = vec![43, 215, 247, 132, 137, 60, 243, 81]; // TODO: Add proper instruction discriminator
+        data.extend_from_slice(&amount_in.to_le_bytes());
+        data.extend_from_slice(&amount_out_value.to_le_bytes());
+
+        let swap_ix = Instruction {
+            program_id: Self::PROGRAM_ID,
+            accounts: metas,
+            data,
+        };
+
+        // Collect AccountInfo into a vector and use unsafe to cast lifetimes
+        // Order must match metas order exactly
+        let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
+            self.pool_id.to_account_info(),          // 0: pool_id
+            self.bitmap_extension.to_account_info(), // 1: bitmap_extension (readonly)
+            self.base_vault.to_account_info(),       // 2: base_vault
+            self.quote_vault.to_account_info(),      // 3: quote_vault
+            unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 4: user_base_token_account
+            unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 5: user_quote_token_account
+            self.base_token.to_account_info(), // 6: base_token (readonly)
+            self.quote_token.to_account_info(), // 7: quote_token (readonly)
+            self.oracle.to_account_info(),     // 8: oracle (readonly)
+            self.host_fee_in.to_account_info(), // 9: host_fee_in
+            unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
+            unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
+            unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
+            self.memo.to_account_info(),            // 13: memo (readonly)
+            self.event_authority.to_account_info(), // 14: event_authority (readonly)
+            self.program_id.to_account_info(),      // 15: program_id (readonly)
+        ];
+        // Add bin arrays (buy arrays for swap_base_in)
+        if let Some(bin_arrays) = &self.bin_arrays_buy {
+            for account in bin_arrays {
+                accounts_vec.push(account.to_account_info());
+            }
+        }
+
+        unsafe {
+            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            invoke(&swap_ix, accounts)?;
+        }
         Ok(())
     }
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
-        _amount_in: u64,
-        _min_amount_out: Option<u64>,
-        _payer: AccountInfo<'a>,
-        _user_mint_1_token_account: AccountInfo<'a>,
-        _user_mint_2_token_account: AccountInfo<'a>,
-        _mint_1_account: AccountInfo<'a>,
-        _mint_2_account: AccountInfo<'a>,
-        _mint_1_token_program: AccountInfo<'a>,
-        _mint_2_token_program: AccountInfo<'a>,
+        amount_in: u64,
+        min_amount_out: Option<u64>,
+        payer: AccountInfo<'a>,
+        user_mint_1_token_account: AccountInfo<'a>,
+        user_mint_2_token_account: AccountInfo<'a>,
+        mint_1_account: AccountInfo<'a>,
+        mint_2_account: AccountInfo<'a>,
+        mint_1_token_program: AccountInfo<'a>,
+        mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        // TODO: Implement CPI call to DLMM swap instruction
-        msg!("DLMM swap_base_out CPI not yet implemented");
+        let (
+            base_token_program,
+            quote_token_program,
+            user_base_token_account,
+            user_quote_token_account,
+        ) = if mint_1_account.key == self.base_token.key {
+            (
+                mint_1_token_program,
+                mint_2_token_program,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+            )
+        } else if mint_2_account.key == self.base_token.key {
+            (
+                mint_2_token_program,
+                mint_1_token_program,
+                user_mint_2_token_account,
+                user_mint_1_token_account,
+            )
+        } else {
+            return Err(ProgramError::InvalidAccountData.into());
+        };
+
+        let min_amount_out_value = min_amount_out.unwrap_or(0);
+
+        let mut metas = vec![
+            AccountMeta::new(*self.pool_id.key, false),
+            AccountMeta::new(*self.bitmap_extension.key, false),
+            AccountMeta::new(*self.base_vault.key, false),
+            AccountMeta::new(*self.quote_vault.key, false),
+            AccountMeta::new(*user_base_token_account.key, false),
+            AccountMeta::new(*user_quote_token_account.key, false),
+            AccountMeta::new_readonly(*self.base_token.key, false),
+            AccountMeta::new_readonly(*self.quote_token.key, false),
+            AccountMeta::new_readonly(*self.oracle.key, false),
+            AccountMeta::new(*self.host_fee_in.key, false),
+            AccountMeta::new(*payer.key, true),
+            AccountMeta::new_readonly(*base_token_program.key, false),
+            AccountMeta::new_readonly(*quote_token_program.key, false),
+            AccountMeta::new_readonly(*self.memo.key, false),
+            AccountMeta::new_readonly(*self.event_authority.key, false),
+            AccountMeta::new_readonly(Self::PROGRAM_ID, false),
+        ];
+        // Add bin arrays (sell arrays for swap_base_out)
+        if let Some(bin_arrays) = &self.bin_arrays_sell {
+            for account in bin_arrays {
+                metas.push(AccountMeta::new(*account.key, false));
+            }
+        }
+
+        let mut data = vec![43, 215, 247, 132, 137, 60, 243, 81];
+        data.extend_from_slice(&amount_in.to_le_bytes());
+        data.extend_from_slice(&min_amount_out_value.to_le_bytes());
+
+        let swap_ix = Instruction {
+            program_id: Self::PROGRAM_ID,
+            accounts: metas,
+            data,
+        };
+
+        // Collect AccountInfo into a vector and use unsafe to cast lifetimes
+        // Order must match metas order exactly
+        let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
+            self.pool_id.to_account_info(),          // 0: pool_id
+            self.bitmap_extension.to_account_info(), // 1: bitmap_extension
+            self.base_vault.to_account_info(),       // 2: base_vault
+            self.quote_vault.to_account_info(),      // 3: quote_vault
+            unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 4: user_base_token_account
+            unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 5: user_quote_token_account
+            self.base_token.to_account_info(), // 6: base_token (readonly)
+            self.quote_token.to_account_info(), // 7: quote_token (readonly)
+            self.oracle.to_account_info(),     // 8: oracle (readonly)
+            self.host_fee_in.to_account_info(), // 9: host_fee_in
+            unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
+            unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
+            unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
+            self.memo.to_account_info(),            // 13: memo (readonly)
+            self.event_authority.to_account_info(), // 14: event_authority (readonly)
+            self.program_id.to_account_info(),      // 15: program_id (readonly)
+        ];
+        // Add bin arrays (sell arrays for swap_base_out)
+        if let Some(bin_arrays) = &self.bin_arrays_sell {
+            for account in bin_arrays {
+                accounts_vec.push(account.to_account_info());
+            }
+        }
+
+        unsafe {
+            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            invoke(&swap_ix, accounts)?;
+        }
         Ok(())
     }
 }
@@ -322,9 +697,62 @@ mod tests {
         account_to_account_info(key, account)
     }
 
-    /// Get on chain clock
-    fn get_clock() -> std::result::Result<Clock, Box<dyn std::error::Error>> {
-        Clock::get().map_err(Into::into)
+    /// Get on chain clock from RPC
+    async fn get_clock(
+        rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
+    ) -> anyhow::Result<Clock> {
+        use anchor_client::solana_sdk::sysvar;
+
+        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await?;
+
+        // Clock from Solana is borsh-serialized with these fields in order:
+        // slot: u64 (8 bytes)
+        // epoch_start_timestamp: i64 (8 bytes)
+        // epoch: u64 (8 bytes)
+        // leader_schedule_epoch: u64 (8 bytes)
+        // unix_timestamp: i64 (8 bytes)
+        // Total: 40 bytes
+        if clock_account.data.len() < 40 {
+            return Err(anyhow::anyhow!(
+                "Clock account data too short: {} bytes",
+                clock_account.data.len()
+            ));
+        }
+
+        let data = &clock_account.data;
+        let slot = u64::from_le_bytes(
+            data[0..8]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse slot"))?,
+        );
+        let epoch_start_timestamp = i64::from_le_bytes(
+            data[8..16]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse epoch_start_timestamp"))?,
+        );
+        let epoch = u64::from_le_bytes(
+            data[16..24]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse epoch"))?,
+        );
+        let leader_schedule_epoch = u64::from_le_bytes(
+            data[24..32]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse leader_schedule_epoch"))?,
+        );
+        let unix_timestamp = i64::from_le_bytes(
+            data[32..40]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse unix_timestamp"))?,
+        );
+
+        Ok(Clock {
+            slot,
+            epoch_start_timestamp,
+            epoch,
+            leader_schedule_epoch,
+            unix_timestamp,
+        })
     }
 
     /// Convert raw RPC account to InterfaceAccount<Mint>
@@ -358,16 +786,16 @@ mod tests {
 
         let sol_usdc = Pubkey::from_str_const("Cgnuirsk5dQ9Ka1Grnru7J8YW1sYncYUjiXvYxT7G4iZ");
 
-        let lb_pair_account = rpc_client.get_account(&sol_usdc).await.unwrap();
+        let pool_id_account = rpc_client.get_account(&sol_usdc).await.unwrap();
 
-        let lb_pair: dlmm::dlmm::accounts::LbPair =
-            bytemuck::pod_read_unaligned(&lb_pair_account.data[8..]);
+        let pool_id: dlmm::dlmm::accounts::LbPair =
+            bytemuck::pod_read_unaligned(&pool_id_account.data[8..]);
 
-        eprintln!("base_token: {:?}", lb_pair.token_x_mint);
-        eprintln!("quote_token: {:?}", lb_pair.token_y_mint);
+        eprintln!("base_token: {:?}", pool_id.token_x_mint);
+        eprintln!("quote_token: {:?}", pool_id.token_y_mint);
 
         let mut mint_accounts = rpc_client
-            .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
+            .get_multiple_accounts(&[pool_id.token_x_mint, pool_id.token_y_mint])
             .await
             .unwrap();
 
@@ -377,11 +805,11 @@ mod tests {
         // 3 bin arrays to left, and right is enough to cover most of the swap, and stay under 1.4m CU constraint.
         // Get 3 bin arrays to the left from the active bin
         let left_bin_array_pubkeys =
-            dlmm::get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, true, 3).unwrap();
+            dlmm::get_bin_array_pubkeys_for_swap(sol_usdc, &pool_id, None, true, 3).unwrap();
 
         // Get 3 bin arrays to the right the from active bin
         let right_bin_array_pubkeys =
-            dlmm::get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, false, 3).unwrap();
+            dlmm::get_bin_array_pubkeys_for_swap(sol_usdc, &pool_id, None, false, 3).unwrap();
 
         // Fetch bin arrays separately for buy and sell
         let all_bin_array_pubkeys: Vec<Pubkey> = left_bin_array_pubkeys
@@ -440,8 +868,8 @@ mod tests {
         let bin_arrays = bin_arrays_combined;
 
         // Derive vault PDAs
-        let (base_vault_key, _) = dlmm::derive_reserve_pda(lb_pair.token_x_mint, sol_usdc);
-        let (quote_vault_key, _) = dlmm::derive_reserve_pda(lb_pair.token_y_mint, sol_usdc);
+        let (base_vault_key, _) = dlmm::derive_reserve_pda(pool_id.token_x_mint, sol_usdc);
+        let (quote_vault_key, _) = dlmm::derive_reserve_pda(pool_id.token_y_mint, sol_usdc);
 
         // Derive other PDAs
         let (oracle_key, _) = dlmm::derive_oracle_pda(sol_usdc);
@@ -453,11 +881,20 @@ mod tests {
         let memo_key = Pubkey::new_unique();
 
         // Convert RPC accounts to AccountInfo
-        let lb_pair_account_info = account_to_account_info(sol_usdc, lb_pair_account);
+        eprintln!(
+            "pool_id_account.data.len() before conversion: {}",
+            pool_id_account.data.len()
+        );
+        let pool_id_account_info = account_to_account_info(sol_usdc, pool_id_account);
+        let pool_id_data_len = pool_id_account_info.data_len();
+        eprintln!(
+            "pool_id_account_info.data_len() after conversion: {}",
+            pool_id_data_len
+        );
         let base_vault = fetch_account_info_from_rpc(&rpc_client, base_vault_key).await;
         let quote_vault = fetch_account_info_from_rpc(&rpc_client, quote_vault_key).await;
-        let base_token = account_to_account_info(lb_pair.token_x_mint, mint_x_account);
-        let quote_token = account_to_account_info(lb_pair.token_y_mint, mint_y_account);
+        let base_token = account_to_account_info(pool_id.token_x_mint, mint_x_account);
+        let quote_token = account_to_account_info(pool_id.token_y_mint, mint_y_account);
         let oracle = fetch_account_info_from_rpc(&rpc_client, oracle_key).await;
         let bitmap_extension = fetch_account_info_from_rpc(&rpc_client, bitmap_extension_key).await;
 
@@ -468,17 +905,23 @@ mod tests {
         let event_authority =
             create_mock_account_info_with_data(event_authority_key, system_program::id(), None);
 
+        // Create program_id account (first account in MeteoraDlmm::new)
+        let program_id_key = MeteoraDlmm::PROGRAM_ID;
+        let program_id_account =
+            create_mock_account_info_with_data(program_id_key, system_program::id(), None);
+
         let mut accounts = vec![
-            lb_pair_account_info,
-            base_vault,
-            quote_vault,
-            base_token,
-            quote_token,
-            oracle,
-            host_fee_in,
-            memo,
-            event_authority,
-            bitmap_extension,
+            program_id_account,   // 0: program_id (required by MeteoraDlmm::new)
+            pool_id_account_info, // 1: pool_id
+            base_vault,           // 2: base_vault
+            quote_vault,          // 3: quote_vault
+            base_token,           // 4: base_token
+            quote_token,          // 5: quote_token
+            oracle,               // 6: oracle
+            host_fee_in,          // 7: host_fee_in
+            memo,                 // 8: memo
+            event_authority,      // 9: event_authority
+            bitmap_extension,     // 10: bitmap_extension
         ];
 
         // Add bin array accounts: buy arrays, then SOL MINT separator, then sell arrays
@@ -493,14 +936,14 @@ mod tests {
 
         // 1 SOL -> USDC
         let in_sol_amount = 1_000_000_000;
-
-        let clock1 = get_clock().unwrap();
+        let clock1 = get_clock(&rpc_client).await.unwrap();
 
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
 
         // Determine swap_for_y: if SOL is token_x, we swap X for Y (swap_for_y = true)
         // If SOL is token_y, we swap Y for X (swap_for_y = false)
-        let swap_for_y = lb_pair.token_x_mint == sol_mint;
+        let swap_for_y = pool_id.token_x_mint == sol_mint;
+        eprintln!("clock11: {:?}", swap_for_y);
 
         if swap_for_y {
             let quote_result = meteora_dlmm.swap_base_in(in_sol_amount, clock1).unwrap();
@@ -509,23 +952,24 @@ mod tests {
             let quote_result = meteora_dlmm.swap_base_out(in_sol_amount, clock1).unwrap();
             eprintln!("1 SOL -> {:?} TOKEN", quote_result as f64);
         }
+        eprintln!("clock2: {:?}", swap_for_y);
 
         // Fetch mint accounts again for the second quote call
         let mut mint_accounts2 = rpc_client
-            .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
+            .get_multiple_accounts(&[pool_id.token_x_mint, pool_id.token_y_mint])
             .await
             .unwrap();
         let mint_x_account2 = mint_accounts2[0].take().unwrap();
         let mint_y_account2 = mint_accounts2[1].take().unwrap();
 
-        let clock2 = get_clock().unwrap();
+        let clock2 = get_clock(&rpc_client).await.unwrap();
 
-        let mint_x_interface = account_to_interface_mint(mint_x_account2, lb_pair.token_x_mint);
-        let mint_y_interface = account_to_interface_mint(mint_y_account2, lb_pair.token_y_mint);
+        let mint_x_interface = account_to_interface_mint(mint_x_account2, pool_id.token_x_mint);
+        let mint_y_interface = account_to_interface_mint(mint_y_account2, pool_id.token_y_mint);
 
         let quote_result = dlmm::quote_exact_in(
             sol_usdc,
-            &lb_pair,
+            &pool_id,
             in_sol_amount,
             swap_for_y,
             bin_arrays.clone(),
@@ -561,11 +1005,11 @@ mod tests {
         }
 
         // Fetch clock again for the quote call (clock2 was moved in swap_base_in/swap_base_out)
-        let clock3 = get_clock().unwrap();
+        let clock3 = get_clock(&rpc_client).await.unwrap();
 
         let quote_result = dlmm::quote_exact_in(
             sol_usdc,
-            &lb_pair,
+            &pool_id,
             amount_out_2,
             swap_for_y_reverse,
             bin_arrays.clone(),

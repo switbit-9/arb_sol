@@ -167,8 +167,6 @@ pub fn quote_exact_in<'a>(
     let current_slot = clock.slot;
     let epoch = clock.epoch;
 
-    validate_swap_activation(lb_pair, current_timestamp, current_slot)?;
-
     let mut lb_pair = *lb_pair;
     lb_pair.update_references(current_timestamp as i64)?;
 

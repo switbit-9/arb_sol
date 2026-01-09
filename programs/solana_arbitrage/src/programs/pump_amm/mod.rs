@@ -226,7 +226,6 @@ impl<'info> PumpAmm<'info> {
         let quote_reserve = self.quote_vault_account.amount as u128;
 
         // quote_amount_in is the input parameter (amount_in)
-
         // base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
         let numerator = base_reserve
             .checked_mul(quote_reserve)
@@ -258,6 +257,10 @@ impl<'info> PumpAmm<'info> {
         let base_reserve = self.base_vault_account.amount as u128;
         let quote_reserve = self.quote_vault_account.amount as u128;
         // quote_amount_out = quote_reserve - (base_reserve * quote_reserve) / (base_reserve + base_amount_in)
+
+        // let base_reserve = 114912171739565u128;
+        // let quote_reserve = 12070053361u128;
+
         let numerator = base_reserve
             .checked_mul(quote_reserve)
             .ok_or(ProgramError::InvalidArgument)?;
@@ -363,7 +366,7 @@ impl<'info> PumpAmm<'info> {
             metas.push(AccountMeta::new(*vault_ata.key, false));
             metas.push(AccountMeta::new_readonly(*vault_authority.key, false));
         }
-        metas.push(AccountMeta::new(*self.global_vol_accumulator.key, false));
+        metas.push(AccountMeta::new_readonly(*self.global_vol_accumulator.key, false));
         metas.push(AccountMeta::new(*self.user_volume_accumulator.key, false));
         metas.push(AccountMeta::new_readonly(*self.fee_config.key, false));
         metas.push(AccountMeta::new_readonly(*self.fee_program.key, false));
@@ -377,20 +380,27 @@ impl<'info> PumpAmm<'info> {
             accounts: metas,
             data,
         };
-
+        // Order must match metas exactly!
         let mut accounts: Vec<AccountInfo<'info>> = vec![
-            self.pool_id.to_account_info(),
-            self.pump_amm_global.to_account_info(),
-            self.base_token.to_account_info(),
-            self.quote_token.to_account_info(),
-            self.base_vault.to_account_info(),
-            self.quote_vault.to_account_info(),
-            self.protocol_fee_recipient.to_account_info(),
-            self.protocol_fee_token_account.to_account_info(),
-            self.system_program.to_account_info(),
-            self.associated_token_instruction_program.to_account_info(),
-            self.event_authority.to_account_info(),
+            self.pool_id.to_account_info(),                          // 0: writable
+            unsafe { std::mem::transmute(payer.to_account_info()) }, // 1: writable, signer
+            self.pump_amm_global.to_account_info(),                  // 2: readonly
+            self.base_token.to_account_info(),                       // 3: readonly
+            self.quote_token.to_account_info(),                      // 4: readonly
+            unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 5: writable
+            unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 6: writable
+            self.base_vault.to_account_info(),  // 7: writable
+            self.quote_vault.to_account_info(), // 8: writable
+            self.protocol_fee_recipient.to_account_info(), // 9: readonly
+            self.protocol_fee_token_account.to_account_info(), // 10: writable
+            unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: readonly
+            unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: readonly
+            self.system_program.to_account_info(), // 13: readonly
+            self.associated_token_instruction_program.to_account_info(), // 14: readonly
+            self.event_authority.to_account_info(), // 15: readonly
+            self.program_id.to_account_info(),  // 16: readonly (PROGRAM_ID)
         ];
+
 
         if let (Some(ref vault_ata), Some(ref vault_authority)) =
             (&self.vault_ata, &self.vault_authority)
@@ -490,7 +500,6 @@ impl<'info> PumpAmm<'info> {
             accounts: metas,
             data,
         };
-        msg!("swap_ix");
 
         // Order must match metas exactly!
         let mut accounts: Vec<AccountInfo<'info>> = vec![
@@ -850,7 +859,138 @@ mod tests {
     }
 
     #[test]
-    fn test_pump_amm_get_swap_base_out_amount() {
+    fn test_pump_amm_swap_base_sol_base() {
+        // Setup: base_reserve = 1_000_000_000, quote_reserve = 100_000_000
+        // Input: base_amount_in = 10_000_000
+        // Expected: quote_amount_out = quote_reserve - (base_reserve * quote_reserve) / (base_reserve + base_amount_in)
+        //          = 100_000_000 - (1_000_000_000 * 100_000_000) / (1_000_000_000 + 10_000_000)
+        //          = 100_000_000 - 100_000_000_000_000_000 / 1_010_000_000
+        //          = 100_000_000 - 99_009_900
+        //          = 990_100
+        // lp_fee = 990_100 * 0.002 = 1_980
+        // protocol_fee = 990_100 * 0.0005 = 495
+        // fees = 1_980 + 495 = 2_475
+        // quote_after_fees = 990_100 - 2_475 = 987_625
+        // final = 987_625 * 1.0023 = 989_896
+
+        let base_mint = Pubkey::new_unique();
+        let quote_mint = Pubkey::new_unique();
+        let token_program = Pubkey::new_unique();
+
+        let base_vault_key = Pubkey::new_unique();
+        let quote_vault_key = Pubkey::new_unique();
+
+        // Use pool_data for this test
+        let quote_pool_data = Some(b"<\x84C\xc56\x10\x11+\xc8\x934m\x94\x13\xf3\xc2\xd1\xda\xd1\x87\xa5j\t]\x13\x93\x186UL#\x0f\n\xe4'\xeb\xf9U\x7f1\xb9\xf7I\xeb\xc2\xd96B\xd8\xd6i\xfch\xb9<\xb2\xa02\x96\x0b\xf5\x1a\x1d\xd9/\xaa\rY\xd6S\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x07\x00\x00\x00".to_vec());
+
+        let base_pool_data = Some(b"\x06\x9b\x88W\xfe\xab\x81\x84\xfbh\x7fcF\x18\xc05\xda\xc49\xdc\x1a\xeb;U\x98\xa0\xf0\x00\x00\x00\x00\x01\n\xe4'\xeb\xf9U\x7f1\xb9\xf7I\xeb\xc2\xd96B\xd8\xd6i\xfch\xb9<\xb2\xa02\x96\x0b\xf5\x1a\x1d\xd9|\xa1\xd4f\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\xf0\x1d\x1f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".to_vec());
+
+        let base_vault_info = create_mock_token_account_info(
+            base_vault_key,
+            base_mint,
+            1_000_000_000,
+            token_program,
+            base_pool_data, // Pass base_pool_data to base_vault_info
+        );
+
+        let quote_vault_info = create_mock_token_account_info(
+            quote_vault_key,
+            quote_mint,
+            100_000_000,
+            token_program,
+            quote_pool_data, // Pass quote_pool_data to quote_vault_info
+        );
+
+        let program_id = create_mock_account_info(PumpAmm::PROGRAM_ID, system_program::id(), None);
+        let pool_id = create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let base_token = create_mock_account_info(base_mint, system_program::id(), None);
+        let quote_token = create_mock_account_info(quote_mint, system_program::id(), None);
+        let protocol_fee_recipient =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let protocol_fee_token_account =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let event_authority =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let fee_config = create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let fee_program =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let user_volume_accumulator =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let pump_amm_global =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let system_program_account =
+            create_mock_account_info(system_program::id(), system_program::id(), None);
+        let associated_token_instruction_program =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let global_vol_accumulator =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let vault_ata = create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let vault_authority =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+
+        let accounts = vec![
+            program_id,                           // 0
+            pool_id,                              // 1
+            base_vault_info,                      // 2
+            quote_vault_info,                     // 3
+            base_token,                           // 4
+            quote_token,                          // 5
+            protocol_fee_recipient,               // 6
+            protocol_fee_token_account,           // 7
+            event_authority,                      // 8
+            fee_config,                           // 9
+            fee_program,                          // 10
+            user_volume_accumulator,              // 11
+            pump_amm_global,                      // 12
+            system_program_account,               // 13
+            associated_token_instruction_program, // 14
+            global_vol_accumulator,               // 15
+            vault_ata,                            // 16
+            vault_authority,                      // 17
+        ];
+
+        let pump_amm = PumpAmm::new(&accounts).unwrap();
+
+        // Test with base_amount_in = 10_000_000
+        let base_amount_in = 1_000_000_000u64;
+        msg!("base_amount_in: {:?}", base_amount_in / 1_000_000_000);
+        let clock = Clock::default();
+        let result = pump_amm.swap_base_out(base_amount_in, clock).unwrap();
+        eprintln!(
+            "{:?} SOL -> {:?} TOKEN",
+            base_amount_in as f64 / 1_000_000_000.0,
+            result as f64 / 1_000_000_000.0,
+        );
+
+        // Test with base_amount_in = 10_000_000
+        let base_amount_in = result;
+        let clock = Clock::default();
+        let result = pump_amm.swap_base_in(base_amount_in, clock).unwrap();
+        eprintln!(
+            "{:?} TOKEN -> {:?} SOL",
+            base_amount_in as f64 / 1_000_000_000.0,
+            result as f64 / 1_000_000_000.0,
+        );
+        // Manual calculation for verification using actual reserves from pool_data
+        let base_reserve = 936_605_012_306_479u128;
+        let quote_reserve = 18_905_080_188u128;
+        let numerator = base_reserve * quote_reserve;
+        let denominator = base_reserve + base_amount_in as u128;
+        let quotient = numerator / denominator;
+        let quote_amount_out = quote_reserve - quotient;
+
+        let lp_fee = quote_amount_out * 2 / 1_000;
+        let protocol_fee = quote_amount_out * 5 / 10_000;
+        let fees = lp_fee + protocol_fee;
+        let quote_after_fees = quote_amount_out - fees;
+        let expected = (quote_after_fees * 10_023 / 10_000) as u64;
+
+        assert_eq!(result, expected);
+        assert!(result > 0);
+    }
+
+    #[test]
+    fn test_pump_amm_swap_base_sol_quote() {
         // Setup: base_reserve = 1_000_000_000, quote_reserve = 100_000_000
         // Input: base_amount_in = 10_000_000
         // Expected: quote_amount_out = quote_reserve - (base_reserve * quote_reserve) / (base_reserve + base_amount_in)
@@ -943,11 +1083,25 @@ mod tests {
         let pump_amm = PumpAmm::new(&accounts).unwrap();
 
         // Test with base_amount_in = 10_000_000
-        let base_amount_in = 10_000_000u64;
+        let base_amount_in = 1_000_000_000u64;
+        msg!("base_amount_in: {:?}", base_amount_in / 1_000_000_000);
+        let clock = Clock::default();
+        let result = pump_amm.swap_base_in(base_amount_in, clock).unwrap();
+        eprintln!(
+            "{:?} SOL -> {:?} TOKEN",
+            base_amount_in as f64 / 1_000_000_000.0,
+            result as f64 / 1_000_000_000.0,
+        );
+
+        // Test with base_amount_in = 10_000_000
+        let base_amount_in = result;
         let clock = Clock::default();
         let result = pump_amm.swap_base_out(base_amount_in, clock).unwrap();
-        eprintln!("SOL AMOUNT OUT: {:?}", result);
-
+        eprintln!(
+            "{:?} TOKEN -> {:?} SOL",
+            base_amount_in as f64 / 1_000_000_000.0,
+            result as f64 / 1_000_000_000.0,
+        );
         // Manual calculation for verification using actual reserves from pool_data
         let base_reserve = 936_605_012_306_479u128;
         let quote_reserve = 18_905_080_188u128;

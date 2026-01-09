@@ -46,11 +46,11 @@ pub mod solar_b {
         //     /// exec first path
         // }
         // msg!("Context {:?}", ctx);
-        msg!(
-            "Instruction data {:?} {:?}",
-            ctx.remaining_accounts.len(),
-            &data.accounts_length
-        );
+        // msg!(
+        //     "Instruction data {:?} {:?}",
+        //     ctx.remaining_accounts.len(),
+        //     &data.accounts_length
+        // );
         // msg!("Remaining accounts {:?}", ctx.remaining_accounts);
 
         // Work directly with remaining_accounts slice - don't clone AccountInfo
@@ -65,12 +65,6 @@ pub mod solar_b {
             return Err(error!(SolarBError::InsufficientFunds));
         }
         let rest = &ctx.remaining_accounts[7..];
-
-        msg!(
-            "Total accounts: {}, First 7 accounts, Rest: {}",
-            ctx.remaining_accounts.len(),
-            rest.len()
-        );
 
         let instances = parse_accounts(rest, &data)?;
         // for instance in instances {
@@ -105,13 +99,6 @@ fn parse_accounts<'info>(
 
         let segment = &accounts[index..index + span];
         let program_account = segment[0].clone();
-        msg!(
-            "Parsing program {:?} with {} accounts (span={}, index={})",
-            program_account.key,
-            segment.len(),
-            span,
-            index
-        );
         let instance: Box<dyn ProgramMeta> = find_program_instance(program_account.key, segment)?;
         // TODO: Implement find_program_instance to create ProgramMeta instances
         instances.push(instance);
@@ -158,10 +145,6 @@ pub fn find_program_instance<'info>(
     //     return Ok(Box::new(pr));
     // }
     if program_id == &PumpAmm::PROGRAM_ID {
-        msg!(
-            "Initializing PumpAmm with {} accounts",
-            payload_accounts.len()
-        );
         let pr = PumpAmm::new(payload_accounts)?;
         return Ok(Box::new(pr));
     }
@@ -174,26 +157,14 @@ pub fn find_program_instance<'info>(
     //     return Ok(Box::new(pr));
     // }
     if program_id == &MeteoraDammV2::PROGRAM_ID {
-        msg!(
-            "Initializing MeteoraDammV2 with {} accounts",
-            payload_accounts.len()
-        );
         let pr = MeteoraDammV2::new(payload_accounts)?;
         return Ok(Box::new(pr));
     }
     if program_id == &MeteoraDammV1::PROGRAM_ID {
-        msg!(
-            "Initializing MeteoraDammV1 with {} accounts",
-            payload_accounts.len()
-        );
         let pr = MeteoraDammV1::new(payload_accounts)?;
         return Ok(Box::new(pr));
     }
     if program_id == &MeteoraDlmm::PROGRAM_ID {
-        msg!(
-            "Initializing MeteoraDlmm with {} accounts",
-            payload_accounts.len()
-        );
         require!(
             payload_accounts.len() >= 13,
             SolarBError::InsufficientAccounts
@@ -217,12 +188,6 @@ pub fn generate_edges<'info>(program: &'info (dyn ProgramMeta + 'info)) -> Resul
     let base_pool = Pool::new(&base_vault.mint, base_amount);
     let quote_pool = Pool::new(&quote_vault.mint, quote_amount);
     let program_id = *program.get_id();
-    msg!(
-        "Generating edges for program {:?} - base_amount: {}, quote_amount: {}",
-        program_id,
-        base_amount,
-        quote_amount
-    );
     Ok(vec![
         Edge::new(
             program_id,
@@ -263,15 +228,6 @@ pub fn run_arbitrage<'info>(
     // Extract the 5 accounts from the slice
     let _mint_1 = &first_accounts[1];
     let _mint_2 = &first_accounts[2];
-    // let mint_1_token_program = &first_accounts[3];
-    // let mint_2_token_program = &first_accounts[4];
-    // let user_mint_1_token_account = &first_accounts[5];
-    // let user_mint_2_token_account = &first_accounts[6];
-
-    // TODO: Add transfer fee calculation
-    // let _transfer_fee_a = get_transfer_fee_from_account_info(mint_1, current_epoch)?;
-    // let _transfer_fee_b = get_transfer_fee_from_account_info(mint_2, current_epoch)?;
-
     let edges = get_edges(instances)?;
 
     // Check for arbitrage opportunities
@@ -286,7 +242,7 @@ pub fn run_arbitrage<'info>(
         return Err(error!(SolarBError::NoProfitFound));
     }
 
-    msg!("FOUND = {:?}", arbitrage_path.profit);
+    msg!("= {:?}", arbitrage_path.profit);
 
     // Execute the arbitrage path efficiently
     execute_arbitrage_path(
@@ -319,16 +275,6 @@ pub fn execute_arbitrage_path<'info>(
 
     // Execute swaps sequentially with real-time calculation (most CU efficient for on-chain)
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
-        msg!(
-            "Processing edge {}: program={:?}, side={:?}, left_mint={:?}, right_mint={:?}, current_amount={}",
-            i,
-            edge.program,
-            edge.side,
-            edge.left.mint_account,
-            edge.right.mint_account,
-            current_amount
-        );
-
         // Find program instance by ID once
         let program_instance = instances
             .iter()
@@ -338,10 +284,30 @@ pub fn execute_arbitrage_path<'info>(
         // Get Clock for this swap (may change between swaps)
         let clock = Clock::get()?;
 
-        // Calculate and invoke swap directly through trait - no downcasting needed!
+        msg!("Edge {:?} -> {:?}", edge.program, edge.side);
         let amount_out = match edge.side {
             EdgeSide::LeftToRight => {
-                msg!("Calculating swap_base_in for edge {}", i);
+                let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
+                msg!(
+                    "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
+                    program_instance.get_id(),
+                    current_amount,
+                    amount
+                );
+                program_instance.invoke_swap_base_out(
+                    current_amount as u64,
+                    Some(amount),
+                    payer.clone(),
+                    user_mint_1_token_account.clone(),
+                    user_mint_2_token_account.clone(),
+                    mint_1.clone(),
+                    mint_2.clone(),
+                    mint_1_token_program.clone(),
+                    mint_2_token_program.clone(),
+                )?;
+                amount
+            }
+            EdgeSide::RightToLeft => {
                 let amount = program_instance.swap_base_in(current_amount as u64, clock)?;
                 msg!(
                     "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
@@ -360,30 +326,6 @@ pub fn execute_arbitrage_path<'info>(
                     mint_1_token_program.clone(),
                     mint_2_token_program.clone(),
                 )?;
-                msg!("Swap base in completed for edge {}", i);
-                amount
-            }
-            EdgeSide::RightToLeft => {
-                msg!("Calculating swap_base_out for edge {}", i);
-                let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
-                msg!(
-                    "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
-                    program_instance.get_id(),
-                    current_amount,
-                    amount
-                );
-                program_instance.invoke_swap_base_out(
-                    current_amount as u64,
-                    Some(amount),
-                    payer.clone(),
-                    user_mint_1_token_account.clone(),
-                    user_mint_2_token_account.clone(),
-                    mint_1.clone(),
-                    mint_2.clone(),
-                    mint_1_token_program.clone(),
-                    mint_2_token_program.clone(),
-                )?;
-                msg!("Swap base out completed for edge {}", i);
                 amount
             }
         };
