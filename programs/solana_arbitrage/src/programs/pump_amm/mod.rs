@@ -8,32 +8,16 @@ use anchor_lang::solana_program::{
     program_error::ProgramError,
     pubkey::Pubkey,
 };
-use anchor_spl::token_interface::TokenAccount;
-
 mod constants;
 
 pub struct PumpAmm<'info> {
+    pub accounts: Vec<AccountInfo<'info>>,
     pub program_id: AccountInfo<'info>,
     pub pool_id: AccountInfo<'info>,
     pub base_vault: AccountInfo<'info>,
     pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
     pub quote_token: AccountInfo<'info>,
-    pub protocol_fee_recipient: AccountInfo<'info>,
-    pub protocol_fee_token_account: AccountInfo<'info>,
-    pub event_authority: AccountInfo<'info>,
-    // pub coin_creator: AccountInfo<'info>,
-    pub vault_ata: Option<AccountInfo<'info>>,
-    pub vault_authority: Option<AccountInfo<'info>>,
-    pub fee_config: AccountInfo<'info>,
-    pub fee_program: AccountInfo<'info>,
-    pub user_volume_accumulator: AccountInfo<'info>,
-    pub pump_amm_global: AccountInfo<'info>,
-    pub system_program: AccountInfo<'info>,
-    pub associated_token_instruction_program: AccountInfo<'info>,
-    pub global_vol_accumulator: AccountInfo<'info>,
-    pub base_vault_account: TokenAccount,
-    pub quote_vault_account: TokenAccount,
 }
 
 impl<'info> ProgramMeta for PumpAmm<'info> {
@@ -113,36 +97,14 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
     }
 
     fn log_accounts(&self) -> Result<()> {
-        let vault_ata_key = self
-            .vault_ata
-            .as_ref()
-            .map(|a| a.key)
-            .unwrap_or(self.pool_id.key);
-        let vault_authority_key = self
-            .vault_authority
-            .as_ref()
-            .map(|a| a.key)
-            .unwrap_or(self.pool_id.key);
         msg!(
-            "Pump AMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, protocol_fee_recipient={}, protocol_fee_token_account={}, event_authority={}, fee_config={}, fee_program={}, user_volume_accumulator={}, pump_amm_global={}, system_program={}, associated_token_instruction_program={}, global_vol_accumulator={}, vault_ata={}, vault_authority={}",
+            "Pump AMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}",
             self.program_id.key,
             self.pool_id.key,
             self.base_vault.key,
             self.quote_vault.key,
             self.base_token.key,
             self.quote_token.key,
-            self.protocol_fee_recipient.key,
-            self.protocol_fee_token_account.key,
-            self.event_authority.key,
-            self.fee_config.key,
-            self.fee_program.key,
-            self.user_volume_accumulator.key,
-            self.pump_amm_global.key,
-            self.system_program.key,
-            self.associated_token_instruction_program.key,
-            self.global_vol_accumulator.key,
-            vault_ata_key,
-            vault_authority_key,
         );
         Ok(())
     }
@@ -153,61 +115,21 @@ impl<'info> PumpAmm<'info> {
         Pubkey::from_str_const("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
-        let account_length = accounts.len();
         let program_id = next_account_info(&mut iter)?; // 0
         let pool_id = next_account_info(&mut iter)?; // 1
         let base_vault = next_account_info(&mut iter)?; // 2
         let quote_vault = next_account_info(&mut iter)?; // 3
         let base_token = next_account_info(&mut iter)?; // 4
         let quote_token = next_account_info(&mut iter)?; // 5
-        let protocol_fee_recipient = next_account_info(&mut iter)?; // 6
-        let protocol_fee_token_account = next_account_info(&mut iter)?; // 7
-        let event_authority = next_account_info(&mut iter)?; // 8
-                                                             // let coin_creator = next_account_info(&mut iter)?; // 11
-        let fee_config = next_account_info(&mut iter)?; // 9
-        let fee_program = next_account_info(&mut iter)?; // 10
-        let user_volume_accumulator = next_account_info(&mut iter)?; // 11
-        let pump_amm_global = next_account_info(&mut iter)?; // 12
-        let system_program = next_account_info(&mut iter)?; // 13
-        let associated_token_instruction_program = next_account_info(&mut iter)?; // 14
-        let global_vol_accumulator = next_account_info(&mut iter)?; // 15
-
-        let (vault_ata, vault_authority) = if account_length >= 16 {
-            let vault_ata_account = next_account_info(&mut iter)?; // 16
-            let vault_authority_account = next_account_info(&mut iter)?; // 17
-            (
-                Some(vault_ata_account.clone()),
-                Some(vault_authority_account.clone()),
-            )
-        } else {
-            (None, None)
-        };
-
-        let base_vault_account = parse_token_account(&base_vault)?;
-        let quote_vault_account = parse_token_account(&quote_vault)?;
 
         Ok(PumpAmm {
+            accounts: accounts.to_vec(),
             program_id: program_id.clone(),
             pool_id: pool_id.clone(),
             base_vault: base_vault.clone(),
             quote_vault: quote_vault.clone(),
             base_token: base_token.clone(),
             quote_token: quote_token.clone(),
-            protocol_fee_recipient: protocol_fee_recipient.clone(),
-            protocol_fee_token_account: protocol_fee_token_account.clone(),
-            event_authority: event_authority.clone(),
-            // coin_creator: coin_creator.clone(),
-            vault_ata: vault_ata.clone(),
-            vault_authority: vault_authority.clone(),
-            fee_config: fee_config.clone(),
-            fee_program: fee_program.clone(),
-            user_volume_accumulator: user_volume_accumulator.clone(),
-            pump_amm_global: pump_amm_global.clone(),
-            system_program: system_program.clone(),
-            associated_token_instruction_program: associated_token_instruction_program.clone(),
-            global_vol_accumulator: global_vol_accumulator.clone(),
-            base_vault_account: base_vault_account,
-            quote_vault_account: quote_vault_account,
         })
     }
 
@@ -220,10 +142,12 @@ impl<'info> PumpAmm<'info> {
     /// Calculate base output amount for a given quote input amount
     /// Formula: base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
     /// Then applies 0.02% fee (multiply by 0.9998)
-    pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_in_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
         // Get reserves from vaults
-        let base_reserve = self.base_vault_account.amount as u128;
-        let quote_reserve = self.quote_vault_account.amount as u128;
+        let base_vault_account = parse_token_account(&self.base_vault)?;
+        let quote_vault_account = parse_token_account(&self.quote_vault)?;
+        let base_reserve = base_vault_account.amount as u128;
+        let quote_reserve = quote_vault_account.amount as u128;
 
         // quote_amount_in is the input parameter (amount_in)
         // base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
@@ -252,10 +176,12 @@ impl<'info> PumpAmm<'info> {
     /// Calculate base output amount for a given quote input amount
     /// Formula: base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
     /// Then applies lp_fee (0.2%), protocol_fee (0.05%), and multiplies by 1.0023
-    pub fn swap_base_out_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
         // Get reserves from vaults
-        let base_reserve = self.base_vault_account.amount as u128;
-        let quote_reserve = self.quote_vault_account.amount as u128;
+        let base_vault_account = parse_token_account(&self.base_vault)?;
+        let quote_vault_account = parse_token_account(&self.quote_vault)?;
+        let base_reserve = base_vault_account.amount as u128;
+        let quote_reserve = quote_vault_account.amount as u128;
         // quote_amount_out = quote_reserve - (base_reserve * quote_reserve) / (base_reserve + base_amount_in)
 
         // let base_reserve = 114912171739565u128;
@@ -340,36 +266,63 @@ impl<'info> PumpAmm<'info> {
             return Err(ProgramError::InvalidAccountData.into());
         };
 
+        // Get stored accounts from self.get_accounts() - these are the accounts stored in the struct
+        let stored_accounts = self.accounts.clone();
+        let program_id_stored = &stored_accounts[0];
+        let pool_id = &stored_accounts[1];
+        let base_vault = &stored_accounts[2];
+        let quote_vault = &stored_accounts[3];
+        let base_token = &stored_accounts[4];
+        let quote_token = &stored_accounts[5];
+        let protocol_fee_recipient = &stored_accounts[6];
+        let protocol_fee_token_account = &stored_accounts[7];
+        let event_authority = &stored_accounts[8];
+        let fee_config = &stored_accounts[9];
+        let fee_program = &stored_accounts[10];
+        let user_volume_accumulator = &stored_accounts[11];
+        let pump_amm_global = &stored_accounts[12];
+        let system_program = &stored_accounts[13];
+        let associated_token_instruction_program = &stored_accounts[14];
+        let global_vol_accumulator = &stored_accounts[15];
+
+        // Extract optional vault_ata and vault_authority if present
+        let (vault_ata, vault_authority) = if stored_accounts.len() >= 18 {
+            (Some(&stored_accounts[16]), Some(&stored_accounts[17]))
+        } else {
+            (None, None)
+        };
+
         let amount_out_value = amount_out.unwrap_or(0);
         let mut metas = vec![
-            AccountMeta::new(*self.pool_id.key, false),
+            AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*self.pump_amm_global.key, false),
-            AccountMeta::new_readonly(*self.base_token.key, false),
-            AccountMeta::new_readonly(*self.quote_token.key, false),
+            AccountMeta::new_readonly(*pump_amm_global.key, false),
+            AccountMeta::new_readonly(*base_token.key, false),
+            AccountMeta::new_readonly(*quote_token.key, false),
             AccountMeta::new(*user_base_token_account.key, false),
             AccountMeta::new(*user_quote_token_account.key, false),
-            AccountMeta::new(*self.base_vault.key, false),
-            AccountMeta::new(*self.quote_vault.key, false),
-            AccountMeta::new_readonly(*self.protocol_fee_recipient.key, false),
-            AccountMeta::new(*self.protocol_fee_token_account.key, false),
+            AccountMeta::new(*base_vault.key, false),
+            AccountMeta::new(*quote_vault.key, false),
+            AccountMeta::new_readonly(*protocol_fee_recipient.key, false),
+            AccountMeta::new(*protocol_fee_token_account.key, false),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*self.system_program.key, false),
-            AccountMeta::new_readonly(*self.associated_token_instruction_program.key, false),
-            AccountMeta::new_readonly(*self.event_authority.key, false),
+            AccountMeta::new_readonly(*system_program.key, false),
+            AccountMeta::new_readonly(*associated_token_instruction_program.key, false),
+            AccountMeta::new_readonly(*event_authority.key, false),
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
-        if let (Some(ref vault_ata), Some(ref vault_authority)) =
-            (&self.vault_ata, &self.vault_authority)
-        {
-            metas.push(AccountMeta::new(*vault_ata.key, false));
-            metas.push(AccountMeta::new_readonly(*vault_authority.key, false));
+        if let (Some(vault_ata_acc), Some(vault_authority_acc)) = (vault_ata, vault_authority) {
+            metas.push(AccountMeta::new(*vault_ata_acc.key, false));
+            metas.push(AccountMeta::new_readonly(*vault_authority_acc.key, false));
         }
-        metas.push(AccountMeta::new_readonly(*self.global_vol_accumulator.key, false));
-        metas.push(AccountMeta::new(*self.user_volume_accumulator.key, false));
-        metas.push(AccountMeta::new_readonly(*self.fee_config.key, false));
-        metas.push(AccountMeta::new_readonly(*self.fee_program.key, false));
+        metas.push(AccountMeta::new_readonly(
+            *global_vol_accumulator.key,
+            false,
+        ));
+        metas.push(AccountMeta::new(*user_volume_accumulator.key, false));
+        metas.push(AccountMeta::new_readonly(*fee_config.key, false));
+        metas.push(AccountMeta::new_readonly(*fee_program.key, false));
 
         let mut data = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
         data.extend_from_slice(&max_amount_in.to_le_bytes());
@@ -382,42 +335,34 @@ impl<'info> PumpAmm<'info> {
         };
         // Order must match metas exactly!
         let mut accounts: Vec<AccountInfo<'info>> = vec![
-            self.pool_id.to_account_info(),                          // 0: writable
+            pool_id.clone(),                                         // 0: writable
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 1: writable, signer
-            self.pump_amm_global.to_account_info(),                  // 2: readonly
-            self.base_token.to_account_info(),                       // 3: readonly
-            self.quote_token.to_account_info(),                      // 4: readonly
+            pump_amm_global.clone(),                                 // 2: readonly
+            base_token.clone(),                                      // 3: readonly
+            quote_token.clone(),                                     // 4: readonly
             unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 5: writable
             unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 6: writable
-            self.base_vault.to_account_info(),  // 7: writable
-            self.quote_vault.to_account_info(), // 8: writable
-            self.protocol_fee_recipient.to_account_info(), // 9: readonly
-            self.protocol_fee_token_account.to_account_info(), // 10: writable
+            base_vault.clone(),                 // 7: writable
+            quote_vault.clone(),                // 8: writable
+            protocol_fee_recipient.clone(),     // 9: readonly
+            protocol_fee_token_account.clone(), // 10: writable
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: readonly
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: readonly
-            self.system_program.to_account_info(), // 13: readonly
-            self.associated_token_instruction_program.to_account_info(), // 14: readonly
-            self.event_authority.to_account_info(), // 15: readonly
-            self.program_id.to_account_info(),  // 16: readonly (PROGRAM_ID)
+            system_program.clone(),             // 13: readonly
+            associated_token_instruction_program.clone(), // 14: readonly
+            event_authority.clone(),            // 15: readonly
+            program_id_stored.clone(),          // 16: readonly (PROGRAM_ID)
         ];
 
-
-        if let (Some(ref vault_ata), Some(ref vault_authority)) =
-            (&self.vault_ata, &self.vault_authority)
-        {
-            accounts.push(vault_ata.to_account_info());
-            accounts.push(vault_authority.to_account_info());
+        if let (Some(vault_ata_acc), Some(vault_authority_acc)) = (vault_ata, vault_authority) {
+            accounts.push(vault_ata_acc.clone());
+            accounts.push(vault_authority_acc.clone());
         }
 
-        accounts.push(self.global_vol_accumulator.to_account_info());
-        accounts.push(self.user_volume_accumulator.to_account_info());
-        accounts.push(self.fee_config.to_account_info());
-        accounts.push(self.fee_program.to_account_info());
-
-        // Cast parameter AccountInfo<'a> to AccountInfo<'info> to add to vector
-        accounts.push(unsafe { std::mem::transmute(payer.to_account_info()) });
-        accounts.push(unsafe { std::mem::transmute(user_base_token_account.to_account_info()) });
-        accounts.push(unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) });
+        accounts.push(global_vol_accumulator.clone());
+        accounts.push(user_volume_accumulator.clone());
+        accounts.push(fee_config.clone());
+        accounts.push(fee_program.clone());
 
         // Cast entire vector to AccountInfo<'a> for invoke
         unsafe {
@@ -462,74 +407,106 @@ impl<'info> PumpAmm<'info> {
             return Err(ProgramError::InvalidAccountData.into());
         };
 
+        // Get stored accounts from self.get_accounts() - these are the accounts stored in the struct
+        let stored_accounts = self.accounts.clone();
+        let program_id_stored = &stored_accounts[0];
+        let pool_id = &stored_accounts[1];
+        let base_vault = &stored_accounts[2];
+        let quote_vault = &stored_accounts[3];
+        let base_token = &stored_accounts[4];
+        let quote_token = &stored_accounts[5];
+        let protocol_fee_recipient = &stored_accounts[6];
+        let protocol_fee_token_account = &stored_accounts[7];
+        let event_authority = &stored_accounts[8];
+        let fee_config = &stored_accounts[9];
+        let fee_program = &stored_accounts[10];
+        let user_volume_accumulator = &stored_accounts[11];
+        let pump_amm_global = &stored_accounts[12];
+        let system_program = &stored_accounts[13];
+        let associated_token_instruction_program = &stored_accounts[14];
+        let global_vol_accumulator = &stored_accounts[15];
+
+        // Extract optional vault_ata and vault_authority if present
+        let (vault_ata, vault_authority) = if stored_accounts.len() >= 18 {
+            (Some(&stored_accounts[16]), Some(&stored_accounts[17]))
+        } else {
+            (None, None)
+        };
+
+        // Note: payer, user_base_token_account, user_quote_token_account, base_token_program, quote_token_program
+        // are function parameters (already available from lines 442-463)
+
         let min_amount_out_value = min_amount_out.unwrap_or(0);
         let mut metas = vec![
-            AccountMeta::new(*self.pool_id.key, false),
+            AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*self.pump_amm_global.key, false),
-            AccountMeta::new_readonly(*self.base_token.key, false),
-            AccountMeta::new_readonly(*self.quote_token.key, false),
+            AccountMeta::new_readonly(*pump_amm_global.key, false),
+            AccountMeta::new_readonly(*base_token.key, false),
+            AccountMeta::new_readonly(*quote_token.key, false),
             AccountMeta::new(*user_base_token_account.key, false),
             AccountMeta::new(*user_quote_token_account.key, false),
-            AccountMeta::new(*self.base_vault.key, false),
-            AccountMeta::new(*self.quote_vault.key, false),
-            AccountMeta::new_readonly(*self.protocol_fee_recipient.key, false),
-            AccountMeta::new(*self.protocol_fee_token_account.key, false),
+            AccountMeta::new(*base_vault.key, false),
+            AccountMeta::new(*quote_vault.key, false),
+            AccountMeta::new_readonly(*protocol_fee_recipient.key, false),
+            AccountMeta::new(*protocol_fee_token_account.key, false),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*self.system_program.key, false),
-            AccountMeta::new_readonly(*self.associated_token_instruction_program.key, false),
-            AccountMeta::new_readonly(*self.event_authority.key, false),
-            AccountMeta::new_readonly(Self::PROGRAM_ID, false),
+            AccountMeta::new_readonly(*system_program.key, false),
+            AccountMeta::new_readonly(*associated_token_instruction_program.key, false),
+            AccountMeta::new_readonly(*event_authority.key, false),
+            AccountMeta::new_readonly(*self.program_id.key, false),
         ];
-        if let (Some(ref vault_ata), Some(ref vault_authority)) =
-            (&self.vault_ata, &self.vault_authority)
-        {
-            metas.push(AccountMeta::new(*vault_ata.key, false));
-            metas.push(AccountMeta::new_readonly(*vault_authority.key, false));
+        if let (Some(vault_ata_acc), Some(vault_authority_acc)) = (vault_ata, vault_authority) {
+            metas.push(AccountMeta::new(*vault_ata_acc.key, false));
+            metas.push(AccountMeta::new_readonly(*vault_authority_acc.key, false));
         }
-        metas.push(AccountMeta::new_readonly(*self.fee_config.key, false));
-        metas.push(AccountMeta::new_readonly(*self.fee_program.key, false));
+        metas.push(AccountMeta::new_readonly(
+            *global_vol_accumulator.key,
+            false,
+        ));
+        metas.push(AccountMeta::new(*user_volume_accumulator.key, false));
+        metas.push(AccountMeta::new_readonly(*fee_config.key, false));
+        metas.push(AccountMeta::new_readonly(*fee_program.key, false));
 
         let mut data = vec![0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&min_amount_out_value.to_le_bytes());
 
         let swap_ix = Instruction {
-            program_id: Self::PROGRAM_ID,
+            program_id: *self.program_id.key,
             accounts: metas,
             data,
         };
 
         // Order must match metas exactly!
         let mut accounts: Vec<AccountInfo<'info>> = vec![
-            self.pool_id.to_account_info(),                          // 0: writable
+            pool_id.clone(),                                         // 0: writable
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 1: writable, signer
-            self.pump_amm_global.to_account_info(),                  // 2: readonly
-            self.base_token.to_account_info(),                       // 3: readonly
-            self.quote_token.to_account_info(),                      // 4: readonly
+            pump_amm_global.clone(),                                 // 2: readonly
+            base_token.clone(),                                      // 3: readonly
+            quote_token.clone(),                                     // 4: readonly
             unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 5: writable
             unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 6: writable
-            self.base_vault.to_account_info(),  // 7: writable
-            self.quote_vault.to_account_info(), // 8: writable
-            self.protocol_fee_recipient.to_account_info(), // 9: readonly
-            self.protocol_fee_token_account.to_account_info(), // 10: writable
+            base_vault.clone(),                 // 7: writable
+            quote_vault.clone(),                // 8: writable
+            protocol_fee_recipient.clone(),     // 9: readonly
+            protocol_fee_token_account.clone(), // 10: writable
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: readonly
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: readonly
-            self.system_program.to_account_info(), // 13: readonly
-            self.associated_token_instruction_program.to_account_info(), // 14: readonly
-            self.event_authority.to_account_info(), // 15: readonly
-            self.program_id.to_account_info(),  // 16: readonly (PROGRAM_ID)
+            system_program.clone(),             // 13: readonly
+            associated_token_instruction_program.clone(), // 14: readonly
+            event_authority.clone(),            // 15: readonly
+            program_id_stored.clone(),          // 16: readonly (PROGRAM_ID)
         ];
 
-        if let (Some(ref vault_ata), Some(ref vault_authority)) =
-            (&self.vault_ata, &self.vault_authority)
-        {
-            accounts.push(vault_ata.to_account_info()); // 17: writable
-            accounts.push(vault_authority.to_account_info()); // 18: readonly
+        if let (Some(vault_ata_acc), Some(vault_authority_acc)) = (vault_ata, vault_authority) {
+            accounts.push(vault_ata_acc.clone()); // 17: writable
+            accounts.push(vault_authority_acc.clone()); // 18: readonly
         }
-        accounts.push(self.fee_config.to_account_info()); // 21 or 19: readonly
-        accounts.push(self.fee_program.to_account_info()); // 22 or 20: readonly
+        accounts.push(global_vol_accumulator.clone());
+        accounts.push(user_volume_accumulator.clone());
+        accounts.push(fee_config.clone()); // 21 or 19: readonly
+        accounts.push(fee_program.clone()); // 22 or 20: readonly
 
         // Cast entire vector to AccountInfo<'a> for invoke
         unsafe {

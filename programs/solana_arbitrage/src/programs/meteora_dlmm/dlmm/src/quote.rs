@@ -88,19 +88,41 @@ pub fn quote_exact_out<'a>(
         .pop()
         .context("Pool out of liquidity")?;
 
-        let mut active_bin_array = bin_arrays
+        let active_bin_array = bin_arrays
             .get(&active_bin_array_pubkey)
-            .cloned()
             .context("Active bin array not found")?;
 
+        // Use only the index for range checking (stack-safe, 8 bytes)
+        let bin_array_index = active_bin_array.index as i32;
+
         loop {
-            if !active_bin_array.is_bin_id_within_range(lb_pair.active_id)? || amount_out == 0 {
+            // Check if bin_id is within range using only the index (stack-safe)
+            let (lower_bin_id, upper_bin_id) =
+                BinArray::get_bin_array_lower_upper_bin_id(bin_array_index)?;
+
+            if !(lb_pair.active_id >= lower_bin_id && lb_pair.active_id <= upper_bin_id)
+                || amount_out == 0
+            {
                 break;
             }
 
             lb_pair.update_volatility_accumulator()?;
 
-            let active_bin = active_bin_array.get_bin_mut(lb_pair.active_id)?;
+            // Calculate bin index within array
+            let bin_index_in_array: i32 = lb_pair
+                .active_id
+                .checked_sub(lower_bin_id)
+                .context("MathOverflow")?;
+            let bin_index_usize = bin_index_in_array as usize;
+
+            ensure!(
+                bin_index_usize < MAX_BIN_PER_ARRAY,
+                "Bin index out of bounds"
+            );
+
+            // Clone only the specific bin we need (~144 bytes, acceptable on stack)
+            // This avoids cloning the entire BinArray (~10KB)
+            let mut active_bin = active_bin_array.bins[bin_index_usize];
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
             if !active_bin.is_empty(!swap_for_y) {
@@ -157,7 +179,7 @@ pub fn quote_exact_in<'a>(
     lb_pair: &LbPair,
     amount_in: u64,
     swap_for_y: bool,
-    bin_arrays: &HashMap<Pubkey, BinArray>,
+    bin_arrays: Vec<AccountInfo<'a>>,
     bitmap_extension: Option<&BinArrayBitmapExtension>,
     clock: &Clock,
     mint_x_account: &InterfaceAccount<'a, anchor_spl::token_interface::Mint>,
@@ -195,19 +217,51 @@ pub fn quote_exact_in<'a>(
         .pop()
         .context("Pool out of liquidity")?;
 
-        let mut active_bin_array = bin_arrays
-            .get(&active_bin_array_pubkey)
-            .cloned()
+        let active_bin_array_account = bin_arrays
+            .iter()
+            .find(|account| account.key == &active_bin_array_pubkey)
             .context("Active bin array not found")?;
 
+        let bin_array_data = active_bin_array_account.try_borrow_data()?;
+        // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
+        let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
+
         loop {
-            if !active_bin_array.is_bin_id_within_range(lb_pair.active_id)? || amount_left == 0 {
+            // Check if bin_id is within range using only the index (stack-safe)
+            let (lower_bin_id, upper_bin_id) =
+                BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
+
+            if !(lb_pair.active_id >= lower_bin_id && lb_pair.active_id <= upper_bin_id)
+                || amount_left == 0
+            {
                 break;
             }
 
             lb_pair.update_volatility_accumulator()?;
 
-            let active_bin = active_bin_array.get_bin_mut(lb_pair.active_id)?;
+            // Calculate bin index within array
+            let bin_index_in_array: i32 = lb_pair
+                .active_id
+                .checked_sub(lower_bin_id)
+                .context("MathOverflow")?;
+            let bin_index_usize = bin_index_in_array as usize;
+
+            // Read only the specific bin we need (~144 bytes, acceptable on stack)
+            // BinArray layout: discriminator (8) + index (8) + version (1) + padding (7) + lb_pair (32) = 56
+            // Bins start at offset 56, each bin is 144 bytes
+            const BIN_ARRAY_HEADER_SIZE: usize = 56;
+            const BIN_SIZE: usize = 144;
+            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
+
+            ensure!(
+                bin_offset + BIN_SIZE <= bin_array_data.len(),
+                "Bin offset out of bounds"
+            );
+
+            // Read single bin from account data (only ~144 bytes on stack)
+            let mut active_bin: Bin =
+                bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
+
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
             if !active_bin.is_empty(!swap_for_y) {
@@ -352,6 +406,29 @@ mod tests {
         InterfaceAccount::<Mint>::try_from(account_info).expect("Failed to create InterfaceAccount")
     }
 
+    /// Convert solana_sdk::account::Account to AccountInfo
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static,
+            false, // is_signer
+            false, // is_writable
+            lamports,
+            data,
+            owner_static,
+            account.executable,
+            account.rent_epoch,
+        )
+    }
+
     #[tokio::test]
     async fn test_swap_quote_exact_out() {
         // RPC client. No gPA is required.
@@ -393,16 +470,25 @@ mod tests {
             .await
             .unwrap();
 
+        // Create HashMap for quote_exact_out (which still uses HashMap)
         let bin_arrays = accounts
-            .into_iter()
-            .zip(bin_array_pubkeys.into_iter())
-            .map(|(account, key)| {
-                (
-                    key,
-                    bytemuck::pod_read_unaligned(&account.unwrap().data[8..]),
-                )
+            .iter()
+            .zip(bin_array_pubkeys.iter())
+            .filter_map(|(account_opt, key)| {
+                account_opt
+                    .as_ref()
+                    .map(|account| (*key, bytemuck::pod_read_unaligned(&account.data[8..])))
             })
             .collect::<HashMap<_, _>>();
+
+        // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
+        let bin_array_account_infos: Vec<AccountInfo> = accounts
+            .into_iter()
+            .zip(bin_array_pubkeys.into_iter())
+            .filter_map(|(account_opt, key)| {
+                account_opt.map(|account| account_to_account_info(key, account))
+            })
+            .collect();
 
         let usdc_token_multiplier = 1_000_000.0;
         let sol_token_multiplier = 1_000_000_000.0;
@@ -435,7 +521,7 @@ mod tests {
             &lb_pair,
             in_amount,
             false,
-            &bin_arrays,
+            bin_array_account_infos.clone(),
             None,
             &clock,
             &mint_x_account,
@@ -476,7 +562,7 @@ mod tests {
             &lb_pair,
             in_amount,
             true,
-            &bin_arrays,
+            bin_array_account_infos,
             None,
             &clock,
             &mint_x_account,
@@ -532,16 +618,14 @@ mod tests {
             .await
             .unwrap();
 
-        let bin_arrays = accounts
+        // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
+        let bin_array_account_infos: Vec<AccountInfo> = accounts
             .into_iter()
             .zip(bin_array_pubkeys.into_iter())
-            .map(|(account, key)| {
-                (
-                    key,
-                    bytemuck::pod_read_unaligned(&account.unwrap().data[8..]),
-                )
+            .filter_map(|(account_opt, key)| {
+                account_opt.map(|account| account_to_account_info(key, account))
             })
-            .collect::<HashMap<_, _>>();
+            .collect();
 
         // 1 SOL -> USDC
         let in_sol_amount = 1_000_000_000;
@@ -553,7 +637,7 @@ mod tests {
             &lb_pair,
             in_sol_amount,
             true,
-            &bin_arrays,
+            bin_array_account_infos.clone(),
             None,
             &clock,
             &mint_x_account,
@@ -574,7 +658,7 @@ mod tests {
             &lb_pair,
             in_usdc_amount,
             false,
-            &bin_arrays,
+            bin_array_account_infos,
             None,
             &clock,
             &mint_x_account,

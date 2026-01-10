@@ -11,23 +11,23 @@ use anchor_spl::token::spl_token::native_mint;
 use dlmm::dlmm::accounts::{BinArray, BinArrayBitmapExtension, LbPair};
 use dlmm::quote::quote_exact_in;
 use dlmm::token::load_mint;
-use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
+    pub accounts: Vec<AccountInfo<'info>>,
     pub program_id: AccountInfo<'info>,
     pub pool_id: AccountInfo<'info>,
     pub base_vault: AccountInfo<'info>,
     pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
     pub quote_token: AccountInfo<'info>,
-    pub oracle: AccountInfo<'info>,
-    pub host_fee_in: AccountInfo<'info>,
-    pub memo: AccountInfo<'info>,
-    pub event_authority: AccountInfo<'info>,
-    pub bitmap_extension: AccountInfo<'info>,
-    pub bin_arrays_buy: Option<Vec<AccountInfo<'info>>>,
-    pub bin_arrays_sell: Option<Vec<AccountInfo<'info>>>,
+    // pub oracle: AccountInfo<'info>,
+    // pub host_fee_in: AccountInfo<'info>,
+    // pub memo: AccountInfo<'info>,
+    // pub event_authority: AccountInfo<'info>,
+    // pub bitmap_extension: AccountInfo<'info>,
+    // pub bin_arrays_buy: Option<Vec<AccountInfo<'info>>>,
+    // pub bin_arrays_sell: Option<Vec<AccountInfo<'info>>>,
 }
 
 impl<'info> ProgramMeta for MeteoraDlmm<'info> {
@@ -104,29 +104,19 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn log_accounts(&self) -> Result<()> {
         msg!(
-            "Meteora DLMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, memo={}, event_authority={}, bitmap_extension={}",
+            "Meteora DLMM accounts: program_id={}, pool_id={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}",
             self.program_id.key,
             self.pool_id.key,
             self.base_vault.key,
             self.quote_vault.key,
             self.base_token.key,
             self.quote_token.key,
-            self.oracle.key,
-            self.host_fee_in.key,
-            self.memo.key,
-            self.event_authority.key,
-            self.bitmap_extension.key,
+            // self.oracle.key,
+            // self.host_fee_in.key,
+            // self.memo.key,
+            // self.event_authority.key,
+            // self.bitmap_extension.key,
         );
-        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
-            for (i, account) in bin_arrays_buy.iter().enumerate() {
-                msg!("bin_arrays_buy[{}]={}", i, account.key);
-            }
-        }
-        if let Some(bin_arrays_sell) = &self.bin_arrays_sell {
-            for (i, account) in bin_arrays_sell.iter().enumerate() {
-                msg!("bin_arrays_sell[{}]={}", i, account.key);
-            }
-        }
         Ok(())
     }
 }
@@ -142,74 +132,98 @@ impl<'info> MeteoraDlmm<'info> {
         let quote_vault = next_account_info(&mut iter)?; // 3
         let base_token = next_account_info(&mut iter)?; // 4
         let quote_token = next_account_info(&mut iter)?; // 5
-        let oracle = next_account_info(&mut iter)?; // 6
-        let host_fee_in = next_account_info(&mut iter)?; // 7
-        let memo = next_account_info(&mut iter)?; // 8
-        let event_authority = next_account_info(&mut iter)?; // 9
-        let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
+                                                         // let oracle = next_account_info(&mut iter)?; // 6
+                                                         // let host_fee_in = next_account_info(&mut iter)?; // 7
+                                                         // let memo = next_account_info(&mut iter)?; // 8
+                                                         // let event_authority = next_account_info(&mut iter)?; // 9
+                                                         // let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
 
         // Handle bin_arrays: they are split by SOL MINT account
         // Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
         // We've consumed 11 accounts (0-10), so remaining start at index 11
-        // NOTE: Temporarily disabled bin_arrays to avoid AccountInfo cloning issues
-        // let (bin_arrays_buy, bin_arrays_sell) = (None, None);
-        let (bin_arrays_buy, bin_arrays_sell) = if accounts.len() > 11 {
-            let remaining = &accounts[11..];
-            let sol_mint = native_mint::id();
-
-            // Find position of SOL MINT separator
-            let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
-
-            match sol_mint_pos {
-                Some(pos) => {
-                    // Split at SOL MINT position
-                    let buy_slice = &remaining[..pos];
-                    let after_sol = &remaining[pos + 1..]; // Skip SOL MINT itself
-                    (
-                        if buy_slice.is_empty() {
-                            None
-                        } else {
-                            // Create Vec by cloning AccountInfo - safe since all have same lifetime
-                            Some(buy_slice.iter().cloned().collect())
-                        },
-                        if after_sol.is_empty() {
-                            None
-                        } else {
-                            Some(after_sol.iter().cloned().collect())
-                        },
-                    )
-                }
-                None => {
-                    // No SOL MINT found, all remaining are buy arrays
-                    (
-                        if remaining.is_empty() {
-                            None
-                        } else {
-                            Some(remaining.iter().cloned().collect())
-                        },
-                        None,
-                    )
-                }
-            }
-        } else {
-            (None, None)
-        };
+        // let bin_arrays_buy = self.get_bin_arrays_buy();
+        // let bin_arrays_sell = self.get_bin_arrays_sell();
 
         Ok(MeteoraDlmm {
+            accounts: accounts.to_vec(),
             program_id: program_id.clone(),
             pool_id: pool_id.clone(),
             base_vault: base_vault.clone(),
             quote_vault: quote_vault.clone(),
             base_token: base_token.clone(),
             quote_token: quote_token.clone(),
-            oracle: oracle.clone(),
-            host_fee_in: host_fee_in.clone(),
-            memo: memo.clone(),
-            event_authority: event_authority.clone(),
-            bitmap_extension: bin_array_bitmap_extension.clone(),
-            bin_arrays_buy: bin_arrays_buy.clone(),
-            bin_arrays_sell: bin_arrays_sell.clone(),
+            // oracle: oracle.clone(),
+            // host_fee_in: host_fee_in.clone(),
+            // memo: memo.clone(),
+            // event_authority: event_authority.clone(),
+            // bitmap_extension: bin_array_bitmap_extension.clone(),
+            // bin_arrays_buy: bin_arrays_buy.clone(),
+            // bin_arrays_sell: bin_arrays_sell.clone(),
         })
+    }
+
+    /// Extract bin arrays for buying from accounts starting at index 11
+    /// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
+    fn get_bin_arrays_buy(&self) -> Option<Vec<AccountInfo<'info>>> {
+        if self.accounts.len() <= 11 {
+            return None;
+        }
+
+        let remaining = &self.accounts[11..];
+        let sol_mint = native_mint::id();
+
+        // Find position of SOL MINT separator
+        let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
+
+        match sol_mint_pos {
+            Some(pos) => {
+                // Split at SOL MINT position - buy arrays are before SOL MINT
+                let buy_slice = &remaining[..pos];
+                if buy_slice.is_empty() {
+                    None
+                } else {
+                    Some(buy_slice.iter().cloned().collect())
+                }
+            }
+            None => {
+                // No SOL MINT found, all remaining are buy arrays
+                if remaining.is_empty() {
+                    None
+                } else {
+                    Some(remaining.iter().cloned().collect())
+                }
+            }
+        }
+    }
+
+    /// Extract bin arrays for selling from accounts starting at index 11
+    /// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
+    fn get_bin_arrays_sell(&self) -> Option<Vec<AccountInfo<'info>>> {
+        if self.accounts.len() <= 11 {
+            return None;
+        }
+
+        let remaining = &self.accounts[11..];
+        let sol_mint = native_mint::id();
+
+        // Find position of SOL MINT separator
+        let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
+
+        match sol_mint_pos {
+            Some(pos) => {
+                // Split at SOL MINT position - sell arrays are after SOL MINT
+                let after_sol = &remaining[pos + 1..]; // Skip SOL MINT itself
+                if after_sol.is_empty() {
+                    None
+                } else {
+                    Some(after_sol.iter().cloned().collect())
+                }
+            }
+            None => {
+                // No SOL MINT found, no sell arrays
+                None
+            }
+        }
     }
 
     pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
@@ -240,93 +254,36 @@ impl<'info> MeteoraDlmm<'info> {
         msg!("Pool data slice len: {} bytes", pool_data_slice.len());
 
         // Deserialize bitmap extension if available
-        let bitmap_extension: Option<BinArrayBitmapExtension> =
-            if *self.bitmap_extension.key == Self::PROGRAM_ID {
-                msg!("Bitmap extension: None (program_id placeholder)");
-                None
-            } else if self.bitmap_extension.data_len() > 8 {
-                let bitmap_size = std::mem::size_of::<BinArrayBitmapExtension>();
-                msg!(
-                    "Bitmap extension account data_len: {} bytes",
-                    self.bitmap_extension.data_len()
-                );
-                msg!("BinArrayBitmapExtension struct size: {} bytes", bitmap_size);
-                Some(bytemuck::pod_read_unaligned(
-                    &self.bitmap_extension.try_borrow_data()?[8..],
-                ))
-            } else {
-                msg!(
-                    "Bitmap extension: None (data_len too short: {})",
-                    self.bitmap_extension.data_len()
-                );
-                None
-            };
+        let bitmap_extension_account = &self.accounts[10];
+        msg!("bitmap_extension.key: {:?}", bitmap_extension_account.key);
+
+        let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
+            != Self::PROGRAM_ID
+            && bitmap_extension_account.data_len() > 8
+        {
+            Some(bytemuck::pod_read_unaligned(
+                &bitmap_extension_account.try_borrow_data()?[8..],
+            ))
+        } else {
+            msg!(
+                "Bitmap extension: None (data_len too short: {})",
+                bitmap_extension_account.data_len()
+            );
+            None
+        };
         msg!("2");
 
-        let bin_array_struct_size = std::mem::size_of::<BinArray>();
-        msg!("BinArray struct size: {} bytes", bin_array_struct_size);
+        // Keep bin_array_accounts alive in the same scope where it's used
+        let bin_arrays = self.get_bin_arrays_buy().unwrap_or_default();
 
-        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
-            msg!("bin_arrays_buy count: {}", bin_arrays_buy.len());
-            for (i, account) in bin_arrays_buy.iter().enumerate() {
-                msg!(
-                    "arr[{}]={}, data_len={}",
-                    i,
-                    account.key,
-                    account.data_len()
-                );
-            }
-        }
-
-        // Deserialize ONLY the first bin array to reduce stack usage (BinArray is 10128 bytes!)
-        let mut bin_arrays = HashMap::<Pubkey, BinArray>::new();
-        if let Some(bin_arrays_buy) = &self.bin_arrays_buy {
-            if let Some(first_account) = bin_arrays_buy.first() {
-                msg!(
-                    "Processing first bin_array: {}, data_len={}",
-                    first_account.key,
-                    first_account.data_len()
-                );
-                if let Ok(data) = first_account.try_borrow_data() {
-                    if data.len() >= 8 {
-                        let bin_array_data = &data[8..];
-                        let bin_array_size = std::mem::size_of::<BinArray>();
-                        if bin_array_data.len() >= bin_array_size {
-                            let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
-                            bin_arrays.insert(*first_account.key, bin_array);
-                            msg!("Successfully deserialized first BinArray");
-                        } else {
-                            msg!(
-                                "First BinArray data too short: {} bytes (expected {})",
-                                bin_array_data.len(),
-                                bin_array_size
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        msg!("bin_arrays HashMap len: {}", bin_arrays.len());
-        msg!(
-            "HashMap overhead estimate: ~{} bytes",
-            bin_arrays.len()
-                * (8 + std::mem::size_of::<Pubkey>() + std::mem::size_of::<BinArray>() + 24)
-        );
-
-        let swap_for_y = true;
         msg!("3");
-        msg!("Before quote_exact_in - Stack usage estimate:");
+        msg!("=== STACK USAGE (OPTIMIZED - NO 10KB BinArray CLONE!) ===");
         msg!(
-            "  - LbPair (pool_id_state): {} bytes",
+            "  - LbPair clone (in quote_exact_in): {} bytes",
             std::mem::size_of::<LbPair>()
         );
-        msg!(
-            "  - BinArray in HashMap: {} bytes x {} = {} bytes",
-            std::mem::size_of::<BinArray>(),
-            bin_arrays.len(),
-            std::mem::size_of::<BinArray>() * bin_arrays.len()
-        );
+        msg!("  - BinArray: 0 bytes (working with account data directly, no clone!)",);
+        msg!("  - Individual Bin clones: ~144 bytes each (only when needed for mutation)",);
         if bitmap_extension.is_some() {
             msg!(
                 "  - BinArrayBitmapExtension: {} bytes",
@@ -335,18 +292,21 @@ impl<'info> MeteoraDlmm<'info> {
         } else {
             msg!("  - BinArrayBitmapExtension: 0 bytes (None)");
         }
-        msg!("  - HashMap overhead: ~{} bytes", bin_arrays.len() * 32);
-        let estimated_stack: usize = std::mem::size_of::<LbPair>()
-            + (std::mem::size_of::<BinArray>() * bin_arrays.len())
+        let total_stack = std::mem::size_of::<LbPair>()
+            + 144 // Max: one Bin clone at a time
             + bitmap_extension
                 .as_ref()
                 .map(|_| std::mem::size_of::<BinArrayBitmapExtension>())
-                .unwrap_or(0)
-            + (bin_arrays.len() * 32);
+                .unwrap_or(0);
         msg!(
-            "  - Total estimated: ~{} bytes / 4096 bytes limit",
-            estimated_stack
+            "  - Total stack usage: ~{} bytes / 4096 bytes limit ({}% used)",
+            total_stack,
+            (total_stack * 100) / 4096
         );
+        msg!(
+            "=== IMPROVEMENT: Eliminated 10KB BinArray clone! Only clone individual bins (~144 bytes) ==="
+        );
+
         // Helper to load mints and call quote_exact_in, working around lifetime variance
         // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
         // the lifetime annotation, not the actual data or memory layout
@@ -377,8 +337,8 @@ impl<'info> MeteoraDlmm<'info> {
                     pool_id_key,
                     &pool_id_state,
                     amount_in,
-                    swap_for_y,
-                    &bin_arrays,
+                    true, // swap_for_y
+                    bin_arrays,
                     bitmap_extension.as_ref(),
                     &clock,
                     mint_x_ref,
@@ -394,6 +354,7 @@ impl<'info> MeteoraDlmm<'info> {
     }
 
     pub fn swap_base_out_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+        msg!("-1");
         let pool_data = self.pool_id.try_borrow_data()?;
         if pool_data.len() < 8 {
             msg!("Pool ID account data too short: {} bytes", pool_data.len());
@@ -415,83 +376,33 @@ impl<'info> MeteoraDlmm<'info> {
         msg!("LbPair size: {} bytes", std::mem::size_of::<LbPair>());
         msg!("Pool data slice len: {} bytes", pool_data_slice.len());
 
-        msg!("bitmap_extension.key: {:?}", self.bitmap_extension.key);
         // Deserialize bitmap extension if available
-        let bitmap_extension: Option<BinArrayBitmapExtension> =
-            if *self.bitmap_extension.key == Self::PROGRAM_ID {
-                msg!("Bitmap extension: None (program_id placeholder)");
-                None
-            } else if self.bitmap_extension.data_len() > 8 {
-                let bitmap_size = std::mem::size_of::<BinArrayBitmapExtension>();
-                msg!(
-                    "Bitmap extension account data_len: {} bytes",
-                    self.bitmap_extension.data_len()
-                );
-                msg!("BinArrayBitmapExtension struct size: {} bytes", bitmap_size);
-                Some(bytemuck::pod_read_unaligned(
-                    &self.bitmap_extension.try_borrow_data()?[8..],
-                ))
-            } else {
-                msg!(
-                    "Bitmap extension: None (data_len too short: {})",
-                    self.bitmap_extension.data_len()
-                );
-                None
-            };
+        let bitmap_extension_account = &self.accounts[10];
+        // msg!("bitmap_extension.key: {:?}", bitmap_extension_account.key);
+
+        let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
+            != Self::PROGRAM_ID
+            && bitmap_extension_account.data_len() > 8
+        {
+            Some(bytemuck::pod_read_unaligned(
+                &bitmap_extension_account.try_borrow_data()?[8..],
+            ))
+        } else {
+            None
+        };
         msg!("2");
 
-        let bin_array_struct_size = std::mem::size_of::<BinArray>();
-        msg!("BinArray struct size: {} bytes", bin_array_struct_size);
+        // Keep bin_array_accounts alive in the same scope where it's used
+        let bin_arrays = self.get_bin_arrays_sell().unwrap_or_default();
 
-        // Deserialize ONLY the first bin array to reduce stack usage (BinArray is 10128 bytes!)
-        let mut bin_arrays = HashMap::<Pubkey, BinArray>::new();
-        if let Some(bin_arrays_sell) = &self.bin_arrays_sell {
-            if let Some(first_account) = bin_arrays_sell.first() {
-                msg!(
-                    "Processing first bin_array: {}, data_len={}",
-                    first_account.key,
-                    first_account.data_len()
-                );
-                if let Ok(data) = first_account.try_borrow_data() {
-                    if data.len() >= 8 {
-                        let bin_array_data = &data[8..];
-                        let bin_array_size = std::mem::size_of::<BinArray>();
-                        if bin_array_data.len() >= bin_array_size {
-                            let bin_array = bytemuck::pod_read_unaligned(bin_array_data);
-                            bin_arrays.insert(*first_account.key, bin_array);
-                            msg!("Successfully deserialized first BinArray");
-                        } else {
-                            msg!(
-                                "First BinArray data too short: {} bytes (expected {})",
-                                bin_array_data.len(),
-                                bin_array_size
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        msg!("bin_arrays HashMap len: {}", bin_arrays.len());
-        msg!(
-            "HashMap overhead estimate: ~{} bytes",
-            bin_arrays.len()
-                * (8 + std::mem::size_of::<Pubkey>() + std::mem::size_of::<BinArray>() + 24)
-        );
-
-        let swap_for_y = false;
         msg!("3");
-        msg!("Before quote_exact_in - Stack usage estimate:");
+        msg!("Before quote_exact_in - Stack usage estimate (NO 10KB BinArray CLONE!):");
         msg!(
             "  - LbPair (lb_pair_state): {} bytes",
             std::mem::size_of::<LbPair>()
         );
-        msg!(
-            "  - BinArray in HashMap: {} bytes x {} = {} bytes",
-            std::mem::size_of::<BinArray>(),
-            bin_arrays.len(),
-            std::mem::size_of::<BinArray>() * bin_arrays.len()
-        );
+        msg!("  - BinArray: 0 bytes (working with account data directly, no clone!)",);
+        msg!("  - Individual Bin clones: ~144 bytes each (only when needed)",);
         if bitmap_extension.is_some() {
             msg!(
                 "  - BinArrayBitmapExtension: {} bytes",
@@ -500,18 +411,16 @@ impl<'info> MeteoraDlmm<'info> {
         } else {
             msg!("  - BinArrayBitmapExtension: 0 bytes (None)");
         }
-        msg!("  - HashMap overhead: ~{} bytes", bin_arrays.len() * 32);
-        let estimated_stack: usize = std::mem::size_of::<LbPair>()
-            + (std::mem::size_of::<BinArray>() * bin_arrays.len())
-            + bitmap_extension
-                .as_ref()
-                .map(|_| std::mem::size_of::<BinArrayBitmapExtension>())
-                .unwrap_or(0)
-            + (bin_arrays.len() * 32);
         msg!(
-            "  - Total estimated: ~{} bytes / 4096 bytes limit",
-            estimated_stack
+            "  - Total in swap_base_out_impl: ~{} bytes",
+            std::mem::size_of::<LbPair>()
+                + 144 // Max: one Bin clone at a time
+                + bitmap_extension
+                    .as_ref()
+                    .map(|_| std::mem::size_of::<BinArrayBitmapExtension>())
+                    .unwrap_or(0)
         );
+
         // Helper to load mints and call quote_exact_in, working around lifetime variance
         // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
         // the lifetime annotation, not the actual data or memory layout
@@ -540,8 +449,8 @@ impl<'info> MeteoraDlmm<'info> {
                     lb_pair_key,
                     &lb_pair_state,
                     amount_in,
-                    swap_for_y,
-                    &bin_arrays,
+                    false, // swap_for_y
+                    bin_arrays,
                     bitmap_extension.as_ref(),
                     &clock,
                     mint_x_ref,
@@ -593,26 +502,40 @@ impl<'info> MeteoraDlmm<'info> {
 
         let amount_out_value = amount_out.unwrap_or(0);
 
+        // Get stored accounts from self.accounts - these are the accounts stored in the struct
+        let stored_accounts = self.accounts.clone();
+        let program_id_stored = &stored_accounts[0];
+        let pool_id = &stored_accounts[1];
+        let base_vault = &stored_accounts[2];
+        let quote_vault = &stored_accounts[3];
+        let base_token = &stored_accounts[4];
+        let quote_token = &stored_accounts[5];
+        let oracle = &stored_accounts[6];
+        let host_fee_in = &stored_accounts[7];
+        let memo = &stored_accounts[8];
+        let event_authority = &stored_accounts[9];
+        let bitmap_extension = &stored_accounts[10];
         let mut metas = vec![
-            AccountMeta::new(*self.pool_id.key, false),
-            AccountMeta::new_readonly(*self.bitmap_extension.key, false),
-            AccountMeta::new(*self.base_vault.key, false),
-            AccountMeta::new(*self.quote_vault.key, false),
+            AccountMeta::new(*pool_id.key, false),
+            AccountMeta::new_readonly(*bitmap_extension.key, false),
+            AccountMeta::new(*base_vault.key, false),
+            AccountMeta::new(*quote_vault.key, false),
             AccountMeta::new(*user_base_token_account.key, false),
             AccountMeta::new(*user_quote_token_account.key, false),
-            AccountMeta::new_readonly(*self.base_token.key, false),
-            AccountMeta::new_readonly(*self.quote_token.key, false),
-            AccountMeta::new_readonly(*self.oracle.key, false), // ?
-            AccountMeta::new(*self.host_fee_in.key, false),     // ?
+            AccountMeta::new_readonly(*base_token.key, false),
+            AccountMeta::new_readonly(*quote_token.key, false),
+            AccountMeta::new_readonly(*oracle.key, false),
+            AccountMeta::new(*host_fee_in.key, false),
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*self.memo.key, false),
-            AccountMeta::new_readonly(*self.event_authority.key, false),
+            AccountMeta::new_readonly(*memo.key, false),
+            AccountMeta::new_readonly(*event_authority.key, false),
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         // Add bin arrays (buy arrays for swap_base_in)
-        if let Some(bin_arrays) = &self.bin_arrays_buy {
+        let bin_arrays = self.get_bin_arrays_buy();
+        if let Some(bin_arrays) = bin_arrays {
             for account in bin_arrays {
                 metas.push(AccountMeta::new(*account.key, false));
             }
@@ -631,27 +554,28 @@ impl<'info> MeteoraDlmm<'info> {
         // Collect AccountInfo into a vector and use unsafe to cast lifetimes
         // Order must match metas order exactly
         let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
-            self.pool_id.to_account_info(),          // 0: pool_id
-            self.bitmap_extension.to_account_info(), // 1: bitmap_extension (readonly)
-            self.base_vault.to_account_info(),       // 2: base_vault
-            self.quote_vault.to_account_info(),      // 3: quote_vault
+            pool_id.clone(),          // 0: pool_id
+            bitmap_extension.clone(), // 1: bitmap_extension (readonly)
+            base_vault.clone(),       // 2: base_vault
+            quote_vault.clone(),      // 3: quote_vault
             unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 4: user_base_token_account
             unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 5: user_quote_token_account
-            self.base_token.to_account_info(), // 6: base_token (readonly)
-            self.quote_token.to_account_info(), // 7: quote_token (readonly)
-            self.oracle.to_account_info(),     // 8: oracle (readonly)
-            self.host_fee_in.to_account_info(), // 9: host_fee_in
+            base_token.clone(),  // 6: base_token (readonly)
+            quote_token.clone(), // 7: quote_token (readonly)
+            oracle.clone(),      // 8: oracle (readonly)
+            host_fee_in.clone(), // 9: host_fee_in
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
-            self.memo.to_account_info(),            // 13: memo (readonly)
-            self.event_authority.to_account_info(), // 14: event_authority (readonly)
-            self.program_id.to_account_info(),      // 15: program_id (readonly)
+            memo.clone(),              // 13: memo (readonly)
+            event_authority.clone(),   // 14: event_authority (readonly)
+            program_id_stored.clone(), // 15: program_id (readonly)
         ];
         // Add bin arrays (buy arrays for swap_base_in)
-        if let Some(bin_arrays) = &self.bin_arrays_buy {
+        let bin_arrays = self.get_bin_arrays_buy();
+        if let Some(bin_arrays) = bin_arrays {
             for account in bin_arrays {
-                accounts_vec.push(account.to_account_info());
+                accounts_vec.push(account);
             }
         }
 
@@ -699,26 +623,41 @@ impl<'info> MeteoraDlmm<'info> {
 
         let min_amount_out_value = min_amount_out.unwrap_or(0);
 
+        // Get stored accounts from self.accounts - these are the accounts stored in the struct
+        let stored_accounts = self.accounts.clone();
+        let program_id_stored = &stored_accounts[0];
+        let pool_id = &stored_accounts[1];
+        let base_vault = &stored_accounts[2];
+        let quote_vault = &stored_accounts[3];
+        let base_token = &stored_accounts[4];
+        let quote_token = &stored_accounts[5];
+        let oracle = &stored_accounts[6];
+        let host_fee_in = &stored_accounts[7];
+        let memo = &stored_accounts[8];
+        let event_authority = &stored_accounts[9];
+        let bitmap_extension = &stored_accounts[10];
+
         let mut metas = vec![
-            AccountMeta::new(*self.pool_id.key, false),
-            AccountMeta::new(*self.bitmap_extension.key, false),
-            AccountMeta::new(*self.base_vault.key, false),
-            AccountMeta::new(*self.quote_vault.key, false),
+            AccountMeta::new(*pool_id.key, false),
+            AccountMeta::new(*bitmap_extension.key, false),
+            AccountMeta::new(*base_vault.key, false),
+            AccountMeta::new(*quote_vault.key, false),
             AccountMeta::new(*user_base_token_account.key, false),
             AccountMeta::new(*user_quote_token_account.key, false),
-            AccountMeta::new_readonly(*self.base_token.key, false),
-            AccountMeta::new_readonly(*self.quote_token.key, false),
-            AccountMeta::new_readonly(*self.oracle.key, false),
-            AccountMeta::new(*self.host_fee_in.key, false),
+            AccountMeta::new_readonly(*base_token.key, false),
+            AccountMeta::new_readonly(*quote_token.key, false),
+            AccountMeta::new_readonly(*oracle.key, false),
+            AccountMeta::new(*host_fee_in.key, false),
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*self.memo.key, false),
-            AccountMeta::new_readonly(*self.event_authority.key, false),
+            AccountMeta::new_readonly(*memo.key, false),
+            AccountMeta::new_readonly(*event_authority.key, false),
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         // Add bin arrays (sell arrays for swap_base_out)
-        if let Some(bin_arrays) = &self.bin_arrays_sell {
+        let bin_arrays = self.get_bin_arrays_sell();
+        if let Some(bin_arrays) = bin_arrays {
             for account in bin_arrays {
                 metas.push(AccountMeta::new(*account.key, false));
             }
@@ -737,27 +676,28 @@ impl<'info> MeteoraDlmm<'info> {
         // Collect AccountInfo into a vector and use unsafe to cast lifetimes
         // Order must match metas order exactly
         let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
-            self.pool_id.to_account_info(),          // 0: pool_id
-            self.bitmap_extension.to_account_info(), // 1: bitmap_extension
-            self.base_vault.to_account_info(),       // 2: base_vault
-            self.quote_vault.to_account_info(),      // 3: quote_vault
+            pool_id.clone(),          // 0: pool_id
+            bitmap_extension.clone(), // 1: bitmap_extension
+            base_vault.clone(),       // 2: base_vault
+            quote_vault.clone(),      // 3: quote_vault
             unsafe { std::mem::transmute(user_base_token_account.to_account_info()) }, // 4: user_base_token_account
             unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) }, // 5: user_quote_token_account
-            self.base_token.to_account_info(), // 6: base_token (readonly)
-            self.quote_token.to_account_info(), // 7: quote_token (readonly)
-            self.oracle.to_account_info(),     // 8: oracle (readonly)
-            self.host_fee_in.to_account_info(), // 9: host_fee_in
+            base_token.clone(),  // 6: base_token (readonly)
+            quote_token.clone(), // 7: quote_token (readonly)
+            oracle.clone(),      // 8: oracle (readonly)
+            host_fee_in.clone(), // 9: host_fee_in
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
-            self.memo.to_account_info(),            // 13: memo (readonly)
-            self.event_authority.to_account_info(), // 14: event_authority (readonly)
-            self.program_id.to_account_info(),      // 15: program_id (readonly)
+            memo.clone(),              // 13: memo (readonly)
+            event_authority.clone(),   // 14: event_authority (readonly)
+            program_id_stored.clone(), // 15: program_id (readonly)
         ];
         // Add bin arrays (sell arrays for swap_base_out)
-        if let Some(bin_arrays) = &self.bin_arrays_sell {
+        let bin_arrays = self.get_bin_arrays_sell();
+        if let Some(bin_arrays) = bin_arrays {
             for account in bin_arrays {
-                accounts_vec.push(account.to_account_info());
+                accounts_vec.push(account);
             }
         }
 
@@ -971,7 +911,6 @@ mod tests {
         let mut bin_array_sell_infos = Vec::new();
         let mut bin_arrays_buy_map = HashMap::new();
         let mut bin_arrays_sell_map = HashMap::new();
-        let mut bin_arrays_combined = HashMap::new(); // Combined for quote function
 
         // Process left arrays (buy)
         for (account_opt, key) in bin_array_accounts
@@ -980,13 +919,44 @@ mod tests {
             .zip(left_bin_array_pubkeys.iter())
         {
             if let Some(account) = account_opt {
+                eprintln!(
+                    "BinArray account data size: {} bytes (pubkey: {:?})",
+                    account.data.len(),
+                    key
+                );
+                eprintln!(
+                    "  - Discriminator: 8 bytes, BinArray struct size: {} bytes",
+                    account.data.len() - 8
+                );
+                // Bin struct: amount_x (8) + amount_y (8) + price (16) + liquidity_supply (16)
+                // + reward_per_token_stored (32) + fee_amount_x (16) + fee_amount_y (16)
+                // + amount_x_in (16) + amount_y_in (16) = 144 bytes
+                const BIN_SIZE: usize = 144;
+                const BIN_ARRAY_HEADER: usize = 56; // index (8) + version (1) + padding (7) + lb_pair (32) = 48, but with discriminator offset
+                let estimated_bin_array_size =
+                    BIN_ARRAY_HEADER + (dlmm::constants::MAX_BIN_PER_ARRAY * BIN_SIZE);
+                eprintln!(
+                    "  - Single Bin size: {} bytes (estimated from IDL)",
+                    BIN_SIZE
+                );
+                eprintln!(
+                    "  - MAX_BIN_PER_ARRAY: {} bins",
+                    dlmm::constants::MAX_BIN_PER_ARRAY
+                );
+                eprintln!(
+                    "  - Estimated BinArray struct size: {} bytes (header: {} + {} bins * {} bytes each)",
+                    estimated_bin_array_size,
+                    BIN_ARRAY_HEADER,
+                    dlmm::constants::MAX_BIN_PER_ARRAY,
+                    BIN_SIZE
+                );
+
                 let bin_array = bytemuck::pod_read_unaligned::<dlmm::dlmm::accounts::BinArray>(
                     &account.data[8..],
                 );
                 let account_info = account_to_account_info(*key, account.clone());
                 bin_array_buy_infos.push(account_info);
                 bin_arrays_buy_map.insert(*key, bin_array);
-                bin_arrays_combined.insert(*key, bin_array);
             }
         }
 
@@ -1003,12 +973,14 @@ mod tests {
                 let account_info = account_to_account_info(*key, account.clone());
                 bin_array_sell_infos.push(account_info);
                 bin_arrays_sell_map.insert(*key, bin_array);
-                bin_arrays_combined.insert(*key, bin_array);
             }
         }
 
-        // Use combined map for quote function
-        let bin_arrays = bin_arrays_combined;
+        // Combine buy and sell AccountInfo vectors for quote function (no HashMap needed)
+        // Clone vectors since they're also needed for accounts.extend() later
+        let mut bin_array_all_infos = bin_array_buy_infos.clone();
+        bin_array_all_infos.extend(bin_array_sell_infos.clone());
+        let bin_array_accounts_slice: &[AccountInfo] = &bin_array_all_infos;
 
         // Derive vault PDAs
         let (base_vault_key, _) = dlmm::derive_reserve_pda(pool_id.token_x_mint, sol_usdc);
@@ -1110,12 +1082,35 @@ mod tests {
         let mint_x_interface = account_to_interface_mint(mint_x_account2, pool_id.token_x_mint);
         let mint_y_interface = account_to_interface_mint(mint_y_account2, pool_id.token_y_mint);
 
+        // Use the already combined bin_array_all_infos for quote_exact_in
+        // Clone it since we need it later for the second quote call
+        let bin_arrays_vec_for_quote: Vec<AccountInfo> = bin_array_all_infos.clone();
+
+        const BIN_SIZE: usize = 144;
+        const ESTIMATED_BIN_ARRAY_SIZE: usize = 56 + (70 * 144); // header + bins
+
+        eprintln!(
+            "Calling quote_exact_in with {} bin arrays",
+            bin_arrays_vec_for_quote.len()
+        );
+        eprintln!("Stack usage in quote_exact_in:");
+        eprintln!("  - Each bin array index read: 8 bytes (i64)");
+        eprintln!("  - Each bin read: {} bytes (Bin struct)", BIN_SIZE);
+        eprintln!(
+            "  - NO full BinArray deserialization (~{} bytes avoided per array)",
+            ESTIMATED_BIN_ARRAY_SIZE
+        );
+        eprintln!(
+            "  - Estimated max stack usage per iteration: {} bytes (well under 4KB limit)",
+            8 + BIN_SIZE
+        );
+
         let quote_result = dlmm::quote_exact_in(
             sol_usdc,
             &pool_id,
             in_sol_amount,
             swap_for_y,
-            &bin_arrays,
+            bin_arrays_vec_for_quote,
             None,
             &clock2,
             &mint_x_interface,
@@ -1150,12 +1145,15 @@ mod tests {
         // Fetch clock again for the quote call (clock2 was moved in swap_base_in/swap_base_out)
         let clock3 = get_clock(&rpc_client).await.unwrap();
 
+        // Use the already combined bin_array_all_infos for the second quote call
+        let bin_arrays_vec_for_quote2: Vec<AccountInfo> = bin_array_all_infos.clone();
+
         let quote_result = dlmm::quote_exact_in(
             sol_usdc,
             &pool_id,
             amount_out_2,
             swap_for_y_reverse,
-            &bin_arrays,
+            bin_arrays_vec_for_quote2,
             None,
             &clock3,
             &mint_x_interface,

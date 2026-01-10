@@ -66,14 +66,24 @@ pub mod solar_b {
         }
         let rest = &ctx.remaining_accounts[7..];
 
-        let instances = parse_accounts(rest, &data)?;
+        let mut instances = parse_accounts(rest, &data)?;
         // for instance in instances {
         //     instance.as_ref().log_accounts()?;
         // }
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
-        run_arbitrage(payer, first_accounts, &instances, 1_000_000_000, None)?;
-
+        let arbitrage_path = run_arbitrage(&mut instances, 1_000_000_000, None).unwrap();
+        execute_arbitrage_path(
+            &arbitrage_path,
+            &mut instances,
+            payer,
+            &first_accounts[1], // mint_1
+            &first_accounts[2], // mint_1_token_program
+            &first_accounts[3], // user_mint_1_token_account
+            &first_accounts[4], // mint_2
+            &first_accounts[5], // mint_2_token_program
+            &first_accounts[6], // user_mint_2_token_account
+        )?;
         Ok(())
     }
 }
@@ -84,8 +94,9 @@ fn parse_accounts<'info>(
 ) -> Result<Vec<Box<dyn ProgramMeta + 'info>>> {
     let mut index: usize = 0;
 
-    // msg!("current_epoch: {:?}", current_epoch);
-    let mut instances = Vec::new();
+    // Pre-allocate capacity: count non-zero spans to estimate instance count
+    let estimated_capacity = data.accounts_length.iter().filter(|&&len| len > 0).count();
+    let mut instances = Vec::with_capacity(estimated_capacity);
 
     for &raw_span in data.accounts_length.iter() {
         let span = usize::try_from(raw_span).map_err(|_| SolarBError::InvalidAccountsLength)?;
@@ -98,8 +109,9 @@ fn parse_accounts<'info>(
         );
 
         let segment = &accounts[index..index + span];
-        let program_account = segment[0].clone();
-        let instance: Box<dyn ProgramMeta> = find_program_instance(program_account.key, segment)?;
+        // Avoid cloning AccountInfo - just pass the reference's key
+        let program_key = segment[0].key;
+        let instance: Box<dyn ProgramMeta> = find_program_instance(program_key, segment)?;
         // TODO: Implement find_program_instance to create ProgramMeta instances
         instances.push(instance);
         // instance.log_accounts()?;
@@ -185,6 +197,7 @@ pub fn generate_edges<'info>(program: &'info (dyn ProgramMeta + 'info)) -> Resul
     let price_base_out = program.compute_price_swap_base_out(base_amount, quote_amount)?;
 
     // Extract mints directly from the deserialized token accounts
+    // Pool struct is small (40 bytes: Pubkey 32 + u128 16), but avoid unnecessary clones
     let base_pool = Pool::new(&base_vault.mint, base_amount);
     let quote_pool = Pool::new(&quote_vault.mint, quote_amount);
     let program_id = *program.get_id();
@@ -200,14 +213,15 @@ pub fn generate_edges<'info>(program: &'info (dyn ProgramMeta + 'info)) -> Resul
             program_id,
             EdgeSide::RightToLeft,
             price_base_out,
-            quote_pool,
-            base_pool,
+            quote_pool, // Move instead of clone
+            base_pool,  // Move instead of clone
         ),
     ])
 }
 
 pub fn get_edges<'info>(instances: &'info [Box<dyn ProgramMeta + 'info>]) -> Result<Vec<Edge>> {
-    let mut edges = Vec::new();
+    // Pre-allocate capacity: each instance generates 2 edges
+    let mut edges = Vec::with_capacity(instances.len() * 2);
     for instance in instances {
         let instance_edges = generate_edges(instance.as_ref())?;
         edges.extend(instance_edges);
@@ -216,27 +230,28 @@ pub fn get_edges<'info>(instances: &'info [Box<dyn ProgramMeta + 'info>]) -> Res
 }
 
 pub fn run_arbitrage<'info>(
-    payer: &AccountInfo<'info>,
-    first_accounts: &[AccountInfo<'info>],
-    instances: &[Box<dyn ProgramMeta + 'info>],
+    instances: &mut Vec<Box<dyn ProgramMeta + 'info>>,
     start_amount: u128,
     start_token: Option<Pubkey>,
-) -> Result<()> {
-    let clock = Clock::get()?;
-    let _current_epoch = clock.epoch;
+) -> Result<ArbitragePath> {
+    // Note: We don't actually use epoch, so avoid creating full Clock struct
+    // If epoch is needed later, get it separately: Clock::get()?.epoch
 
-    // Extract the 5 accounts from the slice
-    let _mint_1 = &first_accounts[1];
-    let _mint_2 = &first_accounts[2];
-    let edges = get_edges(instances)?;
+    // Extract edges - Vec<Edge> is on heap, only Vec metadata (24 bytes) on stack
+    let edges = get_edges(instances.as_slice())?;
 
     // Check for arbitrage opportunities
-    let arbitrage_path = check_arbitrage(
-        &edges.iter().collect::<Vec<_>>(),
-        start_amount,
-        start_token,
-        None,
-    )?;
+    // Pre-allocate Vec<&Edge> with known capacity to avoid reallocations
+    let mut edge_refs = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        edge_refs.push(edge);
+    }
+    let arbitrage_path = check_arbitrage(&edge_refs, start_amount, start_token, None)?;
+
+    // Explicitly drop to free Vec metadata (24 bytes) from stack immediately
+    // edges Vec is on heap, but Vec struct metadata (ptr+len+cap) is on stack
+    drop(edge_refs);
+    drop(edges);
 
     if arbitrage_path.profit < 0 {
         return Err(error!(SolarBError::NoProfitFound));
@@ -244,25 +259,12 @@ pub fn run_arbitrage<'info>(
 
     msg!("= {:?}", arbitrage_path.profit);
 
-    // Execute the arbitrage path efficiently
-    execute_arbitrage_path(
-        &arbitrage_path,
-        instances,
-        payer,
-        &first_accounts[1], // mint_1
-        &first_accounts[2], // mint_1_token_program
-        &first_accounts[3], // user_mint_1_token_account
-        &first_accounts[4], // mint_2
-        &first_accounts[5], // mint_2_token_program
-        &first_accounts[6], // user_mint_2_token_account
-    )?;
-
-    Ok(())
+    Ok(arbitrage_path)
 }
 
 pub fn execute_arbitrage_path<'info>(
     arbitrage_path: &ArbitragePath,
-    instances: &[Box<dyn ProgramMeta + 'info>],
+    instances: &mut Vec<Box<dyn ProgramMeta + 'info>>,
     payer: &AccountInfo<'info>,
     mint_1: &AccountInfo<'info>,
     mint_1_token_program: &AccountInfo<'info>,
@@ -273,62 +275,78 @@ pub fn execute_arbitrage_path<'info>(
 ) -> Result<()> {
     let mut current_amount = arbitrage_path.start_amount;
 
-    // Execute swaps sequentially with real-time calculation (most CU efficient for on-chain)
+    // Clock is now fetched inside the loop block scope for each iteration
+    // This ensures it's dropped immediately after each swap operation
+
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
-        // Find program instance by ID once
-        let program_instance = instances
+        msg!("Edge {:?} -> {:?}", edge.program, edge.side);
+
+        // Find the index of the program instance first, so we can remove it after execution
+        let instance_index = instances
             .iter()
-            .find(|instance| instance.get_id() == &edge.program)
+            .position(|instance| instance.get_id() == &edge.program)
             .ok_or(SolarBError::UnknownProgram)?;
 
-        // Get Clock for this swap (may change between swaps)
-        let clock = Clock::get()?;
+        // Wrap swap operations in a block scope so program_instance and clock are dropped immediately
+        // This frees stack space (8 bytes for program_instance reference + ~40 bytes for clock) after execution
+        let amount_out = {
+            // Get program instance by index - scoped to this block
+            let program_instance = instances[instance_index].as_ref();
 
-        msg!("Edge {:?} -> {:?}", edge.program, edge.side);
-        let amount_out = match edge.side {
-            EdgeSide::LeftToRight => {
-                let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
-                msg!(
-                    "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
-                    program_instance.get_id(),
-                    current_amount,
+            // Get Clock for this swap (may change between swaps) - scoped to this block
+            let clock = Clock::get()?;
+
+            match edge.side {
+                EdgeSide::LeftToRight => {
+                    let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
+                    msg!(
+                        "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
+                        program_instance.get_id(),
+                        current_amount,
+                        amount
+                    );
+                    program_instance.invoke_swap_base_out(
+                        current_amount as u64,
+                        Some(amount),
+                        payer.clone(),
+                        user_mint_1_token_account.clone(),
+                        user_mint_2_token_account.clone(),
+                        mint_1.clone(),
+                        mint_2.clone(),
+                        mint_1_token_program.clone(),
+                        mint_2_token_program.clone(),
+                    )?;
                     amount
-                );
-                program_instance.invoke_swap_base_out(
-                    current_amount as u64,
-                    Some(amount),
-                    payer.clone(),
-                    user_mint_1_token_account.clone(),
-                    user_mint_2_token_account.clone(),
-                    mint_1.clone(),
-                    mint_2.clone(),
-                    mint_1_token_program.clone(),
-                    mint_2_token_program.clone(),
-                )?;
-                amount
-            }
-            EdgeSide::RightToLeft => {
-                let amount = program_instance.swap_base_in(current_amount as u64, clock)?;
-                msg!(
-                    "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
-                    program_instance.get_id(),
-                    current_amount,
+                }
+                EdgeSide::RightToLeft => {
+                    let amount = program_instance.swap_base_in(current_amount as u64, clock)?;
+                    msg!(
+                        "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
+                        program_instance.get_id(),
+                        current_amount,
+                        amount
+                    );
+                    program_instance.invoke_swap_base_in(
+                        current_amount as u64,
+                        Some(amount),
+                        payer.clone(),
+                        user_mint_1_token_account.clone(),
+                        user_mint_2_token_account.clone(),
+                        mint_1.clone(),
+                        mint_2.clone(),
+                        mint_1_token_program.clone(),
+                        mint_2_token_program.clone(),
+                    )?;
                     amount
-                );
-                program_instance.invoke_swap_base_in(
-                    current_amount as u64,
-                    Some(amount),
-                    payer.clone(),
-                    user_mint_1_token_account.clone(),
-                    user_mint_2_token_account.clone(),
-                    mint_1.clone(),
-                    mint_2.clone(),
-                    mint_1_token_program.clone(),
-                    mint_2_token_program.clone(),
-                )?;
-                amount
+                }
             }
+            // program_instance and clock are dropped here when this block ends
         };
+
+        // Remove the program instance from the vector after it's been used
+        // Use swap_remove instead of remove: O(1) instead of O(n), and doesn't shift elements
+        // Order doesn't matter since we're removing after use and finding by program_id
+        instances.swap_remove(instance_index);
 
         current_amount = amount_out as u128;
         msg!(
