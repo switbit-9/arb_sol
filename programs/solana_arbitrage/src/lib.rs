@@ -299,7 +299,7 @@ pub fn execute_arbitrage_path<'info>(
             match edge.side {
                 EdgeSide::LeftToRight => {
                     let input_mint = edge.left.mint_account;
-                    msg!("I {:?}", input_mint);
+                    msg!("In {:?}", input_mint);
                     let amount = program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
@@ -322,7 +322,7 @@ pub fn execute_arbitrage_path<'info>(
                 }
                 EdgeSide::RightToLeft => {
                     let input_mint = edge.right.mint_account;
-                    msg!("I {:?}", input_mint);
+                    msg!("In {:?}", input_mint);
                     let amount = program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",

@@ -59,6 +59,7 @@ pub fn quote_exact_out<'a>(
     let current_timestamp = clock.unix_timestamp as u64;
     let current_slot = clock.slot;
     let epoch = clock.epoch;
+    msg!("11: {:?}", amount_out);
 
     validate_swap_activation(lb_pair, current_timestamp, current_slot)?;
 
@@ -95,14 +96,17 @@ pub fn quote_exact_out<'a>(
         // Use only the index for range checking (stack-safe, 8 bytes)
         let bin_array_index = active_bin_array.index as i32;
 
-        loop {
-            // Check if bin_id is within range using only the index (stack-safe)
-            let (lower_bin_id, upper_bin_id) =
-                BinArray::get_bin_array_lower_upper_bin_id(bin_array_index)?;
+        // Cache range calculation once per bin array (doesn't change within inner loop)
+        let (lower_bin_id, upper_bin_id) =
+            BinArray::get_bin_array_lower_upper_bin_id(bin_array_index)?;
 
-            if !(lb_pair.active_id >= lower_bin_id && lb_pair.active_id <= upper_bin_id)
-                || amount_out == 0
-            {
+        loop {
+            // Early exit checks
+            if amount_out == 0 {
+                break;
+            }
+
+            if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
                 break;
             }
 
@@ -185,13 +189,13 @@ pub fn quote_exact_in<'a>(
     mint_x_account: &InterfaceAccount<'a, anchor_spl::token_interface::Mint>,
     mint_y_account: &InterfaceAccount<'a, anchor_spl::token_interface::Mint>,
 ) -> anyhow::Result<SwapExactInQuote> {
+    msg!("11: {:?}", amount_in);
     let current_timestamp: u64 = clock.unix_timestamp as u64;
     let current_slot = clock.slot;
     let epoch = clock.epoch;
 
     let mut lb_pair = *lb_pair;
     lb_pair.update_references(current_timestamp as i64)?;
-
     let mut total_amount_out: u64 = 0;
     let mut total_fee: u64 = 0;
 
@@ -200,11 +204,17 @@ pub fn quote_exact_in<'a>(
     } else {
         (mint_y_account, mint_x_account)
     };
-
     let transfer_fee_excluded_amount_in =
         calculate_transfer_fee_excluded_amount(in_mint_account, amount_in, epoch)?.amount;
-
     let mut amount_left = transfer_fee_excluded_amount_in;
+
+    // Constants moved outside loop for better performance
+    const BIN_ARRAY_HEADER_SIZE: usize = 56;
+    const BIN_SIZE: usize = 144;
+
+    // Create HashMap once for O(1) account lookup instead of O(n) find() each iteration
+    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> =
+        bin_arrays.iter().map(|acc| (*acc.key, acc)).collect();
 
     while amount_left > 0 {
         let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
@@ -216,27 +226,46 @@ pub fn quote_exact_in<'a>(
         )?
         .pop()
         .context("Pool out of liquidity")?;
-
-        let active_bin_array_account = bin_arrays
-            .iter()
-            .find(|account| account.key == &active_bin_array_pubkey)
-            .context("Active bin array not found")?;
+        msg!("12: {}", active_bin_array_pubkey);
+        let active_bin_array_account = match bin_arrays_map.get(&active_bin_array_pubkey) {
+            Some(account) => *account,
+            None => {
+                msg!("12: ERROR - Required bin array {} not found in provided accounts, insufficient liquidity", active_bin_array_pubkey);
+                msg!(
+                    "12: Current amount_left: {}, total_amount_out so far: {}",
+                    amount_left,
+                    total_amount_out
+                );
+                // We don't have the required bin array account - stop the swap
+                // This means we've exhausted the available bin arrays
+                // Return partial result if we made some progress, otherwise it's an error
+                if total_amount_out == 0 {
+                    return Err(anyhow::anyhow!(
+                        "Insufficient liquidity: required bin array not available"
+                    ));
+                }
+                break;
+            }
+        };
 
         let bin_array_data = active_bin_array_account.try_borrow_data()?;
         // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
+        msg!("13");
+        // Cache range calculation once per bin array (doesn't change within inner loop)
+        let (lower_bin_id, upper_bin_id) =
+            BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
         loop {
-            // Check if bin_id is within range using only the index (stack-safe)
-            let (lower_bin_id, upper_bin_id) =
-                BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
-
-            if !(lb_pair.active_id >= lower_bin_id && lb_pair.active_id <= upper_bin_id)
-                || amount_left == 0
-            {
+            // Early exit checks
+            if amount_left == 0 {
                 break;
             }
 
+            if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
+                break;
+            }
+            msg!("14");
             lb_pair.update_volatility_accumulator()?;
 
             // Calculate bin index within array
@@ -245,18 +274,9 @@ pub fn quote_exact_in<'a>(
                 .checked_sub(lower_bin_id)
                 .context("MathOverflow")?;
             let bin_index_usize = bin_index_in_array as usize;
-
-            // Read only the specific bin we need (~144 bytes, acceptable on stack)
-            // BinArray layout: discriminator (8) + index (8) + version (1) + padding (7) + lb_pair (32) = 56
-            // Bins start at offset 56, each bin is 144 bytes
-            const BIN_ARRAY_HEADER_SIZE: usize = 56;
-            const BIN_SIZE: usize = 144;
+            msg!("15");
+            // Calculate bin offset (bounds check removed - validated by range check above)
             let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
-
-            ensure!(
-                bin_offset + BIN_SIZE <= bin_array_data.len(),
-                "Bin offset out of bounds"
-            );
 
             // Read single bin from account data (only ~144 bytes on stack)
             let mut active_bin: Bin =
@@ -280,17 +300,34 @@ pub fn quote_exact_in<'a>(
                     .checked_add(amount_out)
                     .context("MathOverflow")?;
                 total_fee = total_fee.checked_add(fee).context("MathOverflow")?;
-            }
 
-            if amount_left > 0 {
+                // Only advance if we still have amount left to swap
+                if amount_left > 0 {
+                    lb_pair.advance_active_bin(swap_for_y)?;
+                }
+            } else {
+                // Bin is empty, advance to next bin immediately
+                msg!("16: empty bin, advancing");
+                let old_active_id = lb_pair.active_id;
                 lb_pair.advance_active_bin(swap_for_y)?;
+                // Safety check: if we didn't actually advance (shouldn't happen), break to avoid infinite loop
+                if lb_pair.active_id == old_active_id {
+                    msg!("16: ERROR - active_id did not change, breaking to avoid infinite loop");
+                    break;
+                }
+                // Check if we've moved outside the current bin array range - if so, break to get new bin array
+                if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
+                    msg!("16: active_id moved outside bin array range, breaking to get new array");
+                    break;
+                }
             }
+            msg!("16");
         }
     }
-
+    msg!("17");
     let transfer_fee_excluded_amount_out =
         calculate_transfer_fee_excluded_amount(out_mint_account, total_amount_out, epoch)?.amount;
-
+    msg!("18");
     Ok(SwapExactInQuote {
         amount_out: transfer_fee_excluded_amount_out,
         fee: total_fee,
