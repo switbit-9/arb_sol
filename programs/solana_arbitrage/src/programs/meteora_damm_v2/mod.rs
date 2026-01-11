@@ -66,6 +66,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn invoke_swap_base_in<'a>(
         &self,
+        input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -77,6 +78,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            input_mint,
             max_amount_in,
             amount_out,
             payer,
@@ -91,6 +93,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -102,6 +105,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            input_mint,
             amount_in,
             min_amount_out,
             payer,
@@ -241,6 +245,7 @@ impl<'info> MeteoraDammV2<'info> {
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
+        _input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -340,6 +345,7 @@ impl<'info> MeteoraDammV2<'info> {
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
+        _input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,

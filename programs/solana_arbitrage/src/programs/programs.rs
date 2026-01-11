@@ -57,6 +57,7 @@ pub trait ProgramMeta {
     /// Invoke swap base in (base -> quote)
     fn invoke_swap_base_in<'a>(
         &self,
+        input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -71,6 +72,7 @@ pub trait ProgramMeta {
     /// Invoke swap base out (quote -> base)
     fn invoke_swap_base_out<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,

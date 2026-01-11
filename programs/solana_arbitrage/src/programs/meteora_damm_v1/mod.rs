@@ -41,6 +41,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
     fn invoke_swap_base_in<'a>(
         &self,
+        input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -52,6 +53,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            input_mint,
             max_amount_in,
             amount_out,
             payer,
@@ -66,6 +68,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -77,6 +80,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            input_mint,
             amount_in,
             min_amount_out,
             payer,
@@ -157,28 +161,30 @@ impl<'info> MeteoraDammV1<'info> {
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
-        max_amount_in: u64,
-        amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        _input_mint: Pubkey,
+        _max_amount_in: u64,
+        _amount_out: Option<u64>,
+        _payer: AccountInfo<'a>,
+        _user_mint_1_token_account: AccountInfo<'a>,
+        _user_mint_2_token_account: AccountInfo<'a>,
+        _mint_1_account: AccountInfo<'a>,
+        _mint_2_account: AccountInfo<'a>,
+        _mint_1_token_program: AccountInfo<'a>,
+        _mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         Ok(())
     }
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
-        amount_in: u64,
-        min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
+        _input_mint: Pubkey,
+        _amount_in: u64,
+        _min_amount_out: Option<u64>,
+        _payer: AccountInfo<'a>,
+        _user_mint_1_token_account: AccountInfo<'a>,
+        _user_mint_2_token_account: AccountInfo<'a>,
+        _mint_1_account: AccountInfo<'a>,
+        _mint_2_account: AccountInfo<'a>,
         _mint_1_token_program: AccountInfo<'a>,
         _mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {

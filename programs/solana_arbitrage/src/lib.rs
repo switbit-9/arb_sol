@@ -279,7 +279,15 @@ pub fn execute_arbitrage_path<'info>(
     // This ensures it's dropped immediately after each swap operation
 
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
-        msg!("Edge {:?} -> {:?} / base_amount={}, quote_amount={}", edge.program, edge.side, edge.left.get_amount(), edge.right.get_amount());
+        msg!(
+            "Edge {:?} -> {:?} / base_mint {}, base_amount={}, quote_mint {}, quote_amount={}",
+            edge.program,
+            edge.side,
+            edge.left.mint_account,
+            edge.left.get_amount(),
+            edge.right.mint_account,
+            edge.right.get_amount()
+        );
 
         // Find the index of the program instance first, so we can remove it after execution
         let instance_index = instances
@@ -299,8 +307,8 @@ pub fn execute_arbitrage_path<'info>(
             match edge.side {
                 EdgeSide::LeftToRight => {
                     let input_mint = edge.left.mint_account;
-                    msg!("In {:?}", input_mint);
-                    let amount = program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
+                    let amount =
+                        program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
                         program_instance.get_id(),
@@ -308,6 +316,7 @@ pub fn execute_arbitrage_path<'info>(
                         amount
                     );
                     program_instance.invoke_swap_base_out(
+                        input_mint,
                         current_amount as u64,
                         Some(amount),
                         payer.clone(),
@@ -322,8 +331,8 @@ pub fn execute_arbitrage_path<'info>(
                 }
                 EdgeSide::RightToLeft => {
                     let input_mint = edge.right.mint_account;
-                    msg!("In {:?}", input_mint);
-                    let amount = program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
+                    let amount =
+                        program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
                         program_instance.get_id(),
@@ -331,6 +340,7 @@ pub fn execute_arbitrage_path<'info>(
                         amount
                     );
                     program_instance.invoke_swap_base_in(
+                        input_mint,
                         current_amount as u64,
                         Some(amount),
                         payer.clone(),

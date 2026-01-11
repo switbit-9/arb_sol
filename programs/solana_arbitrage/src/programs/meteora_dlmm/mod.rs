@@ -22,6 +22,7 @@ pub struct MeteoraDlmm<'info> {
     pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
     pub quote_token: AccountInfo<'info>,
+    // pub bin_arrays: Option<Vec<AccountInfo<'info>>>,
     // pub oracle: AccountInfo<'info>,
     // pub host_fee_in: AccountInfo<'info>,
     // pub memo: AccountInfo<'info>,
@@ -55,6 +56,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn invoke_swap_base_in<'a>(
         &self,
+        input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -66,6 +68,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            input_mint,
             max_amount_in,
             amount_out,
             payer,
@@ -80,6 +83,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -91,6 +95,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            input_mint,
             amount_in,
             min_amount_out,
             payer,
@@ -174,7 +179,7 @@ impl<'info> MeteoraDlmm<'info> {
         // We've consumed 11 accounts (0-10), so remaining start at index 11
         // let bin_arrays_buy = self.get_bin_arrays_buy();
         // let bin_arrays_sell = self.get_bin_arrays_sell();
-
+        
         Ok(MeteoraDlmm {
             accounts: accounts.to_vec(),
             program_id: program_id.clone(),
@@ -183,6 +188,7 @@ impl<'info> MeteoraDlmm<'info> {
             quote_vault: quote_vault.clone(),
             base_token: base_token.clone(),
             quote_token: quote_token.clone(),
+            
             // oracle: oracle.clone(),
             // host_fee_in: host_fee_in.clone(),
             // memo: memo.clone(),
@@ -263,8 +269,8 @@ impl<'info> MeteoraDlmm<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        self.log_accounts()?;
-        msg!("2");
+        // self.log_accounts()?;
+    
         let pool_data = self.pool_id.try_borrow_data()?;
         if pool_data.len() < 8 {
             return Err(anchor_lang::error::Error::from(
@@ -273,16 +279,11 @@ impl<'info> MeteoraDlmm<'info> {
         }
         let pool_data_slice = &pool_data[8..];
         let lb_pair_size = std::mem::size_of::<LbPair>();
-        if pool_data_slice.len() < lb_pair_size {
-            return Err(anchor_lang::error::Error::from(
-                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
-            ));
-        }
+
         let pool_id_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
         let pool_id_key = *self.pool_id.key;
 
         let swap_for_y = input_mint == pool_id_state.token_x_mint;
-
         // Deserialize bitmap extension if available
         let bitmap_extension_account = &self.accounts[10];
         let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
@@ -296,8 +297,14 @@ impl<'info> MeteoraDlmm<'info> {
             None
         };
 
-        // Keep bin_array_accounts alive in the same scope where it's used
-        let bin_arrays = self.get_bin_arrays_buy().unwrap_or_default();
+        let bin_arrays = if swap_for_y {
+            // Keep bin_array_accounts alive in the same scope where it's used
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            bin_arrays
+        } else {
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            bin_arrays
+        };
 
         // Helper to load mints and call quote_exact_in, working around lifetime variance
         // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
@@ -348,23 +355,11 @@ impl<'info> MeteoraDlmm<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        self.log_accounts()?;
-        msg!("2");
+        // self.log_accounts()?;
         let pool_data = self.pool_id.try_borrow_data()?;
-        if pool_data.len() < 8 {
-            return Err(anchor_lang::error::Error::from(
-                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
-            ));
-        }
-        msg!("3");
         let pool_data_slice = &pool_data[8..];
         let lb_pair_size = std::mem::size_of::<LbPair>();
-        if pool_data_slice.len() < lb_pair_size {
-            return Err(anchor_lang::error::Error::from(
-                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
-            ));
-        }
-        msg!("4");
+
         let lb_pair_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
         let lb_pair_key = *self.pool_id.key;
 
@@ -382,23 +377,16 @@ impl<'info> MeteoraDlmm<'info> {
         } else {
             None
         };
-        msg!("5");
-        // For swap_base_out: we want base token OUT, so we're putting quote token IN
-        // This means we're swapping FOR base token (X), so swap_for_y = false
-        // For swap_for_y = false, we need BUY arrays (arrays to the right)
-        // Keep bin_array_accounts alive in the same scope where it's used
-        let bin_arrays = self.get_bin_arrays_buy().unwrap_or_default();
-        msg!(
-            "5.1: Using {} buy bin arrays for swap_base_out",
-            bin_arrays.len()
-        );
-        for account in &bin_arrays {
-            msg!("b: {}", account.key);
-        }
-        msg!("6");
-        // Helper to load mints and call quote_exact_in, working around lifetime variance
-        // Safe because InterfaceAccount just wraps AccountInfo and we're only changing
-        // the lifetime annotation, not the actual data or memory layout
+
+        let bin_arrays = if swap_for_y {
+            // Keep bin_array_accounts alive in the same scope where it's used
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            bin_arrays
+        } else {
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            bin_arrays
+        };
+
         let quote = {
             // Work around lifetime variance: cast references to AccountInfo to match expected lifetime
             let base_token_ref: &AccountInfo<'info> =
@@ -406,11 +394,6 @@ impl<'info> MeteoraDlmm<'info> {
             let quote_token_ref: &AccountInfo<'info> =
                 unsafe { &*(&self.quote_token as *const AccountInfo<'info>) };
 
-            msg!(
-                "6.1: Loading mints - base_token: {}, quote_token: {}",
-                base_token_ref.key,
-                quote_token_ref.key
-            );
             let mint_x_account = load_mint(base_token_ref).map_err(|e| {
                 msg!(
                     "ERROR loading base_token mint {}: {:?}",
@@ -427,7 +410,6 @@ impl<'info> MeteoraDlmm<'info> {
                 );
                 anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
             })?;
-            msg!("6.2: Mints loaded successfully");
 
             unsafe {
                 let mint_x_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
@@ -436,10 +418,7 @@ impl<'info> MeteoraDlmm<'info> {
                 let mint_y_ref: &InterfaceAccount<'_, anchor_spl::token_interface::Mint> =
                     &*(&mint_y_account
                         as *const InterfaceAccount<'_, anchor_spl::token_interface::Mint>);
-                msg!(
-                    "7: Calling quote_exact_in with amount_in={}, swap_for_y=false",
-                    amount_in
-                );
+
                 quote_exact_in(
                     lb_pair_key,
                     &lb_pair_state,
@@ -458,12 +437,12 @@ impl<'info> MeteoraDlmm<'info> {
             // Try to preserve the original error if possible, otherwise use ConstraintOwner
             anchor_lang::error::Error::from(anchor_lang::error::ErrorCode::ConstraintOwner)
         })?;
-        msg!("8: quote success, amount_out={}", quote.amount_out);
         Ok(quote.amount_out)
     }
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -474,8 +453,6 @@ impl<'info> MeteoraDlmm<'info> {
         mint_1_token_program: AccountInfo<'a>,
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        msg!("1");
-
         let (
             base_token_program,
             quote_token_program,
@@ -514,19 +491,19 @@ impl<'info> MeteoraDlmm<'info> {
         let memo = &stored_accounts[8];
         let event_authority = &stored_accounts[9];
         let bitmap_extension = &stored_accounts[10];
-        msg!("pool_id: {}", pool_id.key);
-        msg!("bitmap_extension: {}", bitmap_extension.key);
-        msg!("base_vault: {}", base_vault.key);
-        msg!("quote_vault: {}", quote_vault.key);
-        msg!("user_base_token_account: {}", user_base_token_account.key);
-        msg!("user_quote_token_account: {}", user_quote_token_account.key);
-        msg!("base_token: {}", base_token.key);
-        msg!("quote_token: {}", quote_token.key);
-        msg!("oracle: {}", oracle.key);
-        msg!("host_fee_in: {}", host_fee_in.key);
-        msg!("memo: {}", memo.key);
-        msg!("event_authority: {}", event_authority.key);
-        msg!("bitmap_extension: {}", bitmap_extension.key);
+        
+        let swap_for_y = input_mint == *base_token.key;
+
+        let bin_arrays = if swap_for_y {
+            // Keep bin_array_accounts alive in the same scope where it's used
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            bin_arrays
+        } else {
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            bin_arrays
+        };
+
+
         let mut metas = vec![
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new_readonly(*bitmap_extension.key, false),
@@ -536,7 +513,7 @@ impl<'info> MeteoraDlmm<'info> {
             AccountMeta::new(*user_quote_token_account.key, false),
             AccountMeta::new_readonly(*base_token.key, false),
             AccountMeta::new_readonly(*quote_token.key, false),
-            AccountMeta::new_readonly(*oracle.key, false),
+            AccountMeta::new(*oracle.key, false),
             AccountMeta::new(*host_fee_in.key, false),
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
@@ -546,17 +523,14 @@ impl<'info> MeteoraDlmm<'info> {
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         // Add bin arrays (buy arrays for swap_base_in)
-        let bin_arrays = self.get_bin_arrays_buy();
-        if let Some(bin_arrays) = bin_arrays {
-            for account in bin_arrays {
-                msg!("b: {}", account.key);
+        for account in bin_arrays.clone() {
                 metas.push(AccountMeta::new(*account.key, false));
-            }
         }
 
         let mut data = vec![43, 215, 247, 132, 137, 60, 243, 81]; // TODO: Add proper instruction discriminator
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&amount_out_value.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // Empty vec
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -585,12 +559,10 @@ impl<'info> MeteoraDlmm<'info> {
             program_id_stored.clone(), // 15: program_id (readonly)
         ];
         // Add bin arrays (buy arrays for swap_base_in)
-        let bin_arrays = self.get_bin_arrays_buy();
-        if let Some(bin_arrays) = bin_arrays {
-            for account in bin_arrays {
-                accounts_vec.push(account);
-            }
+        for account in bin_arrays {
+            accounts_vec.push(account);
         }
+        
 
         unsafe {
             let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
@@ -601,6 +573,7 @@ impl<'info> MeteoraDlmm<'info> {
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -611,7 +584,6 @@ impl<'info> MeteoraDlmm<'info> {
         mint_1_token_program: AccountInfo<'a>,
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        msg!("1");
         let (
             base_token_program,
             quote_token_program,
@@ -651,19 +623,16 @@ impl<'info> MeteoraDlmm<'info> {
         let event_authority = &stored_accounts[9];
         let bitmap_extension = &stored_accounts[10];
 
-        msg!("pool_id: {}", pool_id.key);
-        msg!("bitmap_extension: {}", bitmap_extension.key);
-        msg!("base_vault: {}", base_vault.key);
-        msg!("quote_vault: {}", quote_vault.key);
-        msg!("user_base_token_account: {}", user_base_token_account.key);
-        msg!("user_quote_token_account: {}", user_quote_token_account.key);
-        msg!("base_token: {}", base_token.key);
-        msg!("quote_token: {}", quote_token.key);
-        msg!("oracle: {}", oracle.key);
-        msg!("host_fee_in: {}", host_fee_in.key);
-        msg!("memo: {}", memo.key);
-        msg!("event_authority: {}", event_authority.key);
-        msg!("bitmap_extension: {}", bitmap_extension.key);
+        let swap_for_y = input_mint == *base_token.key;
+
+        let bin_arrays = if swap_for_y {
+            // Keep bin_array_accounts alive in the same scope where it's used
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            bin_arrays
+        } else {
+            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            bin_arrays
+        };
 
         let mut metas = vec![
             AccountMeta::new(*pool_id.key, false),
@@ -674,7 +643,7 @@ impl<'info> MeteoraDlmm<'info> {
             AccountMeta::new(*user_quote_token_account.key, false),
             AccountMeta::new_readonly(*base_token.key, false),
             AccountMeta::new_readonly(*quote_token.key, false),
-            AccountMeta::new_readonly(*oracle.key, false),
+            AccountMeta::new(*oracle.key, false),
             AccountMeta::new(*host_fee_in.key, false),
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
@@ -684,17 +653,21 @@ impl<'info> MeteoraDlmm<'info> {
             AccountMeta::new_readonly(Self::PROGRAM_ID, false),
         ];
         // Add bin arrays (sell arrays for swap_base_out)
-        let bin_arrays = self.get_bin_arrays_sell();
-        if let Some(bin_arrays) = bin_arrays {
-            for account in bin_arrays {
-                msg!("b: {}", account.key);
-                metas.push(AccountMeta::new(*account.key, false));
-            }
-        }
 
-        let mut data = vec![43, 215, 247, 132, 137, 60, 243, 81];
+        for account in bin_arrays.clone() {
+            metas.push(AccountMeta::new(*account.key, false));
+        }
+        
+
+        // swap2 instruction discriminator: [65, 75, 63, 76, 235, 91, 91, 136]
+        let mut data = vec![65, 75, 63, 76, 235, 91, 91, 136];
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&min_amount_out_value.to_le_bytes());
+
+        // RemainingAccountsInfo: { slices: Vec<RemainingAccountsSlice> }
+        // For basic swaps without transfer hooks, slices is empty
+        // Serialize Vec length as u32 (Anchor uses u32 for Vec length)
+        data.extend_from_slice(&0u32.to_le_bytes()); // Empty vec
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -723,11 +696,8 @@ impl<'info> MeteoraDlmm<'info> {
             program_id_stored.clone(), // 15: program_id (readonly)
         ];
         // Add bin arrays (sell arrays for swap_base_out)
-        let bin_arrays = self.get_bin_arrays_sell();
-        if let Some(bin_arrays) = bin_arrays {
-            for account in bin_arrays {
-                accounts_vec.push(account);
-            }
+        for account in bin_arrays {
+            accounts_vec.push(account);
         }
 
         unsafe {
@@ -1070,7 +1040,7 @@ mod tests {
         };
 
         let amount_out_2 = meteora_dlmm
-            .swap_base_out(other_mint, amount_out, clock_2)
+            .swap_base_out(other_mint, 9517577807, clock_2)
             .unwrap();
         eprintln!(
             "Step 1: {} SOL -> {} TOKEN",

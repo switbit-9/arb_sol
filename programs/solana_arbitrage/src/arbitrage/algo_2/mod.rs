@@ -251,6 +251,7 @@ mod tests {
 
         fn invoke_swap_base_in<'a>(
             &self,
+            _input_mint: Pubkey,
             _max_amount_in: u64,
             _amount_out: Option<u64>,
             _payer: AccountInfo<'a>,
@@ -266,6 +267,7 @@ mod tests {
 
         fn invoke_swap_base_out<'a>(
             &self,
+            _input_mint: Pubkey,
             _amount_in: u64,
             _min_amount_out: Option<u64>,
             _payer: AccountInfo<'a>,

@@ -1,5 +1,5 @@
 use crate::programs::ProgramMeta;
-use crate::utils::utils::parse_token_account;
+use crate::utils::utils::{parse_token_account, amount_with_slippage};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::next_account_info,
@@ -48,6 +48,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
 
     fn invoke_swap_base_in<'a>(
         &self,
+        input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -59,6 +60,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            input_mint,
             max_amount_in,
             amount_out,
             payer,
@@ -73,6 +75,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -84,6 +87,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            input_mint,
             amount_in,
             min_amount_out,
             payer,
@@ -174,8 +178,9 @@ impl<'info> PumpAmm<'info> {
             .checked_mul(9_998)
             .and_then(|x| x.checked_div(10_000))
             .ok_or(ProgramError::InvalidArgument)?;
-
-        Ok(base_amount_out_after_fee as u64)
+        
+        let amount_out  = amount_with_slippage(base_amount_out_after_fee as u64, 0.02, false);
+        Ok(amount_out as u64)
     }
 
     /// Calculate base output amount for a given quote input amount
@@ -243,6 +248,7 @@ impl<'info> PumpAmm<'info> {
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
+        _input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
         payer: AccountInfo<'a>,
@@ -335,8 +341,8 @@ impl<'info> PumpAmm<'info> {
         metas.push(AccountMeta::new_readonly(*fee_program.key, false));
 
         let mut data = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
-        data.extend_from_slice(&max_amount_in.to_le_bytes());
         data.extend_from_slice(&amount_out_value.to_le_bytes());
+        data.extend_from_slice(&max_amount_in.to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -384,6 +390,7 @@ impl<'info> PumpAmm<'info> {
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
+        _input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
         payer: AccountInfo<'a>,
