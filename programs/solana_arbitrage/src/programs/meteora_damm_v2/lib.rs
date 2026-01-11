@@ -59,12 +59,12 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    fn swap_base_in(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(amount_in, clock)
+    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_in_impl(input_mint, amount_in, clock)
     }
 
-    fn swap_base_out(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_out_impl(amount_in, clock)
+    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -161,12 +161,22 @@ impl<'info> MeteoraDammV2<'info> {
         Ok(())
     }
 
-    pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_in_impl(
+        &self,
+        input_mint: Pubkey,
+        amount_in: u64,
+        clock: Clock,
+    ) -> Result<u64> {
         let data = self.pool_id.try_borrow_data()?;
         let pool: &Pool = bytemuck::try_from_bytes::<Pool>(&data[8..])
             .map_err(|_| ProgramError::InvalidAccountData)?;
 
-        let trade_direction = TradeDirection::AtoB;
+        // Determine trade direction based on input_mint
+        let trade_direction = if input_mint == self.base_token.key() {
+            TradeDirection::AtoB
+        } else {
+            TradeDirection::BtoA
+        };
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
 
@@ -185,12 +195,22 @@ impl<'info> MeteoraDammV2<'info> {
         Ok(results.output_amount)
     }
 
-    pub fn swap_base_out_impl(&self, amount_out: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(
+        &self,
+        input_mint: Pubkey,
+        amount_out: u64,
+        clock: Clock,
+    ) -> Result<u64> {
         let data = self.pool_id.try_borrow_data()?;
         let pool: &Pool = bytemuck::try_from_bytes::<Pool>(&data[8..])
             .map_err(|_| ProgramError::InvalidAccountData)?;
 
-        let trade_direction = TradeDirection::BtoA;
+        // Determine trade direction based on input_mint
+        let trade_direction = if input_mint == self.base_token.key() {
+            TradeDirection::AtoB
+        } else {
+            TradeDirection::BtoA
+        };
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
 
@@ -393,7 +413,6 @@ impl<'info> MeteoraDammV2<'info> {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

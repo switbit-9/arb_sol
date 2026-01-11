@@ -38,12 +38,12 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         (self.base_token.key, self.quote_token.key)
     }
 
-    fn swap_base_in(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(amount_in, clock)
+    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_in_impl(input_mint, amount_in, clock)
     }
 
-    fn swap_base_out(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_out_impl(amount_in, clock)
+    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -142,7 +142,12 @@ impl<'info> PumpAmm<'info> {
     /// Calculate base output amount for a given quote input amount
     /// Formula: base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
     /// Then applies 0.02% fee (multiply by 0.9998)
-    pub fn swap_base_in_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
+    pub fn swap_base_in_impl(
+        &self,
+        input_mint: Pubkey,
+        amount_in: u64,
+        _clock: Clock,
+    ) -> Result<u64> {
         // Get reserves from vaults
         let base_vault_account = parse_token_account(&self.base_vault)?;
         let quote_vault_account = parse_token_account(&self.quote_vault)?;
@@ -176,7 +181,12 @@ impl<'info> PumpAmm<'info> {
     /// Calculate base output amount for a given quote input amount
     /// Formula: base_amount_out = base_reserve - (base_reserve * quote_reserve) / (quote_reserve + quote_amount_in)
     /// Then applies lp_fee (0.2%), protocol_fee (0.05%), and multiplies by 1.0023
-    pub fn swap_base_out_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(
+        &self,
+        input_mint: Pubkey,
+        amount_in: u64,
+        _clock: Clock,
+    ) -> Result<u64> {
         // Get reserves from vaults
         let base_vault_account = parse_token_account(&self.base_vault)?;
         let quote_vault_account = parse_token_account(&self.quote_vault)?;
@@ -818,7 +828,10 @@ mod tests {
         // Test with quote_amount_in = 10_000_000
         let quote_amount_in = 10_000_000u64;
         let clock = Clock::default();
-        let result = pump_amm.swap_base_in(quote_amount_in, clock).unwrap();
+        let input_mint = quote_mint; // Use quote_mint directly since quote_token was moved into accounts
+        let result = pump_amm
+            .swap_base_in(input_mint, quote_amount_in, clock)
+            .unwrap();
         eprintln!("TOKEN AMOUNT OUT: {:?}", result);
 
         // Manual calculation for verification using actual reserves from pool_data
@@ -932,7 +945,10 @@ mod tests {
         let base_amount_in = 1_000_000_000u64;
         msg!("base_amount_in: {:?}", base_amount_in / 1_000_000_000);
         let clock = Clock::default();
-        let result = pump_amm.swap_base_out(base_amount_in, clock).unwrap();
+        let input_mint = base_mint; // Use base_mint directly since base_token was moved into accounts
+        let result = pump_amm
+            .swap_base_out(input_mint, base_amount_in, clock)
+            .unwrap();
         eprintln!(
             "{:?} SOL -> {:?} TOKEN",
             base_amount_in as f64 / 1_000_000_000.0,
@@ -942,7 +958,10 @@ mod tests {
         // Test with base_amount_in = 10_000_000
         let base_amount_in = result;
         let clock = Clock::default();
-        let result = pump_amm.swap_base_in(base_amount_in, clock).unwrap();
+        let input_mint = quote_mint; // Use quote_mint directly since quote_token was moved into accounts
+        let result = pump_amm
+            .swap_base_in(input_mint, base_amount_in, clock)
+            .unwrap();
         eprintln!(
             "{:?} TOKEN -> {:?} SOL",
             base_amount_in as f64 / 1_000_000_000.0,
@@ -1063,7 +1082,10 @@ mod tests {
         let base_amount_in = 1_000_000_000u64;
         msg!("base_amount_in: {:?}", base_amount_in / 1_000_000_000);
         let clock = Clock::default();
-        let result = pump_amm.swap_base_in(base_amount_in, clock).unwrap();
+        let input_mint = base_mint; // Use base_mint directly since base_token was moved into accounts
+        let result = pump_amm
+            .swap_base_in(input_mint, base_amount_in, clock)
+            .unwrap();
         eprintln!(
             "{:?} SOL -> {:?} TOKEN",
             base_amount_in as f64 / 1_000_000_000.0,
@@ -1073,7 +1095,10 @@ mod tests {
         // Test with base_amount_in = 10_000_000
         let base_amount_in = result;
         let clock = Clock::default();
-        let result = pump_amm.swap_base_out(base_amount_in, clock).unwrap();
+        let input_mint = quote_mint; // Use quote_mint directly since quote_token was moved into accounts
+        let result = pump_amm
+            .swap_base_out(input_mint, base_amount_in, clock)
+            .unwrap();
         eprintln!(
             "{:?} TOKEN -> {:?} SOL",
             base_amount_in as f64 / 1_000_000_000.0,
@@ -1144,7 +1169,8 @@ mod tests {
 
         // Zero input should result in zero output
         let clock = Clock::default();
-        let result = pump_amm.swap_base_in(0, clock).unwrap();
+        let input_mint = base_mint;
+        let result = pump_amm.swap_base_in(input_mint, 0, clock).unwrap();
         assert_eq!(result, 0);
     }
 }

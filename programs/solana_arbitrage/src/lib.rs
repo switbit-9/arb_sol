@@ -72,7 +72,7 @@ pub mod solar_b {
         // }
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
-        let arbitrage_path = run_arbitrage(&mut instances, 1_000_000_000, None).unwrap();
+        let arbitrage_path = run_arbitrage(&mut instances, 1_000_000, None).unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
             &mut instances,
@@ -279,7 +279,7 @@ pub fn execute_arbitrage_path<'info>(
     // This ensures it's dropped immediately after each swap operation
 
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
-        msg!("Edge {:?} -> {:?}", edge.program, edge.side);
+        msg!("Edge {:?} -> {:?} / base_amount={}, quote_amount={}", edge.program, edge.side, edge.left.get_amount(), edge.right.get_amount());
 
         // Find the index of the program instance first, so we can remove it after execution
         let instance_index = instances
@@ -298,7 +298,9 @@ pub fn execute_arbitrage_path<'info>(
 
             match edge.side {
                 EdgeSide::LeftToRight => {
-                    let amount = program_instance.swap_base_out(current_amount as u64, clock)?;
+                    let input_mint = edge.left.mint_account;
+                    msg!("I {:?}", input_mint);
+                    let amount = program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
                         program_instance.get_id(),
@@ -319,7 +321,9 @@ pub fn execute_arbitrage_path<'info>(
                     amount
                 }
                 EdgeSide::RightToLeft => {
-                    let amount = program_instance.swap_base_in(current_amount as u64, clock)?;
+                    let input_mint = edge.right.mint_account;
+                    msg!("I {:?}", input_mint);
+                    let amount = program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
                     msg!(
                         "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
                         program_instance.get_id(),

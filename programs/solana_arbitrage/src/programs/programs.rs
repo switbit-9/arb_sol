@@ -49,10 +49,10 @@ pub trait ProgramMeta {
     }
 
     /// Calculate output amount for swap base in (base -> quote)
-    fn swap_base_in(&self, amount_in: u64, clock: Clock) -> Result<u64>;
+    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64>;
 
     /// Calculate input amount for swap base out (quote -> base)
-    fn swap_base_out(&self, amount_in: u64, clock: Clock) -> Result<u64>;
+    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64>;
 
     /// Invoke swap base in (base -> quote)
     fn invoke_swap_base_in<'a>(

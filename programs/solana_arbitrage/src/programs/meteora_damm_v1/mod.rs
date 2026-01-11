@@ -31,12 +31,12 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         }
     }
 
-    fn swap_base_in(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(amount_in, clock)
+    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_in_impl(input_mint, amount_in, clock)
     }
 
-    fn swap_base_out(&self, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_out_impl(amount_in, clock)
+    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
+        self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -137,11 +137,21 @@ impl<'info> MeteoraDammV1<'info> {
         })
     }
 
-    pub fn swap_base_in_impl(&self, amount_in: u64, clock: Clock) -> Result<u64> {
+    pub fn swap_base_in_impl(
+        &self,
+        _input_mint: Pubkey,
+        _amount_in: u64,
+        _clock: Clock,
+    ) -> Result<u64> {
         Ok(0)
     }
 
-    pub fn swap_base_out_impl(&self, amount_in: u64, _clock: Clock) -> Result<u64> {
+    pub fn swap_base_out_impl(
+        &self,
+        _input_mint: Pubkey,
+        _amount_in: u64,
+        _clock: Clock,
+    ) -> Result<u64> {
         Ok(0)
     }
 

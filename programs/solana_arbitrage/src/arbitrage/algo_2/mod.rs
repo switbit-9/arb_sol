@@ -236,11 +236,16 @@ mod tests {
             panic!("Not implemented for test");
         }
 
-        fn swap_base_in(&self, _amount_in: u64, _clock: Clock) -> Result<u64> {
+        fn swap_base_in(&self, _input_mint: Pubkey, _amount_in: u64, _clock: Clock) -> Result<u64> {
             Ok(0) // Mock implementation
         }
 
-        fn swap_base_out(&self, _amount_in: u64, _clock: Clock) -> Result<u64> {
+        fn swap_base_out(
+            &self,
+            _input_mint: Pubkey,
+            _amount_in: u64,
+            _clock: Clock,
+        ) -> Result<u64> {
             Ok(0) // Mock implementation
         }
 
