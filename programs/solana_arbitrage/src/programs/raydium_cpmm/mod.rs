@@ -9,8 +9,7 @@ use self::curve::calculator::CurveCalculator;
 use self::curve::calculator::TradeDirection;
 use self::error::ErrorCode;
 use self::states::{AmmConfig, PoolState, SwapParams};
-use self::utils::token::{amount_with_slippage, get_transfer_fee, get_transfer_inverse_fee};
-use crate::utils::utils::parse_token_account;
+use crate::utils::{utils::{parse_token_account, amount_with_slippage}, token::{get_transfer_fee, get_transfer_inverse_fee}};
 use crate::{
     programs::ProgramMeta,
     // Market,
