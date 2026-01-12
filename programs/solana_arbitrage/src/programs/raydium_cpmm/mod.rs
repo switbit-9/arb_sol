@@ -63,7 +63,6 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
     }
 
     fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
-        // For swap_base_out, amount_in is actually amount_out desired, input_mint is the input token
         self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
@@ -1120,14 +1119,21 @@ mod tests {
         // PoolState is a ZeroCopy type, so use bytemuck instead of AccountDeserialize
         let pool: PoolState =
             bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
-        eprintln!("base: {:?}", pool.token_0_vault);
-        eprintln!("quote: {:?}", pool.token_1_vault);
+
         let vault_0_account = rpc_client
             .get_account(&SdkPubkey::try_from(pool.token_0_vault.to_bytes().as_ref()).unwrap())
             .await;
         let vault_1_account = rpc_client
             .get_account(&SdkPubkey::try_from(pool.token_1_vault.to_bytes().as_ref()).unwrap())
             .await;
+
+        eprintln!("pool: {:?}", pool_id_key);
+        eprintln!("base vault: {:?}", pool.token_0_vault);
+        eprintln!("quote: {:?}", pool.token_1_vault);
+        eprintln!("base mint: {:?}", pool.token_0_mint);
+        eprintln!("quote mint: {:?}", pool.token_1_mint);
+        eprintln!("amm config: {:?}", pool.amm_config);
+        eprintln!("lp mint: {:?}", pool.lp_mint);
 
         if vault_0_account.is_err() || vault_1_account.is_err() {
             eprintln!("Warning: Could not fetch vault accounts. Pool may be closed or accounts may not exist.");

@@ -7,7 +7,7 @@ pub mod utils;
 
 use arbitrage::algo_2::{check_arbitrage, ArbitragePath};
 use arbitrage::base::{Edge, EdgeSide, Pool};
-use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, SolarBError};
+use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, RaydiumCPMM, SolarBError};
 use utils::utils::parse_token_account;
 
 declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
@@ -26,38 +26,6 @@ pub mod solar_b {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
-        // ctx.remaining_accounts
-        // msg!("Greetings from: {:?}", ctx.program_id);
-        // msg!("Reamingin accounts {:?}", ctx.remaining_accounts);
-        // for item in ctx.remaining_accounts {
-        //     msg!("Remaining account {:?}", &item);
-        // }
-        // Ok(())
-        // let payload = get_full_payload(ctx);
-        // let market_data: Vec<Market> = payload
-        //     .programs
-        //     .iter()
-        //     .map(|p| {
-        //         return execute_program(p.program_id, p.accounts);
-        //     })
-        //     .collect();
-        // let paths = get_paths("SOL", &market_data);
-        // if paths.len() == 0 {
-        //     /// exec first path
-        // }
-        // msg!("Context {:?}", ctx);
-        // msg!(
-        //     "Instruction data {:?} {:?}",
-        //     ctx.remaining_accounts.len(),
-        //     &data.accounts_length
-        // );
-        // msg!("Remaining accounts {:?}", ctx.remaining_accounts);
-
-        // Work directly with remaining_accounts slice - don't clone AccountInfo
-        require!(
-            ctx.remaining_accounts.len() >= 7,
-            SolarBError::InsufficientAccounts
-        );
         let first_accounts = &ctx.remaining_accounts[..7];
 
         let payer = &first_accounts[0];
@@ -67,11 +35,7 @@ pub mod solar_b {
         let rest = &ctx.remaining_accounts[7..];
 
         let mut instances = parse_accounts(rest, &data)?;
-        // for instance in instances {
-        //     instance.as_ref().log_accounts()?;
-        // }
-        // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
-        // TODO: Get start token from context or parameters
+
         let arbitrage_path = run_arbitrage(&mut instances, 1_000, None).unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
@@ -132,14 +96,14 @@ pub fn find_program_instance<'info>(
     //     program_id,
     //     payload_accounts.len()
     // );
-    // if program_id == &RaydiumCPMM::PROGRAM_ID {
-    //     msg!(
-    //         "Initializing RaydiumCPMM with {} accounts",
-    //         payload_accounts.len()
-    //     );
-    //     let pr = RaydiumCPMM::new(payload_accounts)?;
-    //     return Ok(Box::new(pr));
-    // }
+    if program_id == &RaydiumCPMM::PROGRAM_ID {
+        msg!(
+            "Initializing RaydiumCPMM with {} accounts",
+            payload_accounts.len()
+        );
+        let pr = RaydiumCPMM::new(payload_accounts)?;
+        return Ok(Box::new(pr));
+    }
     // if program_id == &RaydiumAmm::PROGRAM_ID {
     //     msg!(
     //         "Initializing RaydiumAmm with {} accounts",
