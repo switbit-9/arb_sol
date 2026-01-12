@@ -72,7 +72,7 @@ pub mod solar_b {
         // }
         // Run arbitrage with default start amount (1 SOL = 1e9 lamports)
         // TODO: Get start token from context or parameters
-        let arbitrage_path = run_arbitrage(&mut instances, 1_000_000, None).unwrap();
+        let arbitrage_path = run_arbitrage(&mut instances, 1_000, None).unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
             &mut instances,

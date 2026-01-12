@@ -828,7 +828,7 @@ mod tests {
         // RPC client. No gPA is required.
         let rpc_client = RpcClient::new(Cluster::Devnet.url().to_string());
 
-        let pool_id = Pubkey::from_str_const("FT8ueq7bP7DpBoP6b3QSsos3TkRY9JYCbGLCLKA3tgUn");
+        let pool_id = Pubkey::from_str_const("DUpw2YXNGJU2w49kyfpsYXDkXRJp9ibtM6mJQtWKu4RY");
 
         let lb_pair_account = rpc_client.get_account(&pool_id).await.unwrap();
 
@@ -966,7 +966,7 @@ mod tests {
         let meteora_dlmm = MeteoraDlmm::new(&accounts).unwrap();
 
         // 1 SOL -> USDC
-        let in_sol_amount = 1_000_000_000;
+        let in_sol_amount = 1_000;
 
         // Determine swap_for_y: if SOL is token_x, we swap X for Y (swap_for_y = true)
         // If SOL is token_y, we swap Y for X (swap_for_y = false)
@@ -976,6 +976,11 @@ mod tests {
         let amount_out = meteora_dlmm
             .swap_base_in(sol_mint, in_sol_amount, clock1)
             .unwrap();
+        eprintln!(
+            "Step 1: {} SOL -> {} TOKEN",
+            in_sol_amount as f64 / 1_000_000_000.0,
+            amount_out as f64 / 1_000_000.0
+        );
 
         // Step 2: Swap quote -> base (reverse swap)
         let other_mint = if token_y_mint_key != sol_mint {
@@ -984,7 +989,7 @@ mod tests {
             token_x_mint_key
         };
 
-        let amount_out_2 = meteora_dlmm.swap_base_out(other_mint, 1, clock_2).unwrap();
+        let amount_out_2 = meteora_dlmm.swap_base_out(other_mint, amount_out, clock_2).unwrap();
         eprintln!(
             "Step 1: {} SOL -> {} TOKEN",
             in_sol_amount as f64 / 1_000_000_000.0,
