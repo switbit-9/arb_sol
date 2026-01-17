@@ -9,7 +9,7 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::spl_token::native_mint;
 use dlmm::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
-use dlmm::pda;
+use dlmm::{pda, quote_exact_out};
 use dlmm::quote::quote_exact_in;
 use dlmm::token::load_mint;
 
@@ -331,13 +331,11 @@ impl<'info> MeteoraDlmm<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        eprintln!("1");
         let pool_data = self.pool_id.try_borrow_data()?;
         let pool_data_slice = &pool_data[8..];
 
         let lb_pair_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
         let lb_pair_key = *self.pool_id.key;
-        eprintln!("2");
         let swap_for_y = input_mint == lb_pair_state.token_x_mint;
 
         // Deserialize bitmap extension if available
@@ -352,7 +350,6 @@ impl<'info> MeteoraDlmm<'info> {
         } else {
             None
         };
-        eprintln!("3");
         let bin_arrays = if swap_for_y {
             // Keep bin_array_accounts alive in the same scope where it's used
             let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
@@ -361,10 +358,7 @@ impl<'info> MeteoraDlmm<'info> {
             let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
             bin_arrays
         };
-        eprintln!("4");
         let quote = {
-            eprintln!("5");
-            eprintln!("6");
             quote_exact_in(
                 lb_pair_key,
                 &lb_pair_state,
@@ -608,6 +602,7 @@ impl<'info> MeteoraDlmm<'info> {
         let mut data = vec![65, 75, 63, 76, 235, 91, 91, 136];
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&min_amount_out_value.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // Empty vec
 
         // RemainingAccountsInfo: { slices: Vec<RemainingAccountsSlice> }
         // For basic swaps without transfer hooks, slices is empty

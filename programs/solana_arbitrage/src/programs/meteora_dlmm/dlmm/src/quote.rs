@@ -52,17 +52,14 @@ pub fn quote_exact_out<'a>(
     lb_pair: &LbPair,
     mut amount_out: u64,
     swap_for_y: bool,
-    bin_arrays: &HashMap<Pubkey, BinArray>,
+    bin_arrays: Vec<AccountInfo<'a>>,
     bitmap_extension: Option<&BinArrayBitmapExtension>,
     clock: &Clock,
     mint_x_account: &AccountInfo<'a>,
     mint_y_account: &AccountInfo<'a>,
 ) -> anyhow::Result<SwapExactOutQuote> {
     let current_timestamp = clock.unix_timestamp as u64;
-    let current_slot = clock.slot;
     let epoch = clock.epoch;
-
-    validate_swap_activation(lb_pair, current_timestamp, current_slot)?;
 
     let mut lb_pair = *lb_pair;
     lb_pair.update_references(current_timestamp as i64)?;
@@ -78,6 +75,14 @@ pub fn quote_exact_out<'a>(
 
     amount_out = get_transfer_fee(out_mint_account, amount_out, epoch)?;
 
+    // Constants moved outside loop for better performance
+    const BIN_ARRAY_HEADER_SIZE: usize = 56;
+    const BIN_SIZE: usize = 144;
+
+    // Create HashMap once for O(1) account lookup instead of O(n) find() each iteration
+    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> =
+        bin_arrays.iter().map(|acc| (*acc.key, acc)).collect();
+
     while amount_out > 0 {
         let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
             lb_pair_pubkey,
@@ -89,16 +94,27 @@ pub fn quote_exact_out<'a>(
         .pop()
         .context("Pool out of liquidity")?;
 
-        let active_bin_array = bin_arrays
-            .get(&active_bin_array_pubkey)
-            .context("Active bin array not found")?;
+        let active_bin_array_account = match bin_arrays_map.get(&active_bin_array_pubkey) {
+            Some(account) => *account,
+            None => {
+                // We don't have the required bin array account - stop the swap
+                // This means we've exhausted the available bin arrays
+                // Return partial result if we made some progress, otherwise it's an error
+                if total_amount_in == 0 {
+                    return Err(anyhow::anyhow!(
+                        "Insufficient liquidity: required bin array not available"
+                    ));
+                }
+                break;
+            }
+        };
 
-        // Use only the index for range checking (stack-safe, 8 bytes)
-        let bin_array_index = active_bin_array.index as i32;
-
+        let bin_array_data = active_bin_array_account.try_borrow_data()?;
+        // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
+        let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
         // Cache range calculation once per bin array (doesn't change within inner loop)
         let (lower_bin_id, upper_bin_id) =
-            BinArray::get_bin_array_lower_upper_bin_id(bin_array_index)?;
+            BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
         loop {
             // Early exit checks
@@ -118,15 +134,13 @@ pub fn quote_exact_out<'a>(
                 .checked_sub(lower_bin_id)
                 .context("MathOverflow")?;
             let bin_index_usize = bin_index_in_array as usize;
+            // Calculate bin offset (bounds check removed - validated by range check above)
+            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
 
-            ensure!(
-                bin_index_usize < MAX_BIN_PER_ARRAY,
-                "Bin index out of bounds"
-            );
+            // Read single bin from account data (only ~144 bytes on stack)
+            let mut active_bin: Bin =
+                bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-            // Clone only the specific bin we need (~144 bytes, acceptable on stack)
-            // This avoids cloning the entire BinArray (~10KB)
-            let mut active_bin = active_bin_array.bins[bin_index_usize];
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
             if !active_bin.is_empty(!swap_for_y) {
@@ -156,10 +170,23 @@ pub fn quote_exact_out<'a>(
 
                     amount_out = 0;
                 }
-            }
 
-            if amount_out > 0 {
+                // Only advance if we still have amount left to swap
+                if amount_out > 0 {
+                    lb_pair.advance_active_bin(swap_for_y)?;
+                }
+            } else {
+                // Bin is empty, advance to next bin immediately
+                let old_active_id = lb_pair.active_id;
                 lb_pair.advance_active_bin(swap_for_y)?;
+                // Safety check: if we didn't actually advance (shouldn't happen), break to avoid infinite loop
+                if lb_pair.active_id == old_active_id {
+                    break;
+                }
+                // Check if we've moved outside the current bin array range - if so, break to get new bin array
+                if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
+                    break;
+                }
             }
         }
     }
@@ -189,7 +216,6 @@ pub fn quote_exact_in<'a>(
     mint_y_account: &AccountInfo<'a>,
 ) -> anyhow::Result<SwapExactInQuote> {
     let current_timestamp: u64 = clock.unix_timestamp as u64;
-    let current_slot = clock.slot;
     let epoch = clock.epoch;
 
     let mut lb_pair = *lb_pair;

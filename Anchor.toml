@@ -11,6 +11,10 @@ solana_arbitrage = "DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT"
 [programs.devnet]
 solana_arbitrage = "Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF"
 
+[deploy]
+# This is where you specify the length for the buffer
+max_len = 700000
+
 [registry]
 url = "https://api.apr.dev"
 

@@ -128,7 +128,7 @@ struct StepComputations {
 pub fn swap_internal<'b, 'info>(
     amm_config: &AmmConfig,
     pool_state: &mut RefMut<PoolState>,
-    tick_array_states: &mut VecDeque<RefMut<TickArrayState>>,
+    tick_array_states: &mut VecDeque<RefMut<AccountInfo<'info>>>,
     observation_state: &mut RefMut<ObservationState>,
     tickarray_bitmap_extension: &Option<TickArrayBitmapExtension>,
     amount_specified: u64,
@@ -182,6 +182,8 @@ pub fn swap_internal<'b, 'info>(
     let mut tick_array_current = tick_array_states.pop_front().unwrap();
     // find the first active tick array account
     for _ in 0..tick_array_states.len() {
+        let tick_array_data = tick_array_current.try_borrow_data()?;
+        let mut tick_array_current = bytemuck::pod_read_unaligned::<TickArrayState>(&tick_array_data[8..]);
         if tick_array_current.start_tick_index == current_valid_tick_array_start_index {
             break;
         }

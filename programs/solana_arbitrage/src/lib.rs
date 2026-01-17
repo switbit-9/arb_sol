@@ -4,7 +4,7 @@ pub mod arbitrage;
 pub mod math;
 pub mod programs;
 pub mod utils;
-
+use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::{check_arbitrage, ArbitragePath};
 use arbitrage::base::{Edge, EdgeSide, Pool};
 use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, RaydiumCPMM, SolarBError};
@@ -36,7 +36,7 @@ pub mod solar_b {
 
         let mut instances = parse_accounts(rest, &data)?;
 
-        let arbitrage_path = run_arbitrage(&mut instances, 1_000, None).unwrap();
+        let arbitrage_path = run_arbitrage(&mut instances, 1_000, Some(WSOL)).unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
             &mut instances,
@@ -267,10 +267,9 @@ pub fn execute_arbitrage_path<'info>(
 
             // Get Clock for this swap (may change between swaps) - scoped to this block
             let clock = Clock::get()?;
+            let input_mint: Pubkey = edge.left.mint_account;
 
-            match edge.side {
-                EdgeSide::LeftToRight => {
-                    let input_mint = edge.left.mint_account;
+            if input_mint != WSOL {
                     let amount =
                         program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
                     msg!(
@@ -279,6 +278,7 @@ pub fn execute_arbitrage_path<'info>(
                         current_amount,
                         amount
                     );
+
                     program_instance.invoke_swap_base_out(
                         input_mint,
                         current_amount as u64,
@@ -292,8 +292,7 @@ pub fn execute_arbitrage_path<'info>(
                         mint_2_token_program.clone(),
                     )?;
                     amount
-                }
-                EdgeSide::RightToLeft => {
+                } else {
                     let input_mint = edge.right.mint_account;
                     let amount =
                         program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
@@ -316,8 +315,8 @@ pub fn execute_arbitrage_path<'info>(
                         mint_2_token_program.clone(),
                     )?;
                     amount
-                }
             }
+            
             // program_instance and clock are dropped here when this block ends
         };
 
