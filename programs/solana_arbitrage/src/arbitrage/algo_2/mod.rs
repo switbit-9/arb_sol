@@ -182,20 +182,12 @@ pub fn check_arbitrage(
     start_amount: u128,
     start_token: Option<Pubkey>,
     min_profit: Option<i128>,
+    mints: u16,
 ) -> Result<ArbitragePath> {
     let min_profit = min_profit.unwrap_or(MIN_PROFIT);
 
-    // 1. Determine Unique Tokens to decide strategy
-    let mut unique_tokens = HashSet::new();
-    for &edge in edges {
-        unique_tokens.insert(edge.left.mint_account);
-        unique_tokens.insert(edge.right.mint_account);
-    }
-
-    let num_tokens = unique_tokens.len();
-
     // 2. Strategy Selection
-    let arbitrage = if num_tokens <= 2 {
+    let arbitrage = if mints == 2 {
         find_cross_arbitrage_iterative(edges, start_amount, min_profit, start_token)
     } else {
         find_triangular_arbitrage_iterative(edges, start_amount, min_profit, start_token)

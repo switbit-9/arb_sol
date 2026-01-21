@@ -9,9 +9,10 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::spl_token::native_mint;
 use dlmm::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
-use dlmm::{pda, quote_exact_out};
+use dlmm::extensions::LbPairExtension;
+use dlmm::math::price_math::get_price_from_id;
 use dlmm::quote::quote_exact_in;
-use dlmm::token::load_mint;
+pub const SCALE_OFFSET: u8 = 64;
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
@@ -22,6 +23,8 @@ pub struct MeteoraDlmm<'info> {
     pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
     pub quote_token: AccountInfo<'info>,
+    pub lb_pair: LbPair,
+    pub price: u128,
     // pub bin_arrays: Option<Vec<AccountInfo<'info>>>,
     // pub oracle: AccountInfo<'info>,
     // pub host_fee_in: AccountInfo<'info>,
@@ -168,11 +171,15 @@ impl<'info> MeteoraDlmm<'info> {
         let quote_vault = next_account_info(&mut iter)?; // 3
         let base_token = next_account_info(&mut iter)?; // 4
         let quote_token = next_account_info(&mut iter)?; // 5
-                                                         // let oracle = next_account_info(&mut iter)?; // 6
-                                                         // let host_fee_in = next_account_info(&mut iter)?; // 7
-                                                         // let memo = next_account_info(&mut iter)?; // 8
-                                                         // let event_authority = next_account_info(&mut iter)?; // 9
-                                                         // let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
+        let pool_data = pool_id.try_borrow_data()?;
+        let pool_data_slice = &pool_data[8..];
+        let lb_pair: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
+        let price = get_price_from_id(lb_pair.active_id, lb_pair.bin_step);
+        // let oracle = next_account_info(&mut iter)?; // 6
+        // let host_fee_in = next_account_info(&mut iter)?; // 7
+        // let memo = next_account_info(&mut iter)?; // 8
+        // let event_authority = next_account_info(&mut iter)?; // 9
+        // let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
 
         // Handle bin_arrays: they are split by SOL MINT account
         // Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
@@ -188,6 +195,8 @@ impl<'info> MeteoraDlmm<'info> {
             quote_vault: quote_vault.clone(),
             base_token: base_token.clone(),
             quote_token: quote_token.clone(),
+            lb_pair: lb_pair,
+            price: price.unwrap(),
             // oracle: oracle.clone(),
             // host_fee_in: host_fee_in.clone(),
             // memo: memo.clone(),
@@ -198,6 +207,14 @@ impl<'info> MeteoraDlmm<'info> {
         })
     }
 
+    fn get_prices(&self) -> Result<(f64, f64)> {
+        // Price is scaled by 2^64 (SCALE_OFFSET), so we need to divide by 2^64 to get actual price
+        const SCALE: f64 = (1u128 << SCALE_OFFSET) as f64; // 2^64 as f64 = 18446744073709551616.0
+        let price = self.price as f64 / SCALE;
+
+        let inverse_price = 1.0 / price;
+        Ok((price, inverse_price))
+    }
     /// Extract bin arrays for buying from accounts starting at index 11
     /// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
     fn get_bin_arrays_buy(&self) -> Option<Vec<AccountInfo<'info>>> {
@@ -268,20 +285,7 @@ impl<'info> MeteoraDlmm<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        // eprintln!("0");
-        let pool_data = self.pool_id.try_borrow_data()?;
-        if pool_data.len() < 8 {
-            return Err(anchor_lang::error::Error::from(
-                anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound,
-            ));
-        }
-        // eprintln!("1");
-        let pool_data_slice = &pool_data[8..];
-
-        let pool_id_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
-        let pool_id_key = *self.pool_id.key;
-        // eprintln!("2");
-        let swap_for_y = input_mint == pool_id_state.token_x_mint;
+        let swap_for_y = input_mint == self.lb_pair.token_x_mint;
         // Deserialize bitmap extension if available
         let bitmap_extension_account = &self.accounts[10];
         let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
@@ -304,8 +308,8 @@ impl<'info> MeteoraDlmm<'info> {
         };
         let quote = {
             quote_exact_in(
-                pool_id_key,
-                &pool_id_state,
+                *self.pool_id.key,
+                &self.lb_pair,
                 amount_in,
                 swap_for_y, // swap_for_y
                 bin_arrays,
@@ -331,12 +335,7 @@ impl<'info> MeteoraDlmm<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        let pool_data = self.pool_id.try_borrow_data()?;
-        let pool_data_slice = &pool_data[8..];
-
-        let lb_pair_state: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
-        let lb_pair_key = *self.pool_id.key;
-        let swap_for_y = input_mint == lb_pair_state.token_x_mint;
+        let swap_for_y = input_mint == self.lb_pair.token_x_mint;
 
         // Deserialize bitmap extension if available
         let bitmap_extension_account = &self.accounts[10];
@@ -360,8 +359,8 @@ impl<'info> MeteoraDlmm<'info> {
         };
         let quote = {
             quote_exact_in(
-                lb_pair_key,
-                &lb_pair_state,
+                *self.pool_id.key,
+                &self.lb_pair,
                 amount_in,
                 swap_for_y, // swap_for_y = false means swapping FOR X (base token), so we need buy arrays
                 bin_arrays,
@@ -646,6 +645,78 @@ impl<'info> MeteoraDlmm<'info> {
         }
         Ok(())
     }
+
+    // fn get_amount_in(self, amount_out: u64, price: u128, input_mint: Pubkey) -> Result<u64> {
+    //     let swap_for_y = *self.base_token.key == input_mint;
+    //     // Price is scaled by 2^64, so we need proper scaling calculations
+    //     if swap_for_y {
+    //         // amount_in = (amount_out << 64) / price (with ceiling)
+    //         let scale = 1u128
+    //             .checked_shl(SCALE_OFFSET as u32)
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         let numerator = (amount_out as u128)
+    //             .checked_mul(scale)
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         let amount_in = numerator
+    //             .checked_add(price)
+    //             .and_then(|x| x.checked_sub(1))
+    //             .and_then(|x| x.checked_div(price))
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         Ok(amount_in as u64)
+    //     } else {
+    //         // amount_in = (amount_out * price) >> 64 (with ceiling)
+    //         let numerator = (amount_out as u128)
+    //             .checked_mul(price)
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         let scale = 1u128
+    //             .checked_shl(SCALE_OFFSET as u32)
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         let amount_in = numerator
+    //             .checked_add(scale)
+    //             .and_then(|x| x.checked_sub(1))
+    //             .and_then(|x| Some(x >> SCALE_OFFSET))
+    //             .ok_or(ProgramError::InvalidArgument)?;
+    //         Ok(amount_in as u64)
+    //     }
+    // }
+
+    fn get_amount_out(self, amount_in: u64, input_mint: Pubkey) -> Result<u64> {
+        let swap_for_y = *self.base_token.key == input_mint;
+        let price = self.price;
+        let fee = self
+            .lb_pair
+            .compute_fee_from_amount(amount_in)
+            .map_err(|e| {
+                msg!("compute_fee_from_amount error: {}", e);
+                ProgramError::InvalidArgument
+            })?;
+        // let fee_rate = fee as f64 / amount_in as f64;
+        // eprintln!("fee: {} - {}", fee, fee_rate);
+        let amount_in_after_fee = amount_in
+            .checked_sub(fee)
+            .ok_or(ProgramError::InvalidArgument)?;
+        // Price is scaled by 2^64, so we need proper scaling calculations
+        // This matches Bin::get_amount_out implementation
+        let amount_out = if swap_for_y {
+            // amount_out = (price * amount_in_after_fee) >> 64 (with floor)
+            let numerator = price
+                .checked_mul(amount_in_after_fee as u128)
+                .ok_or(ProgramError::InvalidArgument)?;
+            (numerator >> SCALE_OFFSET) as u64
+        } else {
+            // amount_out = (amount_in_after_fee << 64) / price (with floor)
+            let scale = 1u128
+                .checked_shl(SCALE_OFFSET as u32)
+                .ok_or(ProgramError::InvalidArgument)?;
+            let numerator = (amount_in_after_fee as u128)
+                .checked_mul(scale)
+                .ok_or(ProgramError::InvalidArgument)?;
+            numerator
+                .checked_div(price)
+                .ok_or(ProgramError::InvalidArgument)? as u64
+        };
+        Ok(amount_out)
+    }
 }
 
 // Use the function from dlmm::quote module instead of duplicating
@@ -816,14 +887,18 @@ mod tests {
     #[tokio::test]
     async fn test_dlmm_swap_quote_exact_in() {
         use anchor_client::Cluster;
+        use dlmm::pda;
         use solana_client::nonblocking::rpc_client::RpcClient;
         use std::collections::HashMap;
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
 
-        // RPC client. No gPA is required.
-        let rpc_client = RpcClient::new(Cluster::Devnet.url().to_string());
+        // // RPC client. No gPA is required.
+        // let rpc_client = RpcClient::new(Cluster::Devnet.url().to_string());
+        // let pool_id = Pubkey::from_str_const("DUpw2YXNGJU2w49kyfpsYXDkXRJp9ibtM6mJQtWKu4RY");
 
-        let pool_id = Pubkey::from_str_const("DUpw2YXNGJU2w49kyfpsYXDkXRJp9ibtM6mJQtWKu4RY");
+        // // RPC client. No gPA is required.
+        let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+        let pool_id = Pubkey::from_str_const("DrSo4GMLEZQHEWKDr9TEbzjoc7Yff5suQmNVKTNok8GK");
 
         let lb_pair_account = rpc_client.get_account(&pool_id).await.unwrap();
 
@@ -960,8 +1035,31 @@ mod tests {
         // Create MeteoraDlmm instance
         let meteora_dlmm = MeteoraDlmm::new(&accounts).unwrap();
 
+        let wsol = anchor_spl::token::spl_token::native_mint::ID;
+        // let (token_a_decimal, token_b_decimal) = if token_x_mint_key == wsol {
+        //     (9, 6) // token_a is SOL (9 decimals), token_b is likely USDC/USDT (6 decimals)
+        // } else if token_y_mint_key == wsol {
+        //     (6, 9) // token_a is likely USDC/USDT (6 decimals), token_b is SOL (9 decimals)
+        // } else {
+        //     // Neither is SOL, default to common case (e.g., USDC/USDT pair)
+        //     (6, 6)
+        // };
+
+        let prices = meteora_dlmm.get_prices().unwrap();
+        let price = prices.0;
+        let inverse_price = prices.1;
+        eprintln!("price: {:?}", price);
+
+        let (sol_price, token_price) = if lb_pair.token_x_mint == sol_mint {
+            (price, inverse_price)
+        } else {
+            (inverse_price, price)
+        };
+        eprintln!("sol_price: {:?}", sol_price);
+        eprintln!("token_price: {:?}", token_price);
+
         // 1 SOL -> USDC
-        let in_sol_amount = 1_000;
+        let in_sol_amount = 1_000_000_000;
 
         // Determine swap_for_y: if SOL is token_x, we swap X for Y (swap_for_y = true)
         // If SOL is token_y, we swap Y for X (swap_for_y = false)
@@ -971,12 +1069,20 @@ mod tests {
         let amount_out = meteora_dlmm
             .swap_base_in(sol_mint, in_sol_amount, clock1)
             .unwrap();
-        eprintln!(
-            "Step 1: {} SOL -> {} TOKEN",
-            in_sol_amount as f64 / 1_000_000_000.0,
-            amount_out as f64 / 1_000_000.0
-        );
+        let amount_out_v2 = in_sol_amount as f64 * inverse_price;
+        let amount_out_v2_2 = meteora_dlmm
+            .clone()
+            .get_amount_out(in_sol_amount, sol_mint)
+            .unwrap();
 
+        eprintln!(
+            "Step 1: {} SOL -> {} TOKEN / {} / {} ",
+            in_sol_amount as f64 / 1_000_000_000.0,
+            amount_out as f64 / 1_000_000.0,
+            amount_out_v2 as f64 / 1_000_000.0,
+            amount_out_v2_2 as f64 / 1_000_000.0,
+        );
+        eprintln!("================================================");
         // Step 2: Swap quote -> base (reverse swap)
         let other_mint = if token_y_mint_key != sol_mint {
             token_y_mint_key
@@ -984,112 +1090,22 @@ mod tests {
             token_x_mint_key
         };
 
-        let amount_out_2 = meteora_dlmm.swap_base_out(other_mint, amount_out, clock_2).unwrap();
+        let token_amount_out = meteora_dlmm
+            .swap_base_out(other_mint, amount_out, clock_2)
+            .unwrap();
+        let token_amount_out_v2 = amount_out as f64 * token_price;
+        let token_amount_out_v2_2 = meteora_dlmm
+            .clone()
+            .get_amount_out(amount_out, other_mint)
+            .unwrap();
+
         eprintln!(
-            "Step 1: {} SOL -> {} TOKEN",
-            in_sol_amount as f64 / 1_000_000_000.0,
-            amount_out as f64 / 1_000_000.0
-        );
-        eprintln!(
-            "Step 2: {} TOKEN -> {} SOL",
+            "Step 2: {} TOKEN -> SOL {} / {} / {}",
             amount_out as f64 / 1_000_000.0,
-            amount_out_2 as f64 / 1_000_000_000.0
+            token_amount_out as f64 / 1_000_000_000.0,
+            token_amount_out_v2 as f64 / 1_000_000_000.0,
+            token_amount_out_v2_2 as f64 / 1_000_000_000.0
         );
 
-        // Use the already combined bin_array_all_infos for quote_exact_in
-        // Clone it since we need it later for the second quote call
-        // let bin_arrays_vec_for_quote: Vec<AccountInfo> = bin_array_all_infos.clone();
-
-        // const BIN_SIZE: usize = 144;
-        // const ESTIMATED_BIN_ARRAY_SIZE: usize = 56 + (70 * 144); // header + bins
-
-        // eprintln!(
-        //     "Calling quote_exact_in with {} bin arrays",
-        //     bin_arrays_vec_for_quote.len()
-        // );
-        // eprintln!("Stack usage in quote_exact_in:");
-        // eprintln!("  - Each bin array index read: 8 bytes (i64)");
-        // eprintln!("  - Each bin read: {} bytes (Bin struct)", BIN_SIZE);
-        // eprintln!(
-        //     "  - NO full BinArray deserialization (~{} bytes avoided per array)",
-        //     ESTIMATED_BIN_ARRAY_SIZE
-        // );
-        // eprintln!(
-        //     "  - Estimated max stack usage per iteration: {} bytes (well under 4KB limit)",
-        //     8 + BIN_SIZE
-        // );
-
-        // let quote_result = dlmm::quote_exact_in(
-        //     pool_id,
-        //     &lb_pair,
-        //     in_sol_amount,
-        //     swap_for_y,
-        //     bin_arrays_vec_for_quote,
-        //     None,
-        //     &clock_3,
-        //     &mint_x_interface,
-        //     &mint_y_interface,
-        // )
-        // .unwrap();
-
-        // let amount_out_2 = quote_result.amount_out;
-
-        // eprintln!("1 SOL -> {:?} TOKEN", amount_out_2);
-
-        // // For TOKEN -> SOL: if SOL is token_x, we swap Y for X (swap_for_y = false)
-        // // If SOL is token_y, we swap X for Y (swap_for_y = true)
-        // let swap_for_y_reverse = !swap_for_y;
-
-        // // For reverse swap, input is the token we got from first swap (amount_out_2)
-        // // Determine which token that is based on swap direction
-        // let reverse_input_mint = if swap_for_y {
-        //     lb_pair.token_y_mint // First swap was X->Y, so reverse is Y->X
-        // } else {
-        //     lb_pair.token_x_mint // First swap was Y->X, so reverse is X->Y
-        // };
-        // if swap_for_y_reverse {
-        //     let quote_result = meteora_dlmm
-        //         .swap_base_in(reverse_input_mint, amount_out_2, clock2)
-        //         .unwrap();
-        //     eprintln!(
-        //         "{:?} TOKEN -> {:?} SOL",
-        //         amount_out_2,
-        //         quote_result as f64 / 1_000_000_000.0
-        //     );
-        // } else {
-        //     let quote_result = meteora_dlmm
-        //         .swap_base_out(reverse_input_mint, amount_out_2, clock2)
-        //         .unwrap();
-        //     eprintln!(
-        //         "{:?} TOKEN -> {:?} SOL",
-        //         amount_out_2,
-        //         quote_result as f64 / 1_000_000_000.0
-        //     );
-        // }
-
-        // // Fetch clock again for the quote call (clock2 was moved in swap_base_in/swap_base_out)
-        // let clock3 = get_clock(&rpc_client).await.unwrap();
-
-        // // Use the already combined bin_array_all_infos for the second quote call
-        // let bin_arrays_vec_for_quote2: Vec<AccountInfo> = bin_array_all_infos.clone();
-
-        // let quote_result = dlmm::quote_exact_in(
-        //     pool_id,
-        //     &lb_pair,
-        //     amount_out_2,
-        //     swap_for_y_reverse,
-        //     bin_arrays_vec_for_quote2,
-        //     None,
-        //     &clock3,
-        //     &mint_x_interface,
-        //     &mint_y_interface,
-        // )
-        // .unwrap();
-
-        // eprintln!(
-        //     "{:?} TOKEN -> {:?} SOL",
-        //     amount_out_2,
-        //     quote_result.amount_out as f64 / 1_000_000_000.0
-        // );
     }
 }

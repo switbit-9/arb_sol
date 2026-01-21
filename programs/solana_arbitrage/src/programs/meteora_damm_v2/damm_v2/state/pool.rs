@@ -897,6 +897,46 @@ impl Pool {
         })
     }
 
+    pub fn calculate_a_to_b_from_amount_in_exact(&self, amount_in: u64) -> Result<(u64, u128)> {
+        // finding new target price
+        let next_sqrt_price =
+            get_next_sqrt_price_from_input(self.sqrt_price, self.liquidity, amount_in, true)?;
+
+        if next_sqrt_price < self.sqrt_min_price {
+            return Err(PoolError::PriceRangeViolation.into());
+        }
+
+        // finding output amount
+        let output_amount = get_delta_amount_b_unsigned(
+            next_sqrt_price,
+            self.sqrt_price,
+            self.liquidity,
+            Rounding::Down,
+        )?;
+
+        Ok((output_amount, next_sqrt_price))
+    }
+
+    pub fn calculate_b_to_a_from_amount_in_exact(&self, amount_in: u64) -> Result<(u64, u128)> {
+        // finding new target price
+        let next_sqrt_price =
+            get_next_sqrt_price_from_input(self.sqrt_price, self.liquidity, amount_in, false)?;
+
+        if next_sqrt_price > self.sqrt_max_price {
+            return Err(PoolError::PriceRangeViolation.into());
+        }
+
+        // finding output amount
+        let output_amount = get_delta_amount_a_unsigned(
+            self.sqrt_price,
+            next_sqrt_price,
+            self.liquidity,
+            Rounding::Down,
+        )?;
+
+        Ok((output_amount, next_sqrt_price))
+    }
+
     fn calculate_b_to_a_from_amount_in(&self, amount_in: u64) -> Result<SwapAmountFromInput> {
         // finding new target price
         let next_sqrt_price =

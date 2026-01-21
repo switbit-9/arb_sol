@@ -4,11 +4,10 @@ use anchor_lang::solana_program::{
     account_info::next_account_info, program_error::ProgramError, pubkey::Pubkey,
 };
 use bytemuck;
-
 // Expose the damm_v2 module
 pub mod damm_v2;
-
-// Re-export the MeteoraDammV2 struct from lib.rs
+// Re-export types from damm_v2 module
+pub use damm_v2::curve::{get_spot_price_a_to_b, get_spot_price_b_to_a};
 pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
 
 pub fn get_current_point(
@@ -41,6 +40,7 @@ pub struct MeteoraDammV2<'info> {
     pub pool_authority: AccountInfo<'info>,
     pub event_authority: AccountInfo<'info>,
     pub referral_token_account: AccountInfo<'info>,
+    pub pool: Pool,
 }
 
 impl<'info> ProgramMeta for MeteoraDammV2<'info> {
@@ -140,7 +140,7 @@ impl<'info> MeteoraDammV2<'info> {
 
     pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
         let mut iter = accounts.iter();
-        let program_id = next_account_info(&mut iter)?; // 0
+        let program_id: &AccountInfo<'info> = next_account_info(&mut iter)?; // 0
         let pool_id = next_account_info(&mut iter)?; // 1
         let base_vault = next_account_info(&mut iter)?; // 2
         let quote_vault = next_account_info(&mut iter)?; // 3
@@ -149,6 +149,9 @@ impl<'info> MeteoraDammV2<'info> {
         let pool_authority = next_account_info(&mut iter)?; // 6
         let event_authority = next_account_info(&mut iter)?; // 7
         let referral_token_account = next_account_info(&mut iter)?; // 8
+
+        let pool_data = pool_id.try_borrow_data().unwrap();
+        let pool: Pool = bytemuck::pod_read_unaligned(&pool_data[8..]);
 
         Ok(MeteoraDammV2 {
             program_id: program_id.clone(),
@@ -160,7 +163,17 @@ impl<'info> MeteoraDammV2<'info> {
             pool_authority: pool_authority.clone(),
             event_authority: event_authority.clone(),
             referral_token_account: referral_token_account.clone(),
+            pool: pool.clone(),
         })
+    }
+
+    pub fn get_prices(&self) -> Result<(f64, f64)> {
+        // price : token_A -> token_B (A -> B)
+        // inverse_price : token_B -> token_A (B -> A)
+        let actual_sqrt_price = self.pool.sqrt_price as f64 / (1u128 << 64) as f64;
+        let price_b_to_a_base = actual_sqrt_price * actual_sqrt_price; // token_b / token_a in base units
+        let price = 1.0 / price_b_to_a_base; // token_a / token_b in base units
+        Ok((price_b_to_a_base as f64, price as f64))
     }
 
     pub fn swap_base_in_impl(
@@ -169,12 +182,6 @@ impl<'info> MeteoraDammV2<'info> {
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
-        use damm_v2::{FeeMode, Pool, TradeDirection};
-
-        let data = self.pool_id.try_borrow_data()?;
-        let pool: &Pool = bytemuck::try_from_bytes::<Pool>(&data[8..])
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-
         // Determine trade direction based on input_mint
         let trade_direction = if input_mint == self.base_token.key() {
             TradeDirection::AtoB
@@ -185,21 +192,18 @@ impl<'info> MeteoraDammV2<'info> {
         let current_slot = clock.slot as u64;
 
         let current_point =
-            get_current_point(pool.activation_type, current_slot, current_timestamp)?;
+            get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
         let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
-        let fee_mode = FeeMode::get_fee_mode(pool.collect_fee_mode, trade_direction, has_referral)?;
-        eprintln!("fee_mode: {:?}", fee_mode);
-        eprintln!("current_point: {}", current_point);
-        eprintln!("amount_in: {}", amount_in);
-        let results = pool.get_swap_result_from_exact_input(
+        let fee_mode: FeeMode =
+            FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
+
+        let results = self.pool.get_swap_result_from_exact_input(
             amount_in,
             &fee_mode,
             trade_direction,
             current_point,
         )?;
-
-        eprintln!("results: {:?}", results);
 
         Ok(results.output_amount)
     }
@@ -210,12 +214,6 @@ impl<'info> MeteoraDammV2<'info> {
         amount_out: u64,
         clock: Clock,
     ) -> Result<u64> {
-        use damm_v2::{FeeMode, Pool, TradeDirection};
-
-        let data = self.pool_id.try_borrow_data()?;
-        let pool: &Pool = bytemuck::try_from_bytes::<Pool>(&data[8..])
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-
         // Determine trade direction based on input_mint
         let trade_direction = if input_mint == self.base_token.key() {
             TradeDirection::AtoB
@@ -226,11 +224,12 @@ impl<'info> MeteoraDammV2<'info> {
         let current_slot = clock.slot as u64;
 
         let current_point =
-            get_current_point(pool.activation_type, current_slot, current_timestamp)?;
+            get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
         let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
-        let fee_mode = FeeMode::get_fee_mode(pool.collect_fee_mode, trade_direction, has_referral)?;
-        let results = pool.get_swap_result_from_exact_output(
+        let fee_mode =
+            FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
+        let results = self.pool.get_swap_result_from_exact_output(
             amount_out,
             &fee_mode,
             trade_direction,
@@ -448,6 +447,127 @@ mod tests {
     };
     use bytemuck;
     use damm_v2::state::pool::Pool;
+
+    // Helper to convert solana_sdk::account::Account to AccountInfo
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static,
+            false, // is_signer
+            false, // is_writable
+            lamports,
+            data,
+            owner_static,
+            account.executable,
+            account.rent_epoch,
+        )
+    }
+
+    // Helper function to fetch account from RPC and convert to AccountInfo
+    async fn fetch_account_info_from_rpc(
+        rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
+        key: Pubkey,
+    ) -> AccountInfo<'static> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref())
+            .expect("Failed to convert Pubkey to SdkPubkey");
+        let account = rpc_client
+            .get_account(&sdk_pubkey)
+            .await
+            .expect(&format!("Failed to fetch account {}", key));
+        account_to_account_info(key, account)
+    }
+
+    /// Get on chain clock from RPC
+    async fn get_clock(
+        rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
+    ) -> anyhow::Result<Clock> {
+        use anchor_client::solana_sdk::sysvar;
+
+        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await?;
+
+        // Clock from Solana is borsh-serialized with these fields in order:
+        // slot: u64 (8 bytes)
+        // epoch_start_timestamp: i64 (8 bytes)
+        // epoch: u64 (8 bytes)
+        // leader_schedule_epoch: u64 (8 bytes)
+        // unix_timestamp: i64 (8 bytes)
+        // Total: 40 bytes
+        if clock_account.data.len() < 40 {
+            return Err(anyhow::anyhow!(
+                "Clock account data too short: {} bytes",
+                clock_account.data.len()
+            ));
+        }
+
+        let data = &clock_account.data;
+        let slot = u64::from_le_bytes(
+            data[0..8]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse slot"))?,
+        );
+        let epoch_start_timestamp = i64::from_le_bytes(
+            data[8..16]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse epoch_start_timestamp"))?,
+        );
+        let epoch = u64::from_le_bytes(
+            data[16..24]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse epoch"))?,
+        );
+        let leader_schedule_epoch = u64::from_le_bytes(
+            data[24..32]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse leader_schedule_epoch"))?,
+        );
+        let unix_timestamp = i64::from_le_bytes(
+            data[32..40]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to parse unix_timestamp"))?,
+        );
+
+        Ok(Clock {
+            slot,
+            epoch_start_timestamp,
+            epoch,
+            leader_schedule_epoch,
+            unix_timestamp,
+        })
+    }
+
+    // Helper function to create a mock AccountInfo with provided data
+    fn create_mock_account_info_with_data(
+        key: Pubkey,
+        owner: Pubkey,
+        data: Option<Vec<u8>>,
+    ) -> AccountInfo<'static> {
+        let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
+        let data_vec = Box::leak(Box::new(data_vec));
+        let lamports = Box::leak(Box::new(0u64));
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+
+        AccountInfo::new(
+            key_static,
+            false,
+            true,
+            lamports,
+            data_vec,
+            owner_static,
+            false,
+            0,
+        )
+    }
 
     // Helper function to create a mock AccountInfo
     fn create_mock_account_info(
@@ -860,5 +980,130 @@ mod tests {
         let (vault1, vault2) = meteora.get_vaults();
         assert_eq!(*vault1.key, *meteora.base_vault.key);
         assert_eq!(*vault2.key, *meteora.quote_vault.key);
+    }
+
+    #[tokio::test]
+    async fn test_damm_v2_swap() {
+        use anchor_client::Cluster;
+        use solana_client::nonblocking::rpc_client::RpcClient;
+
+        let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+
+        let pool_id = Pubkey::from_str_const("BHxTthQtTgz3jrDsvdxsaqP6R1KyCCNpg5kDY4NJBaqV");
+        let pool_account_info = fetch_account_info_from_rpc(&rpc_client, pool_id).await;
+
+        // Read pool data from AccountInfo in a separate scope to drop the borrow
+        let (token_a_mint, token_b_mint, token_a_vault, token_b_vault) = {
+            let pool_data: std::cell::Ref<'_, &mut [u8]> =
+                pool_account_info.try_borrow_data().unwrap();
+            let pool: Pool = bytemuck::pod_read_unaligned(&pool_data[8..]);
+
+            eprintln!("Mint A: {:?}", pool.token_a_mint);
+            eprintln!("Mint B: {:?}", pool.token_b_mint);
+            eprintln!("Pool A Vault: {:?}", pool.token_a_vault);
+            eprintln!("Pool B Vault: {:?}", pool.token_b_vault);
+            eprintln!("pool activation_point: {}", pool.activation_point);
+            eprintln!("pool activation_type: {}", pool.activation_type);
+            eprintln!("pool liquidity: {}", pool.liquidity);
+            eprintln!("pool pool_status: {}", pool.pool_status);
+            eprintln!("pool sqrt_price: {}", pool.sqrt_price);
+
+            (
+                pool.token_a_mint,
+                pool.token_b_mint,
+                pool.token_a_vault,
+                pool.token_b_vault,
+            )
+        };
+
+        // Create program_id account
+        let program_id_account = create_mock_account_info_with_data(
+            MeteoraDammV2::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let base_vault_account = fetch_account_info_from_rpc(&rpc_client, token_a_vault).await;
+        let quote_vault_account = fetch_account_info_from_rpc(&rpc_client, token_b_vault).await;
+        let base_token_account = fetch_account_info_from_rpc(&rpc_client, token_a_mint).await;
+        let quote_token_account = fetch_account_info_from_rpc(&rpc_client, token_b_mint).await;
+
+        // Create pool authority and event authority accounts
+        let pool_authority = create_mock_account_info_with_data(
+            MeteoraDammV2::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let event_authority = create_mock_account_info_with_data(
+            MeteoraDammV2::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let referral_token_account = create_mock_account_info_with_data(
+            MeteoraDammV2::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+
+        let accounts = vec![
+            program_id_account,             // 0: program_id
+            pool_account_info.clone(),      // 1: pool_id
+            base_vault_account.clone(),     // 2: base_vault
+            quote_vault_account.clone(),    // 3: quote_vault
+            base_token_account.clone(),     // 4: base_token
+            quote_token_account.clone(),    // 5: quote_token
+            pool_authority.clone(),         // 6: pool_authority
+            event_authority.clone(),        // 7: event_authority
+            referral_token_account.clone(), // 8: referral_token_account
+        ];
+
+        let clock1 = get_clock(&rpc_client).await.unwrap();
+        let clock2 = get_clock(&rpc_client).await.unwrap();
+        let meteora_damm_v2 = MeteoraDammV2::new(&accounts).unwrap();
+
+        let prices = meteora_damm_v2.get_prices().unwrap();
+        let price = prices.0;
+        let inverse_price = prices.1;
+        eprintln!("price: {:?}", price);
+        eprintln!("inverse_price: {:?}", inverse_price);
+        eprintln!("================================================");
+
+        let in_sol_amount = 1_000_000_000;
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let token_mint = if token_a_mint == sol_mint {
+            token_b_mint
+        } else {
+            token_a_mint
+        };
+
+        let (sol_price, token_price) = if token_a_mint == sol_mint {
+            (price, inverse_price)
+        } else {
+            (inverse_price, price)
+        };
+        eprintln!("Sol price: {:?}", sol_price);
+        eprintln!("Token price: {:?}", token_price);
+        let amount_out = meteora_damm_v2
+            .swap_base_in(sol_mint, in_sol_amount, clock1)
+            .unwrap();
+        let amount_out_v2 = in_sol_amount as f64 * sol_price;
+        eprintln!(
+            "Step 1: {} SOL -> {} TOKEN / {}",
+            in_sol_amount as f64 / 1_000_000_000.0,
+            amount_out as f64 / 1_000_000.0,
+            amount_out_v2 as f64 / 1_000_000.0
+        );
+        eprintln!("================================================");
+
+        let token_amount_out = meteora_damm_v2
+            .swap_base_in(token_mint, amount_out, clock2)
+            .unwrap();
+        let token_amount_out_v2 = amount_out as f64 * token_price;
+        eprintln!(
+            "Step 2: {} TOKEN -> {} SOL / {}",
+            amount_out as f64 / 1_000_000.0,
+            token_amount_out as f64 / 1_000_000_000.0,
+            token_amount_out_v2 as f64 / 1_000_000_000.0
+        );
+        eprintln!("================================================");
     }
 }

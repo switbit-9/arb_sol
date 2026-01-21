@@ -14,8 +14,10 @@ declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InstructionData {
+    pub amount_in: u64,
+    
+    pub mints: u16,
     pub accounts_length: [u32; 5],
-    pub epoch: u16,
 }
 
 #[derive(Accounts)]
@@ -36,7 +38,7 @@ pub mod solar_b {
 
         let mut instances = parse_accounts(rest, &data)?;
 
-        let arbitrage_path = run_arbitrage(&mut instances, 1_000, Some(WSOL)).unwrap();
+        let arbitrage_path = run_arbitrage(&mut instances, 1_000, Some(WSOL), data.mints).unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
             &mut instances,
@@ -197,6 +199,7 @@ pub fn run_arbitrage<'info>(
     instances: &mut Vec<Box<dyn ProgramMeta + 'info>>,
     start_amount: u128,
     start_token: Option<Pubkey>,
+    mints: u16,
 ) -> Result<ArbitragePath> {
     // Note: We don't actually use epoch, so avoid creating full Clock struct
     // If epoch is needed later, get it separately: Clock::get()?.epoch
@@ -210,7 +213,7 @@ pub fn run_arbitrage<'info>(
     for edge in &edges {
         edge_refs.push(edge);
     }
-    let arbitrage_path = check_arbitrage(&edge_refs, start_amount, start_token, None)?;
+    let arbitrage_path = check_arbitrage(&edge_refs, start_amount, start_token, None, mints)?;
 
     // Explicitly drop to free Vec metadata (24 bytes) from stack immediately
     // edges Vec is on heap, but Vec struct metadata (ptr+len+cap) is on stack
@@ -406,7 +409,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -447,7 +451,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 13, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -478,7 +483,8 @@ mod tests {
         // Zero spans should be skipped
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -506,7 +512,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -541,7 +548,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -568,7 +576,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -584,7 +593,8 @@ mod tests {
         // On most platforms this won't happen, but we test the error path
         let data = InstructionData {
             accounts_length: [u32::MAX, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -598,7 +608,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [0, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -626,7 +637,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [10, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -655,7 +667,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [13, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -684,7 +697,8 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [10, 0, 0, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);
@@ -724,7 +738,8 @@ mod tests {
         // Mix of zero and non-zero spans
         let data = InstructionData {
             accounts_length: [9, 0, 13, 0, 0],
-            epoch: 0,
+            amount_in: 1_000,
+            mints: 2,
         };
 
         let result = parse_accounts(&accounts, &data);

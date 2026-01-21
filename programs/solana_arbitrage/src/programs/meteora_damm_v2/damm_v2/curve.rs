@@ -251,3 +251,46 @@ pub fn get_next_sqrt_price_from_amount_out_b_rounding_down(
     let result = U256::from(sqrt_price).safe_sub(quotient)?;
     Ok(result.try_into().map_err(|_| PoolError::TypeCastFailed)?)
 }
+
+
+
+/// Calculate spot price A to B (how much token B per 1 token A)
+/// 
+/// Formula: price_a_to_b = (sqrt_price)^2 / 2^(RESOLUTION * 2)
+/// Where sqrt_price is stored with 64-bit resolution
+pub fn get_spot_price_a_to_b(sqrt_price: u128) -> Result<u128> {
+    if sqrt_price == 0 {
+        return Err(PoolError::MathOverflow.into());
+    }
+    
+    // price = (sqrt_price)^2 / 2^128
+    let sqrt_price_u256 = U256::from(sqrt_price);
+    let numerator = sqrt_price_u256.safe_mul(sqrt_price_u256)?;
+    let denominator = U256::from(1).safe_shl((RESOLUTION * 2) as usize)?;
+    
+    // Round down to get the spot price
+    let result = mul_div_u256(numerator, U256::from(1), denominator, Rounding::Down)
+        .ok_or_else(|| PoolError::MathOverflow)?;
+    
+    Ok(result.try_into().map_err(|_| PoolError::TypeCastFailed)?)
+}
+
+/// Calculate spot price B to A (how much token A per 1 token B)
+/// 
+/// Formula: price_b_to_a = 2^(RESOLUTION * 2) / (sqrt_price)^2
+pub fn get_spot_price_b_to_a(sqrt_price: u128) -> Result<u128> {
+    if sqrt_price == 0 {
+        return Err(PoolError::MathOverflow.into());
+    }
+    
+    // price = 2^128 / (sqrt_price)^2
+    let sqrt_price_u256 = U256::from(sqrt_price);
+    let denominator = sqrt_price_u256.safe_mul(sqrt_price_u256)?;
+    let numerator: ruint::Uint<256, 4> = U256::from(1).safe_shl((RESOLUTION * 2) as usize)?;
+    
+    // Round down to get the spot price
+    let result = mul_div_u256(numerator, U256::from(1), denominator, Rounding::Down)
+        .ok_or_else(|| PoolError::MathOverflow)?;
+    
+    Ok(result.try_into().map_err(|_| PoolError::TypeCastFailed)?)
+}
