@@ -1,6 +1,5 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{account_info::next_account_info, pubkey::Pubkey};
-use anchor_spl::token_interface::TokenAccount;
 
 use crate::programs::ProgramMeta;
 
@@ -37,6 +36,14 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
     fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
         self.swap_base_out_impl(input_mint, amount_in, clock)
+    }
+
+    fn get_prices(&self) -> Result<(f64, f64)> {
+        self.get_prices_impl()
+    }
+
+    fn get_mints(&self) -> (&Pubkey, &Pubkey) {
+        (self.base_token.key, self.quote_token.key)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -139,6 +146,10 @@ impl<'info> MeteoraDammV1<'info> {
             memo: memo.clone(),
             event_authority: event_authority.clone(),
         })
+    }
+
+    pub fn get_prices_impl(&self) -> Result<(f64, f64)> {
+        Ok((0.0, 0.0))
     }
 
     pub fn swap_base_in_impl(

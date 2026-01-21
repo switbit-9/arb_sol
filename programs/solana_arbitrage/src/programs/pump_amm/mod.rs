@@ -49,6 +49,10 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
+    fn get_prices(&self) -> Result<(f64, f64)> {
+        self.get_prices_impl()
+    }
+
     fn invoke_swap_base_in<'a>(
         &self,
         input_mint: Pubkey,
@@ -145,7 +149,7 @@ impl<'info> PumpAmm<'info> {
         })
     }
 
-    pub fn get_prices(&self) -> Result<(f64, f64)> {
+    pub fn get_prices_impl(&self) -> Result<(f64, f64)> {
         // price : Base -> Quote
         // inverse_price : Quote -> Base
         let (token_0_amount, token_1_amount) = (
@@ -204,7 +208,7 @@ impl<'info> PumpAmm<'info> {
             .checked_mul(9_998)
             .and_then(|x| x.checked_div(10_000))
             .ok_or(ProgramError::InvalidArgument)?;
-        
+
         let final_amount = amount_with_slippage(amount_out_after_fee as u64, 0.02, false);
 
         Ok(amount_out_after_fee as u64)
@@ -607,7 +611,7 @@ mod tests {
         account_to_account_info(key, account)
     }
 
-        // Helper function to create a minimal mock AccountInfo
+    // Helper function to create a minimal mock AccountInfo
     fn create_mock_account_info(
         key: Pubkey,
         owner: Pubkey,
@@ -729,7 +733,12 @@ mod tests {
             (inverse_price, price)
         };
         let amount_out_1_v2 = quote_amount_in as f64 * sol_price;
-        eprintln!("SOL {:?} -> TOKEN {:?} TOKEN V2: {:?}", quote_amount_in as f64 / 1_000_000_000.0, amount_out_1 as f64 / 1_000_000.0, amount_out_1_v2 as f64 / 1_000_000.0);
+        eprintln!(
+            "SOL {:?} -> TOKEN {:?} TOKEN V2: {:?}",
+            quote_amount_in as f64 / 1_000_000_000.0,
+            amount_out_1 as f64 / 1_000_000.0,
+            amount_out_1_v2 as f64 / 1_000_000.0
+        );
 
         eprintln!("================================================");
         let token_mint = if base_token_key == sol_mint {
@@ -737,10 +746,15 @@ mod tests {
         } else {
             base_token_key
         };
-        let amount_out_2 = pump_amm.swap_base_in_impl(token_mint, amount_out_1_v2 as u64, Clock::default()).unwrap();
+        let amount_out_2 = pump_amm
+            .swap_base_in_impl(token_mint, amount_out_1_v2 as u64, Clock::default())
+            .unwrap();
         let amount_received_v2_2 = amount_out_1_v2 as f64 * inverse_sol_price;
-        eprintln!("TOKEN {:?} -> SOL {:?} SOL V2: {:?}", amount_out_1 as f64 / 1_000_000.0, amount_out_2 as f64 / 1_000_000_000.0, amount_received_v2_2 as f64 / 1_000_000_000.0);
-
+        eprintln!(
+            "TOKEN {:?} -> SOL {:?} SOL V2: {:?}",
+            amount_out_1 as f64 / 1_000_000.0,
+            amount_out_2 as f64 / 1_000_000_000.0,
+            amount_received_v2_2 as f64 / 1_000_000_000.0
+        );
     }
-
 }

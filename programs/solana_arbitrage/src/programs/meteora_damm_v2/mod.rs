@@ -64,6 +64,14 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
+    fn get_prices(&self) -> Result<(f64, f64)> {
+        self.get_prices_impl()
+    }
+
+    fn get_mints(&self) -> (&Pubkey, &Pubkey) {
+        (self.base_token.key, self.quote_token.key)
+    }
+
     fn invoke_swap_base_in<'a>(
         &self,
         input_mint: Pubkey,
@@ -167,7 +175,7 @@ impl<'info> MeteoraDammV2<'info> {
         })
     }
 
-    pub fn get_prices(&self) -> Result<(f64, f64)> {
+    pub fn get_prices_impl(&self) -> Result<(f64, f64)> {
         // price : token_A -> token_B (A -> B)
         // inverse_price : token_B -> token_A (B -> A)
         let actual_sqrt_price = self.pool.sqrt_price as f64 / (1u128 << 64) as f64;

@@ -49,6 +49,14 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         self.swap_base_out_impl(input_mint, amount_in, clock)
     }
 
+    // fn get_prices(&self) -> Result<(f64, f64)> {
+    //     self.get_prices_impl()
+    // }
+
+    fn get_mints(&self) -> (&Pubkey, &Pubkey) {
+        (self.base_token.key, self.quote_token.key)
+    }
+
     fn invoke_swap_base_in<'a>(
         &self,
         input_mint: Pubkey,

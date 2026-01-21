@@ -34,13 +34,6 @@ impl Edge {
         return self.price;
     }
 
-    fn get_pools_amount_difference(&self) -> u128 {
-        return self.right.get_amount() - self.left.get_amount();
-    }
-
-    pub fn compute_amount(&mut self, amount: u128) -> u128 {
-        (amount as f64 * self.get_price()) as u128
-    }
 }
 
 impl Debug for Edge {

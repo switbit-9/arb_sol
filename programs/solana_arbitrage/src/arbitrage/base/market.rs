@@ -26,32 +26,26 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
         return set;
     }
 
+
     pub fn generate_edges(&'info self) -> Vec<Edge> {
         // Compute prices - using a simple division for now
         // In a real implementation, you'd want to use the program's compute_price methods
-        let price_left_to_right = if self.left.amount > 0 {
-            self.right.amount as f64 / self.left.amount as f64
-        } else {
-            0.0
-        };
-        let price_right_to_left = if self.right.amount > 0 {
-            self.left.amount as f64 / self.right.amount as f64
-        } else {
-            0.0
-        };
+        let prices = self.program.get_prices().unwrap();
+        let price = prices.0;
+        let inverse_price = prices.1;
         let program_id = *self.program.get_id();
         vec![
             Edge::new(
                 program_id,
                 EdgeSide::LeftToRight,
-                price_left_to_right,
+                price,
                 self.left.clone(),
                 self.right.clone(),
             ),
             Edge::new(
                 program_id,
                 EdgeSide::RightToLeft,
-                price_right_to_left,
+                inverse_price,
                 self.right.clone(),
                 self.left.clone(),
             ),

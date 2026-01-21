@@ -57,6 +57,14 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         self.swap_base_in_impl(input_mint, amount_in, clock)
     }
 
+    fn get_prices(&self) -> Result<(f64, f64)> {
+        self.get_prices_impl()
+    }
+
+    fn get_mints(&self) -> (&Pubkey, &Pubkey) {
+        (self.base_token.key, self.quote_token.key)
+    }
+
     fn invoke_swap_base_in<'a>(
         &self,
         input_mint: Pubkey,
@@ -207,7 +215,7 @@ impl<'info> MeteoraDlmm<'info> {
         })
     }
 
-    fn get_prices(&self) -> Result<(f64, f64)> {
+    fn get_prices_impl(&self) -> Result<(f64, f64)> {
         // Price is scaled by 2^64 (SCALE_OFFSET), so we need to divide by 2^64 to get actual price
         const SCALE: f64 = (1u128 << SCALE_OFFSET) as f64; // 2^64 as f64 = 18446744073709551616.0
         let price = self.price as f64 / SCALE;
@@ -1106,6 +1114,5 @@ mod tests {
             token_amount_out_v2 as f64 / 1_000_000_000.0,
             token_amount_out_v2_2 as f64 / 1_000_000_000.0
         );
-
     }
 }

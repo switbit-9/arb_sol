@@ -5,17 +5,16 @@ pub mod math;
 pub mod programs;
 pub mod utils;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
-use arbitrage::algo_2::{check_arbitrage, ArbitragePath};
-use arbitrage::base::{Edge, EdgeSide, Pool};
-use programs::{MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, RaydiumCPMM, SolarBError};
-use utils::utils::parse_token_account;
+use arbitrage::algo_2::{check_arbitrage_newton, get_edges, ArbitragePath};
+use programs::{
+    MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, ProgramMeta, PumpAmm, RaydiumCPMM, SolarBError,
+};
 
 declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InstructionData {
     pub amount_in: u64,
-    
     pub mints: u16,
     pub accounts_length: [u32; 5],
 }
@@ -38,7 +37,13 @@ pub mod solar_b {
 
         let mut instances = parse_accounts(rest, &data)?;
 
-        let arbitrage_path = run_arbitrage(&mut instances, 1_000, Some(WSOL), data.mints).unwrap();
+        let arbitrage_path = run_arbitrage(
+            &mut instances,
+            data.amount_in as u128,
+            Some(WSOL),
+            data.mints,
+        )
+        .unwrap();
         execute_arbitrage_path(
             &arbitrage_path,
             &mut instances,
@@ -153,48 +158,6 @@ pub fn find_program_instance<'info>(
     Err(error!(SolarBError::UnknownProgram))
 }
 
-pub fn generate_edges<'info>(program: &'info (dyn ProgramMeta + 'info)) -> Result<Vec<Edge>> {
-    let (base_vault_info, quote_vault_info) = program.get_vaults();
-    let base_vault = parse_token_account(base_vault_info)?;
-    let quote_vault = parse_token_account(quote_vault_info)?;
-    let base_amount = base_vault.amount as u128;
-    let quote_amount = quote_vault.amount as u128;
-    let price_base_in = program.compute_price_swap_base_in(base_amount, quote_amount)?;
-    let price_base_out = program.compute_price_swap_base_out(base_amount, quote_amount)?;
-
-    // Extract mints directly from the deserialized token accounts
-    // Pool struct is small (40 bytes: Pubkey 32 + u128 16), but avoid unnecessary clones
-    let base_pool = Pool::new(&base_vault.mint, base_amount);
-    let quote_pool = Pool::new(&quote_vault.mint, quote_amount);
-    let program_id = *program.get_id();
-    Ok(vec![
-        Edge::new(
-            program_id,
-            EdgeSide::LeftToRight,
-            price_base_in,
-            base_pool.clone(),
-            quote_pool.clone(),
-        ),
-        Edge::new(
-            program_id,
-            EdgeSide::RightToLeft,
-            price_base_out,
-            quote_pool, // Move instead of clone
-            base_pool,  // Move instead of clone
-        ),
-    ])
-}
-
-pub fn get_edges<'info>(instances: &'info [Box<dyn ProgramMeta + 'info>]) -> Result<Vec<Edge>> {
-    // Pre-allocate capacity: each instance generates 2 edges
-    let mut edges = Vec::with_capacity(instances.len() * 2);
-    for instance in instances {
-        let instance_edges = generate_edges(instance.as_ref())?;
-        edges.extend(instance_edges);
-    }
-    Ok(edges)
-}
-
 pub fn run_arbitrage<'info>(
     instances: &mut Vec<Box<dyn ProgramMeta + 'info>>,
     start_amount: u128,
@@ -208,16 +171,11 @@ pub fn run_arbitrage<'info>(
     let edges = get_edges(instances.as_slice())?;
 
     // Check for arbitrage opportunities
-    // Pre-allocate Vec<&Edge> with known capacity to avoid reallocations
-    let mut edge_refs = Vec::with_capacity(edges.len());
-    for edge in &edges {
-        edge_refs.push(edge);
-    }
-    let arbitrage_path = check_arbitrage(&edge_refs, start_amount, start_token, None, mints)?;
+    let arbitrage_path =
+        check_arbitrage_newton(&edges, instances, start_amount, start_token, None, mints)?;
 
     // Explicitly drop to free Vec metadata (24 bytes) from stack immediately
     // edges Vec is on heap, but Vec struct metadata (ptr+len+cap) is on stack
-    drop(edge_refs);
     drop(edges);
 
     if arbitrage_path.profit < 0 {
@@ -247,13 +205,12 @@ pub fn execute_arbitrage_path<'info>(
 
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
         msg!(
-            "Edge {:?} -> {:?} / base_mint {}, base_amount={}, quote_mint {}, quote_amount={}",
+            "Edge {:?} -> {:?} / base_mint {},  quote_mint {}, k {}",
             edge.program,
             edge.side,
             edge.left.mint_account,
-            edge.left.get_amount(),
             edge.right.mint_account,
-            edge.right.get_amount()
+            edge.price,
         );
 
         // Find the index of the program instance first, so we can remove it after execution
@@ -273,53 +230,53 @@ pub fn execute_arbitrage_path<'info>(
             let input_mint: Pubkey = edge.left.mint_account;
 
             if input_mint != WSOL {
-                    let amount =
-                        program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
-                    msg!(
-                        "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
-                        program_instance.get_id(),
-                        current_amount,
-                        amount
-                    );
+                let amount =
+                    program_instance.swap_base_out(input_mint, current_amount as u64, clock)?;
+                msg!(
+                    "Invoking swap base out for program {:?} with amount_in={}, amount_out={}",
+                    program_instance.get_id(),
+                    current_amount,
+                    amount
+                );
 
-                    program_instance.invoke_swap_base_out(
-                        input_mint,
-                        current_amount as u64,
-                        Some(amount),
-                        payer.clone(),
-                        user_mint_1_token_account.clone(),
-                        user_mint_2_token_account.clone(),
-                        mint_1.clone(),
-                        mint_2.clone(),
-                        mint_1_token_program.clone(),
-                        mint_2_token_program.clone(),
-                    )?;
+                program_instance.invoke_swap_base_out(
+                    input_mint,
+                    current_amount as u64,
+                    Some(amount),
+                    payer.clone(),
+                    user_mint_1_token_account.clone(),
+                    user_mint_2_token_account.clone(),
+                    mint_1.clone(),
+                    mint_2.clone(),
+                    mint_1_token_program.clone(),
+                    mint_2_token_program.clone(),
+                )?;
+                amount
+            } else {
+                let input_mint = edge.right.mint_account;
+                let amount =
+                    program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
+                msg!(
+                    "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
+                    program_instance.get_id(),
+                    current_amount,
                     amount
-                } else {
-                    let input_mint = edge.right.mint_account;
-                    let amount =
-                        program_instance.swap_base_in(input_mint, current_amount as u64, clock)?;
-                    msg!(
-                        "Invoking swap base in for program {:?} with amount_in={}, amount_out={}",
-                        program_instance.get_id(),
-                        current_amount,
-                        amount
-                    );
-                    program_instance.invoke_swap_base_in(
-                        input_mint,
-                        current_amount as u64,
-                        Some(amount),
-                        payer.clone(),
-                        user_mint_1_token_account.clone(),
-                        user_mint_2_token_account.clone(),
-                        mint_1.clone(),
-                        mint_2.clone(),
-                        mint_1_token_program.clone(),
-                        mint_2_token_program.clone(),
-                    )?;
-                    amount
+                );
+                program_instance.invoke_swap_base_in(
+                    input_mint,
+                    current_amount as u64,
+                    Some(amount),
+                    payer.clone(),
+                    user_mint_1_token_account.clone(),
+                    user_mint_2_token_account.clone(),
+                    mint_1.clone(),
+                    mint_2.clone(),
+                    mint_1_token_program.clone(),
+                    mint_2_token_program.clone(),
+                )?;
+                amount
             }
-            
+
             // program_instance and clock are dropped here when this block ends
         };
 

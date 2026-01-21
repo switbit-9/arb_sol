@@ -1,7 +1,12 @@
-use crate::arbitrage::base::Edge;
-use crate::programs::SolarBError;
+use crate::arbitrage::base::{Edge, EdgeSide, Pool};
+use crate::programs::{ProgramMeta, SolarBError};
 use anchor_lang::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+mod newton_method;
+pub use newton_method::{
+    check_arbitrage_newton, find_cross_arbitrage_newton, find_triangular_arbitrage_newton,
+};
 
 const MIN_PROFIT: i128 = 40_000;
 
@@ -176,6 +181,50 @@ pub fn find_triangular_arbitrage_iterative<'info>(
     best_path
 }
 
+/// Generate edges for a single program instance.
+pub fn generate_edges<'info>(program: &'info (dyn ProgramMeta + 'info)) -> Result<Vec<Edge>> {
+    // Get prices from the program's get_prices method
+    let prices = program.get_prices()?;
+    let price = prices.0;
+    let inverse_price = prices.1;
+
+    // Get vault accounts to extract mints
+    let (base_mint, quote_mint) = program.get_mints();
+
+    // Create Pool objects with just the mints (amounts are not stored in Pool anymore)
+    let base_pool = Pool::new(&base_mint);
+    let quote_pool = Pool::new(&quote_mint);
+    let program_id = *program.get_id();
+
+    Ok(vec![
+        Edge::new(
+            program_id,
+            EdgeSide::LeftToRight,
+            price,
+            base_pool.clone(),
+            quote_pool.clone(),
+        ),
+        Edge::new(
+            program_id,
+            EdgeSide::RightToLeft,
+            inverse_price,
+            quote_pool, // Move instead of clone
+            base_pool,  // Move instead of clone
+        ),
+    ])
+}
+
+/// Generate edges for all program instances.
+pub fn get_edges<'info>(instances: &'info [Box<dyn ProgramMeta + 'info>]) -> Result<Vec<Edge>> {
+    // Pre-allocate capacity: each instance generates 2 edges
+    let mut edges = Vec::with_capacity(instances.len() * 2);
+    for instance in instances {
+        let instance_edges = generate_edges(instance.as_ref())?;
+        edges.extend(instance_edges);
+    }
+    Ok(edges)
+}
+
 /// Main entry point for arbitrage calculation.
 pub fn check_arbitrage(
     edges: &[&Edge],
@@ -273,6 +322,10 @@ mod tests {
             Ok(()) // Mock implementation
         }
 
+        fn get_prices(&self) -> Result<(f64, f64)> {
+            Ok((0.0, 0.0)) // Mock implementation
+        }
+
         fn log_accounts(&self) -> Result<()> {
             Ok(()) // Mock implementation
         }
@@ -301,19 +354,11 @@ mod tests {
         // let pool1_usdc = Pool::new(&usdc, 100_000_000);
 
         // Edge 1: SOL -> USDC on Prog1. Price = 100 (1 SOL = 100 USDC)
-        // Use realistic amounts to avoid unrealistic prices
-        let pool_a_left = Pool::new(&sol, 1_000_000_000); // 1 SOL
-        let pool_a_right = Pool::new(&usdc, 100_000_000); // 100 USDC (1 SOL = 100 USDC)
-        let price_a_lr = if pool_a_left.amount > 0 {
-            pool_a_right.amount as f64 / pool_a_left.amount as f64
-        } else {
-            0.0
-        };
-        let price_a_rl = if pool_a_right.amount > 0 {
-            pool_a_left.amount as f64 / pool_a_right.amount as f64
-        } else {
-            0.0
-        };
+        // Use realistic prices directly instead of calculating from pool amounts
+        let pool_a_left = Pool::new(&sol);
+        let pool_a_right = Pool::new(&usdc);
+        let price_a_lr = 100.0; // 1 SOL = 100 USDC
+        let price_a_rl = 0.01; // 1 USDC = 0.01 SOL
         let prog1_id = *program1.get_id();
         let edge1_1_a = Edge::new(
             prog1_id,
@@ -331,13 +376,10 @@ mod tests {
         );
 
         // Market 2: SOL -> USDC (for Program2-Program3 arbitrage)
-        let pool_b_sol_to_usdc_left = Pool::new(&sol, 1_000_000_000); // 1 SOL
-        let pool_b_sol_to_usdc_right = Pool::new(&usdc, 100_000_000_000); // 100 USDC
-        let price_b_sol_usdc = if pool_b_sol_to_usdc_left.amount > 0 {
-            pool_b_sol_to_usdc_right.amount as f64 / pool_b_sol_to_usdc_left.amount as f64
-        } else {
-            0.0
-        };
+        // Make Program2 slightly better than Program1 to ensure it's selected
+        let pool_b_sol_to_usdc_left = Pool::new(&sol);
+        let pool_b_sol_to_usdc_right = Pool::new(&usdc);
+        let price_b_sol_usdc = 101.0; // 1 SOL = 101 USDC (slightly better than Program1's 100)
         let prog2_id = *program2.get_id();
         let edge_2_sol_to_usdc = Edge::new(
             prog2_id,
@@ -349,19 +391,11 @@ mod tests {
 
         // Market 2: USDC -> SOL (for completing the cycle)
         // Note: This should NOT create a profitable cycle within Program2
-        // Use realistic amounts: if 1 SOL = 100 USDC, then 1 USDC = 0.01 SOL
-        let pool_b_left = Pool::new(&usdc, 100_000_000); // 100 USDC
-        let pool_b_right = Pool::new(&sol, 1_000_000_000); // 1 SOL (realistic: 1 USDC = 0.01 SOL)
-        let price_b_lr = if pool_b_left.amount > 0 {
-            pool_b_right.amount as f64 / pool_b_left.amount as f64
-        } else {
-            0.0
-        };
-        let price_b_rl = if pool_b_right.amount > 0 {
-            pool_b_left.amount as f64 / pool_b_right.amount as f64
-        } else {
-            0.0
-        };
+        // Use realistic prices: if 1 SOL = 100 USDC, then 1 USDC = 0.01 SOL
+        let pool_b_left = Pool::new(&usdc);
+        let pool_b_right = Pool::new(&sol);
+        let price_b_lr = 0.01; // 1 USDC = 0.01 SOL
+        let price_b_rl = 100.0; // 1 SOL = 100 USDC
         let edge_2_a = Edge::new(
             prog2_id,
             EdgeSide::LeftToRight,
@@ -379,18 +413,10 @@ mod tests {
 
         // Market 3: USDC -> SOL (should be better rate than Program2 to make Program2->Program3 profitable)
         // Use a better rate: 1 USDC = 0.011 SOL (slightly better than Program2's 0.01)
-        let pool_c_left = Pool::new(&usdc, 100_000_000); // 100 USDC
-        let pool_c_right = Pool::new(&sol, 1_100_000_000); // 1.1 SOL (better rate: 1 USDC = 0.011 SOL)
-        let price_c_lr = if pool_c_left.amount > 0 {
-            pool_c_right.amount as f64 / pool_c_left.amount as f64
-        } else {
-            0.0
-        };
-        let price_c_rl = if pool_c_right.amount > 0 {
-            pool_c_left.amount as f64 / pool_c_right.amount as f64
-        } else {
-            0.0
-        };
+        let pool_c_left = Pool::new(&usdc);
+        let pool_c_right = Pool::new(&sol);
+        let price_c_lr = 0.011; // 1 USDC = 0.011 SOL (better rate)
+        let price_c_rl = 1.0 / 0.011; // Inverse: 1 SOL = ~90.91 USDC
         let prog3_id = *program3.get_id();
         let edge_3_a = Edge::new(
             prog3_id,
@@ -422,7 +448,7 @@ mod tests {
         ];
 
         // Start with 1 SOL (1e9)
-        let start_amount = 1_000_000_000;
+        let start_amount = 1_000;
 
         // First, let's manually check all possible paths to see which should be best
         writeln!(handle, "=== Analyzing All Possible Arbitrage Paths ===").unwrap();
@@ -631,13 +657,9 @@ mod tests {
 
         // Path: A -> B -> C -> A
         // A -> B: 2.0
-        let pool_ab_left = Pool::new(&token_a, 1_000_000_000);
-        let pool_ab_right = Pool::new(&token_b, 2_000_000_000);
-        let price_ab = if pool_ab_left.amount > 0 {
-            pool_ab_right.amount as f64 / pool_ab_left.amount as f64
-        } else {
-            0.0
-        };
+        let pool_ab_left = Pool::new(&token_a);
+        let pool_ab_right = Pool::new(&token_b);
+        let price_ab = 2.0;
         let prog_id = *program.get_id();
         let edge1 = Edge::new(
             prog_id,
@@ -648,13 +670,9 @@ mod tests {
         );
 
         // B -> C: 3.0
-        let pool_bc_left = Pool::new(&token_b, 1_000_000_000);
-        let pool_bc_right = Pool::new(&token_c, 3_000_000_000);
-        let price_bc = if pool_bc_left.amount > 0 {
-            pool_bc_right.amount as f64 / pool_bc_left.amount as f64
-        } else {
-            0.0
-        };
+        let pool_bc_left = Pool::new(&token_b);
+        let pool_bc_right = Pool::new(&token_c);
+        let price_bc = 3.0;
         let edge2 = Edge::new(
             prog_id,
             EdgeSide::LeftToRight,
@@ -665,13 +683,9 @@ mod tests {
 
         // C -> A: 0.2 (1/5)
         // Total: 2 * 3 * 0.2 = 1.2 (20% profit)
-        let pool_ca_left = Pool::new(&token_c, 10_000_000_000);
-        let pool_ca_right = Pool::new(&token_a, 2_000_000_000);
-        let price_ca = if pool_ca_left.amount > 0 {
-            pool_ca_right.amount as f64 / pool_ca_left.amount as f64
-        } else {
-            0.0
-        };
+        let pool_ca_left = Pool::new(&token_c);
+        let pool_ca_right = Pool::new(&token_a);
+        let price_ca = 0.2;
         let edge3 = Edge::new(
             prog_id,
             EdgeSide::LeftToRight,
