@@ -22,4 +22,16 @@ pub enum SolarBError {
     InsufficientFunds,
     #[msg("TransferFee calculation error")]
     TransferFeeCalculationError,
+    #[msg("Invalid path length for optimization")]
+    InvalidPathLength,
+    #[msg("Invalid path type for this optimization method")]
+    InvalidPathType,
+    #[msg("Invalid program type for this operation")]
+    InvalidProgramType,
+    #[msg("Fee overflow")]
+    FeeOverflow,
+    #[msg("Invalid account data format")]
+    InvalidAccountData,
+    #[msg("Invalid arbitrage mode specified")]
+    InvalidMode,
 }

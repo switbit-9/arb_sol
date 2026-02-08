@@ -1,19 +1,13 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{account_info::next_account_info, pubkey::Pubkey};
+use anchor_lang::solana_program::{pubkey::Pubkey};
 
-use crate::programs::ProgramMeta;
+use crate::programs::{ProgramMeta, SolarBError};
 
 pub struct MeteoraDammV1<'info> {
-    pub pool_id: AccountInfo<'info>,
-    pub base_vault: AccountInfo<'info>,
-    pub quote_vault: AccountInfo<'info>,
     pub base_token: AccountInfo<'info>,
     pub quote_token: AccountInfo<'info>,
-    pub oracle: AccountInfo<'info>,
-    pub host_fee_in: AccountInfo<'info>,
-    pub bitmap_extension: AccountInfo<'info>,
-    pub memo: AccountInfo<'info>,
-    pub event_authority: AccountInfo<'info>,
+    pub start_index: usize,
+    pub end_index: usize,
 }
 
 impl<'info> ProgramMeta for MeteoraDammV1<'info> {
@@ -21,21 +15,30 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         &Self::PROGRAM_ID
     }
 
-    fn get_vaults(&self) -> (&AccountInfo<'_>, &AccountInfo<'_>) {
-        unsafe {
-            (
-                &*(&self.base_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
-                &*(&self.quote_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
-            )
-        }
+    fn get_pool_id(&self) -> &Pubkey {
+        // MeteoraDammV1 doesn't track pool_id separately
+        // Use base_token key as a placeholder
+        self.base_token.key
     }
 
-    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(input_mint, amount_in, clock)
+    fn swap_base_in<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        amount_in: u64,
+        clock: Clock,
+    ) -> Result<u64> {
+        self.swap_base_in_impl(accounts, input_mint, amount_in, clock)
     }
 
-    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_out_impl(input_mint, amount_in, clock)
+    fn swap_base_out<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        amount_in: u64,
+        clock: Clock,
+    ) -> Result<u64> {
+        self.swap_base_out_impl(accounts, input_mint, amount_in, clock)
     }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
@@ -48,6 +51,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
     fn invoke_swap_base_in<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
@@ -60,6 +64,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            accounts,
             input_mint,
             max_amount_in,
             amount_out,
@@ -75,6 +80,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
@@ -87,6 +93,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            accounts,
             input_mint,
             amount_in,
             min_amount_out,
@@ -100,19 +107,11 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         )
     }
 
-    fn log_accounts(&self) -> Result<()> {
+    fn log_accounts<'a>(&self, _accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!(
-            "Meteora DAMM v1 accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}, oracle={}, host_fee_in={}, bitmap_extension={}, memo={}, event_authority={}",
-            self.pool_id.key,
-            self.base_vault.key,
-            self.quote_vault.key,
+            "Meteora DAMM v1: base_token={}, quote_token={}",
             self.base_token.key,
             self.quote_token.key,
-            self.oracle.key,
-            self.host_fee_in.key,
-            self.bitmap_extension.key,
-            self.memo.key,
-            self.event_authority.key,
         );
         Ok(())
     }
@@ -121,30 +120,32 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 impl<'info> MeteoraDammV1<'info> {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
-    pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
-        let mut iter = accounts.iter();
-        let pool_id = next_account_info(&mut iter)?;
-        let base_vault = next_account_info(&mut iter)?;
-        let quote_vault = next_account_info(&mut iter)?;
-        let base_token = next_account_info(&mut iter)?;
-        let quote_token = next_account_info(&mut iter)?;
-        let oracle = next_account_info(&mut iter)?;
-        let host_fee_in = next_account_info(&mut iter)?;
-        let bitmap_extension = next_account_info(&mut iter)?;
-        let memo = next_account_info(&mut iter)?;
-        let event_authority = next_account_info(&mut iter)?;
+    pub const PROGRAM_ID_IDX: usize = 0;
+    pub const BASE_TOKEN_IDX: usize = 3;
+    pub const QUOTE_TOKEN_IDX: usize = 4;
+    pub fn new(
+        accounts: &[AccountInfo<'info>],
+        start_index: usize,
+        end_index: usize,
+    ) -> Result<Self> {
+        require!(
+            end_index - start_index >= 10,
+            SolarBError::InsufficientAccounts
+        );
+        require!(
+            end_index <= accounts.len(),
+            SolarBError::InsufficientAccounts
+        );
+
+        // Only clone the tokens we need for get_mints()
+        let base_token = accounts[start_index + 3].clone();
+        let quote_token = accounts[start_index + 4].clone();
 
         Ok(MeteoraDammV1 {
-            pool_id: pool_id.clone(),
-            base_vault: base_vault.clone(),
-            quote_vault: quote_vault.clone(),
-            base_token: base_token.clone(),
-            quote_token: quote_token.clone(),
-            oracle: oracle.clone(),
-            host_fee_in: host_fee_in.clone(),
-            bitmap_extension: bitmap_extension.clone(),
-            memo: memo.clone(),
-            event_authority: event_authority.clone(),
+            base_token,
+            quote_token,
+            start_index,
+            end_index,
         })
     }
 
@@ -152,8 +153,9 @@ impl<'info> MeteoraDammV1<'info> {
         Ok((0.0, 0.0))
     }
 
-    pub fn swap_base_in_impl(
+    pub fn swap_base_in_impl<'a>(
         &self,
+        _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _amount_in: u64,
         _clock: Clock,
@@ -161,8 +163,9 @@ impl<'info> MeteoraDammV1<'info> {
         Ok(0)
     }
 
-    pub fn swap_base_out_impl(
+    pub fn swap_base_out_impl<'a>(
         &self,
+        _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _amount_in: u64,
         _clock: Clock,
@@ -172,6 +175,7 @@ impl<'info> MeteoraDammV1<'info> {
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
+        _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _max_amount_in: u64,
         _amount_out: Option<u64>,
@@ -188,6 +192,7 @@ impl<'info> MeteoraDammV1<'info> {
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
+        _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _amount_in: u64,
         _min_amount_out: Option<u64>,

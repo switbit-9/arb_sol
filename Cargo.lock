@@ -7914,6 +7914,8 @@ dependencies = [
  "num_enum",
  "proptest",
  "ruint",
+ "serde",
+ "serde_json",
  "solana-account 3.3.0",
  "solana-client",
  "solana-sdk",

@@ -10,44 +10,36 @@ pub enum EdgeSide {
     RightToLeft,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Edge {
     pub program: Pubkey,
+    pub pool_id: Pubkey,
     pub side: EdgeSide,
     pub price: f64, // Stored as scaled integer: actual_price * 1_000_000_000
+    pub fee_factor: f64, // 1.0 - fee_rate (e.g., 0.9975 for 0.25% fee)
     pub left: Pool,
     pub right: Pool,
+    pub amount_in: u64,
+    pub amount_out: u64,
 }
 
 impl Edge {
-    pub fn new(program: Pubkey, side: EdgeSide, price: f64, left: Pool, right: Pool) -> Self {
+    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, left: Pool, right: Pool) -> Self {
         Edge {
             program,
+            pool_id,
             side,
             price,
+            fee_factor,
             left,
             right,
+            amount_in: 0, // TODO: Remove this
+            amount_out: 0, // TODO: Remove this
         }
     }
 
     pub fn get_price(&self) -> f64 {
         return self.price;
-    }
-
-}
-
-impl Debug for Edge {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            format!(
-                "({}) {}->[{}]->{}",
-                self.program,
-                self.left.mint_account,
-                self.get_price(),
-                self.right.mint_account
-            )
-            .as_str(),
-        )
     }
 }
 
@@ -61,10 +53,10 @@ impl PartialEq for Edge {
 
 impl Hash for Edge {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let program_id = self.program;
-        let left_pool = self.left.mint_account;
-        let right_pool = self.right.mint_account;
-        format!("{} {} {}", program_id, left_pool, right_pool).hash(state);
+        // Direct byte hashing - avoids String allocation from format!()
+        state.write(self.program.as_ref());
+        state.write(self.left.mint_account.as_ref());
+        state.write(self.right.mint_account.as_ref());
     }
 }
 

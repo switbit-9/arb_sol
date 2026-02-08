@@ -5,7 +5,6 @@ use anchor_lang::solana_program::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::result::Result::Ok;
 
-use crate::token::{get_epoch_transfer_fee, load_mint};
 
 #[derive(Debug)]
 pub struct SwapExactInQuote {
@@ -59,7 +58,10 @@ pub fn quote_exact_out<'a>(
     mint_y_account: &AccountInfo<'a>,
 ) -> anyhow::Result<SwapExactOutQuote> {
     let current_timestamp = clock.unix_timestamp as u64;
+    let current_slot = clock.slot;
     let epoch = clock.epoch;
+
+    validate_swap_activation(lb_pair, current_timestamp, current_slot)?;
 
     let mut lb_pair = *lb_pair;
     lb_pair.update_references(current_timestamp as i64)?;
@@ -73,11 +75,8 @@ pub fn quote_exact_out<'a>(
         (mint_y_account, mint_x_account)
     };
 
-    amount_out = get_transfer_fee(out_mint_account, amount_out, epoch)?;
-
-    // Constants moved outside loop for better performance
-    const BIN_ARRAY_HEADER_SIZE: usize = 56;
-    const BIN_SIZE: usize = 144;
+    amount_out =
+        calculate_transfer_fee_included_amount(out_mint_account, amount_out, epoch)?.amount;
 
     // Create HashMap once for O(1) account lookup instead of O(n) find() each iteration
     let bin_arrays_map: HashMap<Pubkey, &AccountInfo> =
@@ -98,7 +97,6 @@ pub fn quote_exact_out<'a>(
             Some(account) => *account,
             None => {
                 // We don't have the required bin array account - stop the swap
-                // This means we've exhausted the available bin arrays
                 // Return partial result if we made some progress, otherwise it's an error
                 if total_amount_in == 0 {
                     return Err(anyhow::anyhow!(
@@ -115,6 +113,10 @@ pub fn quote_exact_out<'a>(
         // Cache range calculation once per bin array (doesn't change within inner loop)
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
+
+        // Constants moved outside loop for better performance
+        const BIN_ARRAY_HEADER_SIZE: usize = 56;
+        const BIN_SIZE: usize = 144;
 
         loop {
             // Early exit checks
@@ -170,23 +172,10 @@ pub fn quote_exact_out<'a>(
 
                     amount_out = 0;
                 }
+            }
 
-                // Only advance if we still have amount left to swap
-                if amount_out > 0 {
-                    lb_pair.advance_active_bin(swap_for_y)?;
-                }
-            } else {
-                // Bin is empty, advance to next bin immediately
-                let old_active_id = lb_pair.active_id;
+            if amount_out > 0 {
                 lb_pair.advance_active_bin(swap_for_y)?;
-                // Safety check: if we didn't actually advance (shouldn't happen), break to avoid infinite loop
-                if lb_pair.active_id == old_active_id {
-                    break;
-                }
-                // Check if we've moved outside the current bin array range - if so, break to get new bin array
-                if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
-                    break;
-                }
             }
         }
     }
@@ -195,7 +184,8 @@ pub fn quote_exact_out<'a>(
         .checked_add(total_fee)
         .context("MathOverflow")?;
 
-    total_amount_in = get_transfer_fee(in_mint_account, total_amount_in, epoch)?;
+    total_amount_in =
+        calculate_transfer_fee_included_amount(in_mint_account, total_amount_in, epoch)?.amount;
 
     Ok(SwapExactOutQuote {
         amount_in: total_amount_in,
@@ -253,7 +243,7 @@ pub fn quote_exact_in<'a>(
         )?
         .pop()
         .context("Pool out of liquidity")?;
-        msg!("12: {}", active_bin_array_pubkey);
+        // msg!("12: {}", active_bin_array_pubkey);
         let active_bin_array_account = match bin_arrays_map.get(&active_bin_array_pubkey) {
             Some(account) => *account,
             None => {
@@ -305,6 +295,8 @@ pub fn quote_exact_in<'a>(
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
+            // eprintln!("DLMM active_bin.active_id: {:?}", lb_pair.active_id);
+
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
             if !active_bin.is_empty(!swap_for_y) {
@@ -329,6 +321,7 @@ pub fn quote_exact_in<'a>(
                     lb_pair.advance_active_bin(swap_for_y)?;
                 }
             } else {
+                eprintln!("loop: lb_pair.active_id: {}", lb_pair.active_id);
                 // Bin is empty, advance to next bin immediately
                 let old_active_id = lb_pair.active_id;
                 lb_pair.advance_active_bin(swap_for_y)?;
@@ -424,313 +417,378 @@ pub fn get_bin_array_pubkeys_for_swap(
     Ok(bin_array_pubkeys)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::token::load_mint;
-    use anchor_client::solana_sdk::clock::Clock;
-    use anchor_client::Cluster;
-    use anchor_lang::prelude::*;
-    use anchor_lang::solana_program::account_info::AccountInfo;
-    use anchor_lang::solana_program::program_pack::Pack;
-    use anchor_spl::token_interface::Mint;
-    use solana_client::nonblocking::rpc_client::RpcClient;
-    use solana_sdk::pubkey::Pubkey;
+pub fn get_active_bin_array<'a>(
+    lb_pair_pubkey: Pubkey,
+    lb_pair: &LbPair,
+    bitmap_extension: Option<&BinArrayBitmapExtension>,
+    swap_for_y: bool,
+    bin_arrays: Vec<AccountInfo<'a>>,
+) -> anyhow::Result<Bin> {
+    const BIN_ARRAY_HEADER_SIZE: usize = 56;
+    const BIN_SIZE: usize = 144;
 
-    /// Get on chain clock
-    async fn get_clock(rpc_client: RpcClient) -> anyhow::Result<Clock> {
-        let clock_account = rpc_client
-            .get_account(&anchor_client::solana_sdk::sysvar::clock::ID)
-            .await?;
+    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> = bin_arrays
+        .iter()
+        .map(|acc: &AccountInfo<'a>| (*acc.key, acc))
+        .collect();
 
-        let clock_state: Clock = bincode::deserialize(clock_account.data.as_ref())?;
+    let active_bin_array_pubkey =
+        get_bin_array_pubkeys_for_swap(lb_pair_pubkey, lb_pair, bitmap_extension, swap_for_y, 1)?
+            .pop()
+            .context("Pool out of liquidity")?;
 
-        Ok(clock_state)
-    }
+    let active_bin_array_account = bin_arrays_map
+        .get(&active_bin_array_pubkey)
+        .context("Active bin array not found in provided accounts")?;
 
-    /// Convert raw RPC account to InterfaceAccount<Mint>
-    fn account_to_interface_mint(
-        account: solana_sdk::account::Account,
-        pubkey: Pubkey,
-    ) -> InterfaceAccount<'static, Mint> {
-        let data = Box::leak(Box::new(account.data));
-        let lamports = Box::leak(Box::new(account.lamports));
-        let owner = Box::leak(Box::new(account.owner));
-        let key = Box::leak(Box::new(pubkey));
+    // Verify the active bin is in this bin array by reading the bin array index
+    let bin_array_data = active_bin_array_account.try_borrow_data()?;
+    let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
 
-        // Create AccountInfo with 'static lifetime
-        let account_info: &'static AccountInfo<'static> = Box::leak(Box::new(AccountInfo::new(
-            key, false, false, lamports, data, owner, false, 0,
-        )));
+    // Calculate the bin range for this bin array
+    let (lower_bin_id, upper_bin_id) =
+        BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
-        // Create InterfaceAccount from AccountInfo
-        // Since AccountInfo is 'static, InterfaceAccount will also be 'static
-        InterfaceAccount::<Mint>::try_from(account_info).expect("Failed to create InterfaceAccount")
-    }
+    // Verify active_id is within this bin array's range
+    ensure!(
+        lb_pair.active_id >= lower_bin_id && lb_pair.active_id <= upper_bin_id,
+        "Active bin ID is not within the active bin array range"
+    );
 
-    /// Convert solana_sdk::account::Account to AccountInfo
-    fn account_to_account_info(
-        key: Pubkey,
-        account: solana_sdk::account::Account,
-    ) -> AccountInfo<'static> {
-        let data = Box::leak(Box::new(account.data));
-        let lamports = Box::leak(Box::new(account.lamports));
-        let owner_bytes: [u8; 32] = account.owner.to_bytes();
-        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-        let owner_static = Box::leak(Box::new(owner));
-        let key_static = Box::leak(Box::new(key));
-        AccountInfo::new(
-            key_static,
-            false, // is_signer
-            false, // is_writable
-            lamports,
-            data,
-            owner_static,
-            account.executable,
-            account.rent_epoch,
-        )
-    }
+    // Calculate bin index within array
+    let bin_index_in_array: i32 = lb_pair
+        .active_id
+        .checked_sub(lower_bin_id)
+        .context("MathOverflow")?;
+    let bin_index_usize = bin_index_in_array as usize;
 
-    // #[tokio::test]
-    // async fn test_swap_quote_exact_out() {
-    //     // RPC client. No gPA is required.
-    //     let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+    // Calculate bin offset
+    let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
 
-    //     let sol_usdc = Pubkey::from_str_const("HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR");
+    // Verify we have enough data
+    ensure!(
+        bin_array_data.len() >= bin_offset + BIN_SIZE,
+        "Bin array data too short"
+    );
 
-    //     let lb_pair_account = rpc_client.get_account(&sol_usdc).await.unwrap();
+    // Read single bin from account data
+    let mut active_bin: Bin =
+        bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-    //     let lb_pair: LbPair = bytemuck::pod_read_unaligned(&lb_pair_account.data[8..]);
+    // Store the price in the bin if not already set
+    let _price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
-    //     let mut mint_accounts = rpc_client
-    //         .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
-    //         .await
-    //         .unwrap();
-
-    //     let mint_x_account =
-    //         account_to_interface_mint(mint_accounts[0].take().unwrap(), lb_pair.token_x_mint);
-    //     let mint_y_account =
-    //         account_to_interface_mint(mint_accounts[1].take().unwrap(), lb_pair.token_y_mint);
-
-    //     // 3 bin arrays to left, and right is enough to cover most of the swap, and stay under 1.4m CU constraint.
-    //     // Get 3 bin arrays to the left from the active bin
-    //     let left_bin_array_pubkeys =
-    //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, true, 3).unwrap();
-
-    //     // Get 3 bin arrays to the right the from active bin
-    //     let right_bin_array_pubkeys =
-    //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, false, 3).unwrap();
-
-    //     // Fetch bin arrays
-    //     let bin_array_pubkeys = left_bin_array_pubkeys
-    //         .into_iter()
-    //         .chain(right_bin_array_pubkeys.into_iter())
-    //         .collect::<Vec<Pubkey>>();
-
-    //     let accounts = rpc_client
-    //         .get_multiple_accounts(&bin_array_pubkeys)
-    //         .await
-    //         .unwrap();
-
-    //     // Create HashMap for quote_exact_out (which still uses HashMap)
-    //     let bin_arrays = accounts
-    //         .iter()
-    //         .zip(bin_array_pubkeys.iter())
-    //         .filter_map(|(account_opt, key)| {
-    //             account_opt
-    //                 .as_ref()
-    //                 .map(|account| (*key, bytemuck::pod_read_unaligned(&account.data[8..])))
-    //         })
-    //         .collect::<HashMap<_, _>>();
-
-    //     // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
-    //     let bin_array_account_infos: Vec<AccountInfo> = accounts
-    //         .into_iter()
-    //         .zip(bin_array_pubkeys.into_iter())
-    //         .filter_map(|(account_opt, key)| {
-    //             account_opt.map(|account| account_to_account_info(key, account))
-    //         })
-    //         .collect();
-
-    //     let usdc_token_multiplier = 1_000_000.0;
-    //     let sol_token_multiplier = 1_000_000_000.0;
-
-    //     let out_sol_amount = 1_000_000_000;
-    //     let clock = get_clock(rpc_client).await.unwrap();
-
-    //     let quote_result = quote_exact_out(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         out_sol_amount,
-    //         false,
-    //         &bin_arrays,
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     let in_amount = quote_result.amount_in + quote_result.fee;
-
-    //     println!(
-    //         "{} USDC -> exact 1 SOL",
-    //         in_amount as f64 / usdc_token_multiplier
-    //     );
-
-    //     let quote_result = quote_exact_in(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         in_amount,
-    //         false,
-    //         bin_array_account_infos.clone(),
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     println!(
-    //         "{} USDC -> {} SOL",
-    //         in_amount as f64 / usdc_token_multiplier,
-    //         quote_result.amount_out as f64 / sol_token_multiplier
-    //     );
-
-    //     let out_usdc_amount = 200_000_000;
-
-    //     let quote_result = quote_exact_out(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         out_usdc_amount,
-    //         true,
-    //         &bin_arrays,
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     let in_amount = quote_result.amount_in + quote_result.fee;
-
-    //     println!(
-    //         "{} SOL -> exact 200 USDC",
-    //         in_amount as f64 / sol_token_multiplier
-    //     );
-
-    //     let quote_result = quote_exact_in(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         in_amount,
-    //         true,
-    //         bin_array_account_infos,
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     println!(
-    //         "{} SOL -> {} USDC",
-    //         in_amount as f64 / sol_token_multiplier,
-    //         quote_result.amount_out as f64 / usdc_token_multiplier
-    //     );
-    // }
-
-    // #[tokio::test]
-    // async fn test_swap_quote_exact_in() {
-    //     // RPC client. No gPA is required.
-    //     let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
-
-    //     let sol_usdc = Pubkey::from_str_const("8ztFxjFPfVUtEf4SLSapcFj8GW2dxyUA9no2bLPq7H7V");
-
-    //     let lb_pair_account = rpc_client.get_account(&sol_usdc).await.unwrap();
-
-    //     let lb_pair: LbPair = bytemuck::pod_read_unaligned(&lb_pair_account.data[8..]);
-
-    //     let mut mint_accounts = rpc_client
-    //         .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
-    //         .await
-    //         .unwrap();
-
-    //     let mint_x_account =
-    //         account_to_interface_mint(mint_accounts[0].take().unwrap(), lb_pair.token_x_mint);
-    //     let mint_y_account =
-    //         account_to_interface_mint(mint_accounts[1].take().unwrap(), lb_pair.token_y_mint);
-
-    //     // 3 bin arrays to left, and right is enough to cover most of the swap, and stay under 1.4m CU constraint.
-    //     // Get 3 bin arrays to the left from the active bin
-    //     let left_bin_array_pubkeys =
-    //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, true, 3).unwrap();
-
-    //     // Get 3 bin arrays to the right the from active bin
-    //     let right_bin_array_pubkeys =
-    //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, false, 3).unwrap();
-
-    //     // Fetch bin arrays
-    //     let bin_array_pubkeys = left_bin_array_pubkeys
-    //         .into_iter()
-    //         .chain(right_bin_array_pubkeys.into_iter())
-    //         .collect::<Vec<Pubkey>>();
-
-    //     let accounts = rpc_client
-    //         .get_multiple_accounts(&bin_array_pubkeys)
-    //         .await
-    //         .unwrap();
-
-    //     // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
-    //     let bin_array_account_infos: Vec<AccountInfo> = accounts
-    //         .into_iter()
-    //         .zip(bin_array_pubkeys.into_iter())
-    //         .filter_map(|(account_opt, key)| {
-    //             account_opt.map(|account| account_to_account_info(key, account))
-    //         })
-    //         .collect();
-
-    //     // 1 SOL -> USDC
-    //     let in_sol_amount = 1_000_000_000;
-
-    //     let clock = get_clock(rpc_client).await.unwrap();
-
-    //     let quote_result = quote_exact_in(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         in_sol_amount,
-    //         true,
-    //         bin_array_account_infos.clone(),
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     println!(
-    //         "1 SOL -> {:?} USDC",
-    //         quote_result.amount_out as f64 / 1_000_000.0
-    //     );
-
-    //     // 100 USDC -> SOL
-    //     let in_usdc_amount = 100_000_000;
-
-    //     let quote_result = quote_exact_in(
-    //         sol_usdc,
-    //         &lb_pair,
-    //         in_usdc_amount,
-    //         false,
-    //         bin_array_account_infos,
-    //         None,
-    //         &clock,
-    //         &mint_x_account,
-    //         &mint_y_account,
-    //     )
-    //     .unwrap();
-
-    //     println!(
-    //         "100 USDC -> {:?} SOL",
-    //         quote_result.amount_out as f64 / 1_000_000_000.0
-    //     );
-    // }
+    // Return the active bin
+    Ok(active_bin)
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::token::load_mint;
+//     use anchor_client::solana_sdk::clock::Clock;
+//     use anchor_client::Cluster;
+//     use anchor_lang::prelude::*;
+//     use anchor_lang::solana_program::account_info::AccountInfo;
+//     use anchor_lang::solana_program::program_pack::Pack;
+//     use anchor_spl::token_interface::Mint;
+//     use solana_client::nonblocking::rpc_client::RpcClient;
+//     use solana_sdk::pubkey::Pubkey;
+
+//     /// Get on chain clock
+//     async fn get_clock(rpc_client: RpcClient) -> anyhow::Result<Clock> {
+//         let clock_account = rpc_client
+//             .get_account(&anchor_client::solana_sdk::sysvar::clock::ID)
+//             .await?;
+
+//         let clock_state: Clock = bincode::deserialize(clock_account.data.as_ref())?;
+
+//         Ok(clock_state)
+//     }
+
+//     /// Convert raw RPC account to InterfaceAccount<Mint>
+//     fn account_to_interface_mint(
+//         account: solana_sdk::account::Account,
+//         pubkey: Pubkey,
+//     ) -> InterfaceAccount<'static, Mint> {
+//         let data = Box::leak(Box::new(account.data));
+//         let lamports = Box::leak(Box::new(account.lamports));
+//         let owner = Box::leak(Box::new(account.owner));
+//         let key = Box::leak(Box::new(pubkey));
+
+//         // Create AccountInfo with 'static lifetime
+//         let account_info: &'static AccountInfo<'static> = Box::leak(Box::new(AccountInfo::new(
+//             key, false, false, lamports, data, owner, false, 0,
+//         )));
+
+//         // Create InterfaceAccount from AccountInfo
+//         // Since AccountInfo is 'static, InterfaceAccount will also be 'static
+//         InterfaceAccount::<Mint>::try_from(account_info).expect("Failed to create InterfaceAccount")
+//     }
+
+//     /// Convert solana_sdk::account::Account to AccountInfo
+//     fn account_to_account_info(
+//         key: Pubkey,
+//         account: solana_sdk::account::Account,
+//     ) -> AccountInfo<'static> {
+//         let data = Box::leak(Box::new(account.data));
+//         let lamports = Box::leak(Box::new(account.lamports));
+//         let owner_bytes: [u8; 32] = account.owner.to_bytes();
+//         let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+//         let owner_static = Box::leak(Box::new(owner));
+//         let key_static = Box::leak(Box::new(key));
+//         AccountInfo::new(
+//             key_static,
+//             false, // is_signer
+//             false, // is_writable
+//             lamports,
+//             data,
+//             owner_static,
+//             account.executable,
+//             account.rent_epoch,
+//         )
+//     }
+
+//     // #[tokio::test]
+//     // async fn test_swap_quote_exact_out() {
+//     //     // RPC client. No gPA is required.
+//     //     let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+
+//     //     let sol_usdc = Pubkey::from_str_const("HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR");
+
+//     //     let lb_pair_account = rpc_client.get_account(&sol_usdc).await.unwrap();
+
+//     //     let lb_pair: LbPair = bytemuck::pod_read_unaligned(&lb_pair_account.data[8..]);
+
+//     //     let mut mint_accounts = rpc_client
+//     //         .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
+//     //         .await
+//     //         .unwrap();
+
+//     //     let mint_x_account =
+//     //         account_to_interface_mint(mint_accounts[0].take().unwrap(), lb_pair.token_x_mint);
+//     //     let mint_y_account =
+//     //         account_to_interface_mint(mint_accounts[1].take().unwrap(), lb_pair.token_y_mint);
+
+//     //     // 3 bin arrays to left, and right is enough to cover most of the swap, and stay under 1.4m CU constraint.
+//     //     // Get 3 bin arrays to the left from the active bin
+//     //     let left_bin_array_pubkeys =
+//     //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, true, 3).unwrap();
+
+//     //     // Get 3 bin arrays to the right the from active bin
+//     //     let right_bin_array_pubkeys =
+//     //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, false, 3).unwrap();
+
+//     //     // Fetch bin arrays
+//     //     let bin_array_pubkeys = left_bin_array_pubkeys
+//     //         .into_iter()
+//     //         .chain(right_bin_array_pubkeys.into_iter())
+//     //         .collect::<Vec<Pubkey>>();
+
+//     //     let accounts = rpc_client
+//     //         .get_multiple_accounts(&bin_array_pubkeys)
+//     //         .await
+//     //         .unwrap();
+
+//     //     // Create HashMap for quote_exact_out (which still uses HashMap)
+//     //     let bin_arrays = accounts
+//     //         .iter()
+//     //         .zip(bin_array_pubkeys.iter())
+//     //         .filter_map(|(account_opt, key)| {
+//     //             account_opt
+//     //                 .as_ref()
+//     //                 .map(|account| (*key, bytemuck::pod_read_unaligned(&account.data[8..])))
+//     //         })
+//     //         .collect::<HashMap<_, _>>();
+
+//     //     // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
+//     //     let bin_array_account_infos: Vec<AccountInfo> = accounts
+//     //         .into_iter()
+//     //         .zip(bin_array_pubkeys.into_iter())
+//     //         .filter_map(|(account_opt, key)| {
+//     //             account_opt.map(|account| account_to_account_info(key, account))
+//     //         })
+//     //         .collect();
+
+//     //     let usdc_token_multiplier = 1_000_000.0;
+//     //     let sol_token_multiplier = 1_000_000_000.0;
+
+//     //     let out_sol_amount = 1_000_000_000;
+//     //     let clock = get_clock(rpc_client).await.unwrap();
+
+//     //     let quote_result = quote_exact_out(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         out_sol_amount,
+//     //         false,
+//     //         &bin_arrays,
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     let in_amount = quote_result.amount_in + quote_result.fee;
+
+//     //     println!(
+//     //         "{} USDC -> exact 1 SOL",
+//     //         in_amount as f64 / usdc_token_multiplier
+//     //     );
+
+//     //     let quote_result = quote_exact_in(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         in_amount,
+//     //         false,
+//     //         bin_array_account_infos.clone(),
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     println!(
+//     //         "{} USDC -> {} SOL",
+//     //         in_amount as f64 / usdc_token_multiplier,
+//     //         quote_result.amount_out as f64 / sol_token_multiplier
+//     //     );
+
+//     //     let out_usdc_amount = 200_000_000;
+
+//     //     let quote_result = quote_exact_out(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         out_usdc_amount,
+//     //         true,
+//     //         &bin_arrays,
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     let in_amount = quote_result.amount_in + quote_result.fee;
+
+//     //     println!(
+//     //         "{} SOL -> exact 200 USDC",
+//     //         in_amount as f64 / sol_token_multiplier
+//     //     );
+
+//     //     let quote_result = quote_exact_in(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         in_amount,
+//     //         true,
+//     //         bin_array_account_infos,
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     println!(
+//     //         "{} SOL -> {} USDC",
+//     //         in_amount as f64 / sol_token_multiplier,
+//     //         quote_result.amount_out as f64 / usdc_token_multiplier
+//     //     );
+//     // }
+
+//     // #[tokio::test]
+//     // async fn test_swap_quote_exact_in() {
+//     //     // RPC client. No gPA is required.
+//     //     let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+
+//     //     let sol_usdc = Pubkey::from_str_const("8ztFxjFPfVUtEf4SLSapcFj8GW2dxyUA9no2bLPq7H7V");
+
+//     //     let lb_pair_account = rpc_client.get_account(&sol_usdc).await.unwrap();
+
+//     //     let lb_pair: LbPair = bytemuck::pod_read_unaligned(&lb_pair_account.data[8..]);
+
+//     //     let mut mint_accounts = rpc_client
+//     //         .get_multiple_accounts(&[lb_pair.token_x_mint, lb_pair.token_y_mint])
+//     //         .await
+//     //         .unwrap();
+
+//     //     let mint_x_account =
+//     //         account_to_interface_mint(mint_accounts[0].take().unwrap(), lb_pair.token_x_mint);
+//     //     let mint_y_account =
+//     //         account_to_interface_mint(mint_accounts[1].take().unwrap(), lb_pair.token_y_mint);
+
+//     //     // 3 bin arrays to left, and right is enough to cover most of the swap, and stay under 1.4m CU constraint.
+//     //     // Get 3 bin arrays to the left from the active bin
+//     //     let left_bin_array_pubkeys =
+//     //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, true, 3).unwrap();
+
+//     //     // Get 3 bin arrays to the right the from active bin
+//     //     let right_bin_array_pubkeys =
+//     //         get_bin_array_pubkeys_for_swap(sol_usdc, &lb_pair, None, false, 3).unwrap();
+
+//     //     // Fetch bin arrays
+//     //     let bin_array_pubkeys = left_bin_array_pubkeys
+//     //         .into_iter()
+//     //         .chain(right_bin_array_pubkeys.into_iter())
+//     //         .collect::<Vec<Pubkey>>();
+
+//     //     let accounts = rpc_client
+//     //         .get_multiple_accounts(&bin_array_pubkeys)
+//     //         .await
+//     //         .unwrap();
+
+//     //     // Create Vec<AccountInfo> for quote_exact_in (stack-safe approach)
+//     //     let bin_array_account_infos: Vec<AccountInfo> = accounts
+//     //         .into_iter()
+//     //         .zip(bin_array_pubkeys.into_iter())
+//     //         .filter_map(|(account_opt, key)| {
+//     //             account_opt.map(|account| account_to_account_info(key, account))
+//     //         })
+//     //         .collect();
+
+//     //     // 1 SOL -> USDC
+//     //     let in_sol_amount = 1_000_000_000;
+
+//     //     let clock = get_clock(rpc_client).await.unwrap();
+
+//     //     let quote_result = quote_exact_in(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         in_sol_amount,
+//     //         true,
+//     //         bin_array_account_infos.clone(),
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     println!(
+//     //         "1 SOL -> {:?} USDC",
+//     //         quote_result.amount_out as f64 / 1_000_000.0
+//     //     );
+
+//     //     // 100 USDC -> SOL
+//     //     let in_usdc_amount = 100_000_000;
+
+//     //     let quote_result = quote_exact_in(
+//     //         sol_usdc,
+//     //         &lb_pair,
+//     //         in_usdc_amount,
+//     //         false,
+//     //         bin_array_account_infos,
+//     //         None,
+//     //         &clock,
+//     //         &mint_x_account,
+//     //         &mint_y_account,
+//     //     )
+//     //     .unwrap();
+
+//     //     println!(
+//     //         "100 USDC -> {:?} SOL",
+//     //         quote_result.amount_out as f64 / 1_000_000_000.0
+//     //     );
+//     // }
+// }

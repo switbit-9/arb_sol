@@ -1,0 +1,12 @@
+[
+    {"program_id" : "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "base_vault" : "GC4bQRtMhR4MYTVfthgqwRw9j1i44ft9WnTur5wWkXGb",
+    "quote_vault" : "3p46jxhF6vejNp6F1ocSwgRLNWKAjd62KJ41kSUcRz2R",
+    "base_token" : "8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump",
+    "quote_token" : "So11111111111111111111111111111111111111112"
+    },
+    {
+        "program_id" : "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        "pool_id" : "3aw1nhRRrVDYx8f4s464iT3BQ5bf6aCcH8t2Ns1wanoJ"
+    }
+]

@@ -35,7 +35,6 @@ pub mod typedefs;
 pub use typedefs::*;
 
 pub mod utils;
-pub use utils::*;
 
 pub mod token;
 pub use token::*;

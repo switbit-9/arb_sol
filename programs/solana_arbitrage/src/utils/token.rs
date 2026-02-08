@@ -10,7 +10,6 @@ use anchor_spl::token_2022::spl_token_2022::{
     self,
     extension::{self, StateWithExtensions},
 };
-use anchor_spl::token_interface::Mint;
 
 #[derive(Debug)]
 pub struct TransferFeeIncludedAmount {
@@ -25,7 +24,7 @@ pub struct TransferFeeExcludedAmount {
 }
 
 pub fn calculate_transfer_fee_excluded_amount(
-    token_mint: &InterfaceAccount<'_, Mint>,
+    token_mint: &AccountInfo,
     transfer_fee_included_amount: u64,
 ) -> Result<TransferFeeExcludedAmount> {
     if let Some(epoch_transfer_fee) = get_epoch_transfer_fee(token_mint)? {
@@ -48,7 +47,7 @@ pub fn calculate_transfer_fee_excluded_amount(
 }
 
 pub fn calculate_transfer_fee_included_amount(
-    token_mint: &InterfaceAccount<'_, Mint>,
+    token_mint: &AccountInfo,
     transfer_fee_excluded_amount: u64,
 ) -> Result<TransferFeeIncludedAmount> {
     if transfer_fee_excluded_amount == 0 {
@@ -100,15 +99,12 @@ pub fn calculate_transfer_fee_included_amount(
     })
 }
 
-pub fn get_epoch_transfer_fee(
-    token_mint: &InterfaceAccount<'_, Mint>,
-) -> Result<Option<TransferFee>> {
-    let token_mint_info = token_mint.to_account_info();
-    if *token_mint_info.owner == Token::id() {
+pub fn get_epoch_transfer_fee(token_mint: &AccountInfo) -> Result<Option<TransferFee>> {
+    if *token_mint.owner == Token::id() {
         return Ok(None);
     }
 
-    let token_mint_data = token_mint_info.try_borrow_data()?;
+    let token_mint_data = token_mint.try_borrow_data()?;
     let token_mint_unpacked =
         StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&token_mint_data)?;
     if let Ok(transfer_fee_config) =
@@ -174,6 +170,22 @@ pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64) -> Result<
             .unwrap()
     } else {
         0
+    };
+    Ok(fee)
+}
+
+pub fn get_transfer_fee_config(mint_info: &AccountInfo) -> Result<Option<TransferFeeConfig>> {
+    if *mint_info.owner == Token::id() {
+        return Ok(None);
+    }
+    let mint_data = mint_info.try_borrow_data()?;
+    let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(
+        &mint_data,
+    )?;
+    let fee = if let Ok(transfer_fee_config) = mint.get_extension::<TransferFeeConfig>() {
+        Some(*transfer_fee_config)
+    } else {
+        None
     };
     Ok(fee)
 }

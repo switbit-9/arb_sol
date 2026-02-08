@@ -98,6 +98,10 @@ impl BinExtension for Bin {
         let mut max_amount_in = self.get_max_amount_in(price, swap_for_y)?;
 
         let max_fee = lb_pair.compute_fee(max_amount_in)?;
+        // eprintln!(
+        //     "DLMM max_fee: {:?}, max_amount_in: {:?}",
+        //     max_fee, max_amount_in
+        // );
         max_amount_in = max_amount_in.checked_add(max_fee).context("overflow")?;
 
         let (amount_in_with_fees, amount_out, fee, protocol_fee) = if amount_in > max_amount_in {
@@ -109,6 +113,11 @@ impl BinExtension for Bin {
             )
         } else {
             let fee = lb_pair.compute_fee_from_amount(amount_in)?;
+            // eprintln!(
+            //     "DLMM fee: {} ({} tokens)",
+            //     fee,
+            //     fee as f64 / 1_000_000_000.0
+            // );
             let amount_in_after_fee: u64 = amount_in.checked_sub(fee).context("overflow")?;
             let amount_out = Bin::get_amount_out(amount_in_after_fee, price, swap_for_y)?;
             (

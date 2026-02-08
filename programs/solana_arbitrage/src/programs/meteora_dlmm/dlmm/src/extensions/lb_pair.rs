@@ -2,7 +2,6 @@ use crate::*;
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token;
 use anchor_spl::token_2022::spl_token_2022;
-use anyhow::Result;
 use ruint::aliases::U1024;
 use std::ops::Deref;
 use std::ops::Shl;

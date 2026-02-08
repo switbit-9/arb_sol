@@ -1,7 +1,6 @@
 use crate::extensions::bin_array::BinArrayExtension;
 use crate::pda::derive_bin_array_pda;
 use crate::*;
-use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{instruction::AccountMeta, pubkey::Pubkey};
 use anyhow::ensure; // This brings in PositionV2, BinArray from dlmm::types::*
 

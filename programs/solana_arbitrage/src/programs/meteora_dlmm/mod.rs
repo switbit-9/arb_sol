@@ -1,30 +1,127 @@
-use super::super::programs::ProgramMeta;
+use crate::programs::programs::ProgramMeta;
+use crate::programs::SolarBError;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    account_info::next_account_info,
     instruction::{AccountMeta, Instruction},
     program::invoke,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
 use anchor_spl::token::spl_token::native_mint;
+use dlmm::constants::FEE_PRECISION;
 use dlmm::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
-use dlmm::extensions::LbPairExtension;
+use dlmm::dlmm::types::Bin;
+use dlmm::extensions::{BinExtension, LbPairExtension};
 use dlmm::math::price_math::get_price_from_id;
-use dlmm::quote::quote_exact_in;
+use dlmm::quote::{get_active_bin_array, quote_exact_in, quote_exact_out};
+
 pub const SCALE_OFFSET: u8 = 64;
+
+/// Precomputed Q64 scale factor (2^64) for price calculations
+/// Avoids recomputing `(1u128 << 64) as f64` on every call
+const Q64_SCALE: f64 = 18446744073709551616.0; // (1u128 << SCALE_OFFSET) as f64
+
+fn compute_fee_rate(lb_pair: &LbPair) -> anyhow::Result<f64> {
+    let total_fee_rate = lb_pair.get_total_fee()?;
+    Ok(total_fee_rate as f64 / FEE_PRECISION as f64)
+}
+
+fn get_prices(lb_price: u128) -> Result<(f64, f64)> {
+    // Price is scaled by 2^64 (SCALE_OFFSET), so we need to divide by 2^64 to get actual price
+    let price = lb_price as f64 / Q64_SCALE;
+    let inverse_price = 1.0 / price;
+    Ok((price, inverse_price))
+}
+
+/// Extract bin arrays for buying from accounts starting at index 11
+/// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
+fn get_bin_arrays_buy<'a>(
+    accounts: &[AccountInfo<'a>],
+    start_index: usize,
+    end_index: usize,
+) -> Option<Vec<AccountInfo<'a>>> {
+    if end_index - start_index <= 11 {
+        return None;
+    }
+
+    let remaining = &accounts[start_index + 11..end_index];
+    let sol_mint = native_mint::id();
+
+    // Find position of SOL MINT separator
+    let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
+
+    match sol_mint_pos {
+        Some(pos) => {
+            // Split at SOL MINT position - buy arrays are before SOL MINT
+            let buy_slice = &remaining[..pos];
+            if buy_slice.is_empty() {
+                None
+            } else {
+                Some(buy_slice.iter().cloned().collect())
+            }
+        }
+        None => {
+            // No SOL MINT found, all remaining are buy arrays
+            if remaining.is_empty() {
+                None
+            } else {
+                Some(remaining.iter().cloned().collect())
+            }
+        }
+    }
+}
+
+/// Extract bin arrays for selling from accounts starting at index 11
+/// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
+fn get_bin_arrays_sell<'a>(
+    accounts: &[AccountInfo<'a>],
+    start_index: usize,
+    end_index: usize,
+) -> Option<Vec<AccountInfo<'a>>> {
+    if end_index - start_index <= 11 {
+        return None;
+    }
+
+    let remaining = &accounts[start_index + 11..end_index];
+    let sol_mint = native_mint::id();
+
+    // Find position of SOL MINT separator
+    let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
+
+    match sol_mint_pos {
+        Some(pos) => {
+            // Split at SOL MINT position - sell arrays are after SOL MINT
+            let after_sol = &remaining[pos + 1..]; // Skip SOL MINT itself
+            if after_sol.is_empty() {
+                None
+            } else {
+                Some(after_sol.iter().cloned().collect())
+            }
+        }
+        None => {
+            // No SOL MINT found, no sell arrays
+            None
+        }
+    }
+}
+
+use std::marker::PhantomData;
 
 #[derive(Clone)]
 pub struct MeteoraDlmm<'info> {
-    pub accounts: Vec<AccountInfo<'info>>,
-    pub program_id: AccountInfo<'info>,
-    pub pool_id: AccountInfo<'info>,
-    pub base_vault: AccountInfo<'info>,
-    pub quote_vault: AccountInfo<'info>,
-    pub base_token: AccountInfo<'info>,
-    pub quote_token: AccountInfo<'info>,
+    // pub pool_id: AccountInfo<'info>,
+    // pub quote_vault: AccountInfo<'info>,
+    pub pool_id: Pubkey,
+    pub base_token_pk: Pubkey,
+    pub quote_token_pk: Pubkey,
     pub lb_pair: LbPair,
-    pub price: u128,
+    pub active_bin: Bin,
+    pub lb_price: u128,
+    pub price: f64,
+    pub inverse_price: f64,
+    pub start_index: usize,
+    pub end_index: usize,
+    pub fee_rate: f64,
     // pub bin_arrays: Option<Vec<AccountInfo<'info>>>,
     // pub oracle: AccountInfo<'info>,
     // pub host_fee_in: AccountInfo<'info>,
@@ -33,6 +130,7 @@ pub struct MeteoraDlmm<'info> {
     // pub bitmap_extension: AccountInfo<'info>,
     // pub bin_arrays_buy: Option<Vec<AccountInfo<'info>>>,
     // pub bin_arrays_sell: Option<Vec<AccountInfo<'info>>>,
+    pub phantom: PhantomData<&'info ()>,
 }
 
 impl<'info> ProgramMeta for MeteoraDlmm<'info> {
@@ -40,33 +138,81 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         &Self::PROGRAM_ID
     }
 
-    fn get_vaults(&self) -> (&AccountInfo<'_>, &AccountInfo<'_>) {
-        unsafe {
-            (
-                &*(&self.base_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
-                &*(&self.quote_vault as *const AccountInfo<'info> as *const AccountInfo<'_>),
-            )
-        }
+    fn get_pool_id(&self) -> &Pubkey {
+        &self.pool_id
     }
 
-    fn swap_base_in(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(input_mint, amount_in, clock)
+    fn swap_base_in<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        amount_in: u64,
+        clock: Clock,
+    ) -> Result<u64> {
+        self.swap_base_in_impl(accounts, input_mint, amount_in, clock)
     }
 
-    fn swap_base_out(&self, input_mint: Pubkey, amount_in: u64, clock: Clock) -> Result<u64> {
-        self.swap_base_in_impl(input_mint, amount_in, clock)
+    fn swap_base_out<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        output_mint: Pubkey,
+        amount_out: u64,
+        clock: Clock,
+    ) -> Result<u64> {
+        self.swap_base_out_impl(accounts, output_mint, amount_out, clock)
     }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
-        self.get_prices_impl()
+        Ok((self.price, self.inverse_price))
     }
 
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
-        (self.base_token.key, self.quote_token.key)
+        (&self.base_token_pk, &self.quote_token_pk)
     }
 
-    fn invoke_swap_base_in<'a>(
+    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        let program_id = accounts[self.start_index + Self::PROGRAM_ID_IDX].key;
+        let pool_id = accounts[self.start_index + Self::POOL_ID_IDX].key;
+        let base_vault = accounts[self.start_index + Self::BASE_VAULT_IDX].key;
+        let quote_vault = accounts[self.start_index + Self::QUOTE_VAULT_IDX].key;
+        let base_token = accounts[self.start_index + Self::BASE_TOKEN_IDX].key;
+        let quote_token = accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key;
+        let oracle = accounts[self.start_index + Self::ORACLE_IDX].key;
+        let host_fee_in = accounts[self.start_index + Self::HOST_FEE_IN_IDX].key;
+        let memo = accounts[self.start_index + Self::MEMO_IDX].key;
+        let event_authority = accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key;
+        let bitmap_extension = accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key;
+        let bin_arrays_buy = get_bin_arrays_buy(accounts, self.start_index, self.end_index);
+        let bin_arrays_sell = get_bin_arrays_sell(accounts, self.start_index, self.end_index);
+
+        msg!("Meteora Dlmm Accounts:");
+        msg!("  program_id: {}", program_id);
+        msg!("  pool_id: {}", pool_id);
+        msg!("  base_vault: {}", base_vault);
+        msg!("  quote_vault: {}", quote_vault);
+        msg!("  base_token: {}", base_token);
+        msg!("  quote_token: {}", quote_token);
+        msg!("  oracle: {}", oracle);
+        msg!("  host_fee_in: {}", host_fee_in);
+        msg!("  memo: {}", memo);
+        msg!("  event_authority: {}", event_authority);
+        msg!("  bitmap_extension: {}", bitmap_extension);
+        msg!("  bin_arrays_buy: {:?}", bin_arrays_buy);
+        msg!("  bin_arrays_sell: {:?}", bin_arrays_sell);
+        Ok(())
+    }
+
+
+    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+        let max_amount_in = self.get_max_amount_in(input_mint)?;
+        let max_amount_out = self.get_max_amount_out(input_mint)?;
+        Ok((max_amount_in, max_amount_out))
+    }
+
+
+        fn invoke_swap_base_in<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
@@ -79,6 +225,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_in_impl(
+            accounts,
             input_mint,
             max_amount_in,
             amount_out,
@@ -94,6 +241,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn invoke_swap_base_out<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
@@ -106,6 +254,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap_base_out_impl(
+            accounts,
             input_mint,
             amount_in,
             min_amount_out,
@@ -119,92 +268,72 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         )
     }
 
-    fn log_accounts(&self) -> Result<()> {
-        let stored_accounts = self.accounts.clone();
-        let program_id = &stored_accounts[0];
-        let pool_id = &stored_accounts[1];
-        let base_vault = &stored_accounts[2];
-        let quote_vault = &stored_accounts[3];
-        let base_token = &stored_accounts[4];
-        let quote_token = &stored_accounts[5];
-        let oracle = &stored_accounts[6];
-        let host_fee_in = &stored_accounts[7];
-        let memo = &stored_accounts[8];
-        let event_authority = &stored_accounts[9];
-        let bitmap_extension = &stored_accounts[10];
-
-        msg!("Program ID: {}", program_id.key);
-        msg!("Pool ID: {}", pool_id.key);
-        msg!("Base Vault: {}", base_vault.key);
-        msg!("Quote Vault: {}", quote_vault.key);
-        msg!("Base Token: {}", base_token.key);
-        msg!("Quote Token: {}", quote_token.key);
-        msg!("Oracle: {}", oracle.key);
-        msg!("Host Fee In: {}", host_fee_in.key);
-        msg!("Memo: {}", memo.key);
-        msg!("Event Authority: {}", event_authority.key);
-        msg!("Bitmap Extension: {}", bitmap_extension.key);
-
-        let bin_arrays_buy = self.get_bin_arrays_buy();
-        if let Some(bin_arrays) = bin_arrays_buy {
-            msg!("Found {} buy bin arrays", bin_arrays.len());
-            for (idx, account) in bin_arrays.iter().enumerate() {
-                msg!("Buy bin array [{}]: {}", idx, account.key);
-            }
-        } else {
-            msg!("No buy bin found");
-        }
-
-        let bin_arrays_sell = self.get_bin_arrays_sell();
-        if let Some(bin_arrays) = bin_arrays_sell {
-            msg!("Found {} sell bin arrays", bin_arrays.len());
-            for (idx, account) in bin_arrays.iter().enumerate() {
-                msg!("Sell bin array [{}]: {}", idx, account.key);
-            }
-        } else {
-            msg!("No sell bin found");
-        }
-        Ok(())
-    }
 }
 
 impl<'info> MeteoraDlmm<'info> {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
-    pub fn new(accounts: &[AccountInfo<'info>]) -> Result<Self> {
-        let mut iter = accounts.iter();
-        let program_id = next_account_info(&mut iter)?; // 0
-        let pool_id = next_account_info(&mut iter)?; // 1
-        let base_vault = next_account_info(&mut iter)?; // 2
-        let quote_vault = next_account_info(&mut iter)?; // 3
-        let base_token = next_account_info(&mut iter)?; // 4
-        let quote_token = next_account_info(&mut iter)?; // 5
-        let pool_data = pool_id.try_borrow_data()?;
-        let pool_data_slice = &pool_data[8..];
-        let lb_pair: LbPair = bytemuck::pod_read_unaligned(pool_data_slice);
-        let price = get_price_from_id(lb_pair.active_id, lb_pair.bin_step);
-        // let oracle = next_account_info(&mut iter)?; // 6
-        // let host_fee_in = next_account_info(&mut iter)?; // 7
-        // let memo = next_account_info(&mut iter)?; // 8
-        // let event_authority = next_account_info(&mut iter)?; // 9
-        // let bin_array_bitmap_extension = next_account_info(&mut iter)?; // 10
+    pub const PROGRAM_ID_IDX: usize = 0;
+    pub const POOL_ID_IDX: usize = 1;
+    pub const BASE_VAULT_IDX: usize = 2;
+    pub const QUOTE_VAULT_IDX: usize = 3;
+    pub const BASE_TOKEN_IDX: usize = 4;
+    pub const QUOTE_TOKEN_IDX: usize = 5;
+    pub const ORACLE_IDX: usize = 6;
+    pub const HOST_FEE_IN_IDX: usize = 7;
+    pub const MEMO_IDX: usize = 8;
+    pub const EVENT_AUTHORITY_IDX: usize = 9;
+    pub const BITMAP_EXTENSION_IDX: usize = 10;
 
-        // Handle bin_arrays: they are split by SOL MINT account
-        // Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
-        // We've consumed 11 accounts (0-10), so remaining start at index 11
-        // let bin_arrays_buy = self.get_bin_arrays_buy();
-        // let bin_arrays_sell = self.get_bin_arrays_sell();
+    #[inline(never)]
+    pub fn new(
+        accounts: &[AccountInfo<'info>],
+        start_index: usize,
+        end_index: usize,
+    ) -> Result<Self> {
+        // Clone accounts we need before using the Vec
+        let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone();
+        let base_token: AccountInfo<'_> = accounts[start_index + Self::BASE_TOKEN_IDX].clone();
+        let quote_token = accounts[start_index + Self::QUOTE_TOKEN_IDX].clone();
+        let (lb_pair, lb_price) = {
+            // Borrow data from the cloned pool_id, not from the Vec
+            let pool_data = pool_id.try_borrow_data()?;
+            let slice = &pool_data[8..];
+            let lb: LbPair = bytemuck::pod_read_unaligned(slice);
+            let pr: u128 = get_price_from_id(lb.active_id, lb.bin_step)
+                .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+            (lb, pr)
+        };
+
+        let bin_arrays_buy = get_bin_arrays_buy(&accounts, start_index, end_index);
+        let mut active_bin = get_active_bin_array(
+            *pool_id.key,
+            &lb_pair,
+            None,
+            true,
+            bin_arrays_buy.unwrap_or_default(),
+        )
+        .unwrap();
+
+        let (price, inverse_price) = get_prices(lb_price)?;
+
+        let fee_rate = compute_fee_rate(&lb_pair).map_err(|_| error!(SolarBError::InsufficientAccounts))?;
 
         Ok(MeteoraDlmm {
-            accounts: accounts.to_vec(),
-            program_id: program_id.clone(),
-            pool_id: pool_id.clone(),
-            base_vault: base_vault.clone(),
-            quote_vault: quote_vault.clone(),
-            base_token: base_token.clone(),
-            quote_token: quote_token.clone(),
-            lb_pair: lb_pair,
-            price: price.unwrap(),
+            // pool_id,
+            // base_vault: base_vault.clone(),
+            // quote_vault: quote_vault.clone(),
+            base_token_pk: *base_token.key,
+            quote_token_pk: *quote_token.key,
+            pool_id: *pool_id.key,
+            lb_pair,
+            active_bin,
+            lb_price,
+            price,
+            inverse_price,
+            fee_rate,
+            start_index: start_index,
+            end_index: end_index,
             // oracle: oracle.clone(),
             // host_fee_in: host_fee_in.clone(),
             // memo: memo.clone(),
@@ -212,90 +341,65 @@ impl<'info> MeteoraDlmm<'info> {
             // bitmap_extension: bin_array_bitmap_extension.clone(),
             // bin_arrays_buy: bin_arrays_buy.clone(),
             // bin_arrays_sell: bin_arrays_sell.clone(),
+            phantom: PhantomData,
         })
     }
 
+    fn log_accounts_impl<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        let program_id = accounts[self.start_index + Self::PROGRAM_ID_IDX].key;
+        let pool_id = accounts[self.start_index + Self::POOL_ID_IDX].key;
+        let base_vault = accounts[self.start_index + Self::BASE_VAULT_IDX].key;
+        let quote_vault = accounts[self.start_index + Self::QUOTE_VAULT_IDX].key;
+        let base_token = accounts[self.start_index + Self::BASE_TOKEN_IDX].key;
+        let quote_token = accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key;
+        let oracle = accounts[self.start_index + Self::ORACLE_IDX].key;
+        let host_fee_in = accounts[self.start_index + Self::HOST_FEE_IN_IDX].key;
+        let memo = accounts[self.start_index + Self::MEMO_IDX].key;
+        let event_authority = accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key;
+        let bitmap_extension = accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key;
+        let bin_arrays_buy = get_bin_arrays_buy(accounts, self.start_index, self.end_index);
+        let bin_arrays_sell = get_bin_arrays_sell(accounts, self.start_index, self.end_index);
+
+        msg!("Meteora Dlmm Accounts:");
+        msg!("  program_id: {}", program_id);
+        msg!("  pool_id: {}", pool_id);
+        msg!("  base_vault: {}", base_vault);
+        msg!("  quote_vault: {}", quote_vault);
+        msg!("  base_token: {}", base_token);
+        msg!("  quote_token: {}", quote_token);
+        msg!("  oracle: {}", oracle);
+        msg!("  host_fee_in: {}", host_fee_in);
+        msg!("  memo: {}", memo);
+        msg!("  event_authority: {}", event_authority);
+        msg!("  bitmap_extension: {}", bitmap_extension);
+        msg!("  bin_arrays_buy: {:?}", bin_arrays_buy);
+        msg!("  bin_arrays_sell: {:?}", bin_arrays_sell);
+        Ok(())
+    }
+
     fn get_prices_impl(&self) -> Result<(f64, f64)> {
-        // Price is scaled by 2^64 (SCALE_OFFSET), so we need to divide by 2^64 to get actual price
-        const SCALE: f64 = (1u128 << SCALE_OFFSET) as f64; // 2^64 as f64 = 18446744073709551616.0
-        let price = self.price as f64 / SCALE;
-
-        let inverse_price = 1.0 / price;
-        Ok((price, inverse_price))
-    }
-    /// Extract bin arrays for buying from accounts starting at index 11
-    /// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
-    fn get_bin_arrays_buy(&self) -> Option<Vec<AccountInfo<'info>>> {
-        if self.accounts.len() <= 11 {
-            return None;
-        }
-
-        let remaining = &self.accounts[11..];
-        let sol_mint = native_mint::id();
-
-        // Find position of SOL MINT separator
-        let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
-
-        match sol_mint_pos {
-            Some(pos) => {
-                // Split at SOL MINT position - buy arrays are before SOL MINT
-                let buy_slice = &remaining[..pos];
-                if buy_slice.is_empty() {
-                    None
-                } else {
-                    Some(buy_slice.iter().cloned().collect())
-                }
-            }
-            None => {
-                // No SOL MINT found, all remaining are buy arrays
-                if remaining.is_empty() {
-                    None
-                } else {
-                    Some(remaining.iter().cloned().collect())
-                }
-            }
-        }
+        Ok((self.price, self.inverse_price))
     }
 
-    /// Extract bin arrays for selling from accounts starting at index 11
-    /// Structure: [fixed accounts] [bin_arrays_buy...] [SOL_MINT] [bin_arrays_sell...]
-    fn get_bin_arrays_sell(&self) -> Option<Vec<AccountInfo<'info>>> {
-        if self.accounts.len() <= 11 {
-            return None;
-        }
-
-        let remaining = &self.accounts[11..];
-        let sol_mint = native_mint::id();
-
-        // Find position of SOL MINT separator
-        let sol_mint_pos = remaining.iter().position(|acc| *acc.key == sol_mint);
-
-        match sol_mint_pos {
-            Some(pos) => {
-                // Split at SOL MINT position - sell arrays are after SOL MINT
-                let after_sol = &remaining[pos + 1..]; // Skip SOL MINT itself
-                if after_sol.is_empty() {
-                    None
-                } else {
-                    Some(after_sol.iter().cloned().collect())
-                }
-            }
-            None => {
-                // No SOL MINT found, no sell arrays
-                None
-            }
-        }
+    fn get_amount_after_fee(self, amount_in: u64) -> Result<u64> {
+        let fee = self
+            .lb_pair
+            .compute_fee_from_amount(amount_in)
+            .map_err(|_| error!(SolarBError::FeeOverflow))?;
+        let amount_in_after_fee = amount_in.checked_sub(fee).ok_or(SolarBError::FeeOverflow)?;
+        Ok(amount_in_after_fee)
     }
 
-    pub fn swap_base_in_impl(
+    pub fn swap_base_in_impl<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
         let swap_for_y = input_mint == self.lb_pair.token_x_mint;
         // Deserialize bitmap extension if available
-        let bitmap_extension_account = &self.accounts[10];
+        let bitmap_extension_account = &accounts[self.start_index + 10];
         let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
             != Self::PROGRAM_ID
             && bitmap_extension_account.data_len() > 8
@@ -308,23 +412,29 @@ impl<'info> MeteoraDlmm<'info> {
         };
         let bin_arrays = if swap_for_y {
             // Keep bin_array_accounts alive in the same scope where it's used
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_buy(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         } else {
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_sell(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         };
+
+        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
+        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
+
         let quote = {
             quote_exact_in(
-                *self.pool_id.key,
+                *accounts[self.start_index + 1].key,
                 &self.lb_pair,
                 amount_in,
                 swap_for_y, // swap_for_y
                 bin_arrays,
                 bitmap_extension.as_ref(),
                 &clock,
-                &self.base_token,
-                &self.quote_token,
+                &base_token,
+                &quote_token,
             )
         }
         .map_err(|e| {
@@ -337,16 +447,18 @@ impl<'info> MeteoraDlmm<'info> {
         Ok(quote.amount_out)
     }
 
-    pub fn swap_base_out_impl(
+    pub fn swap_base_out_impl<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         clock: Clock,
     ) -> Result<u64> {
         let swap_for_y = input_mint == self.lb_pair.token_x_mint;
 
+        eprintln!("swap_for_y: {:?}, {}", swap_for_y, amount_in);
         // Deserialize bitmap extension if available
-        let bitmap_extension_account = &self.accounts[10];
+        let bitmap_extension_account = &accounts[self.start_index + 10];
         let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
             != Self::PROGRAM_ID
             && bitmap_extension_account.data_len() > 8
@@ -357,25 +469,31 @@ impl<'info> MeteoraDlmm<'info> {
         } else {
             None
         };
-        let bin_arrays = if swap_for_y {
+        let bin_arrays = if !swap_for_y {
             // Keep bin_array_accounts alive in the same scope where it's used
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_buy(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         } else {
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_sell(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         };
+
+        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
+        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
+
         let quote = {
-            quote_exact_in(
-                *self.pool_id.key,
+            quote_exact_out(
+                *accounts[self.start_index + 1].key,
                 &self.lb_pair,
                 amount_in,
                 swap_for_y, // swap_for_y = false means swapping FOR X (base token), so we need buy arrays
                 bin_arrays,
                 bitmap_extension.as_ref(),
                 &clock,
-                &self.base_token,
-                &self.quote_token,
+                &base_token,
+                &quote_token,
             )
         }
         .map_err(|e| {
@@ -385,12 +503,12 @@ impl<'info> MeteoraDlmm<'info> {
             // Preserve the original error message using ProgramError::Custom
             anchor_lang::error::Error::from(ProgramError::Custom(2004))
         })?;
-        eprintln!("7");
-        Ok(quote.amount_out)
+        Ok(quote.amount_in)
     }
 
     pub fn invoke_swap_base_in_impl<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         amount_out: Option<u64>,
@@ -407,14 +525,14 @@ impl<'info> MeteoraDlmm<'info> {
             quote_token_program,
             user_base_token_account,
             user_quote_token_account,
-        ) = if mint_1_account.key == self.base_token.key {
+        ) = if mint_1_account.key == &self.base_token_pk {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
             )
-        } else if mint_2_account.key == self.base_token.key {
+        } else if mint_2_account.key == &self.base_token_pk {
             (
                 mint_2_token_program,
                 mint_1_token_program,
@@ -428,27 +546,28 @@ impl<'info> MeteoraDlmm<'info> {
         let amount_out_value = amount_out.unwrap_or(0);
 
         // Get stored accounts from self.accounts - these are the accounts stored in the struct
-        let stored_accounts = self.accounts.clone();
-        let program_id_stored = &stored_accounts[0];
-        let pool_id = &stored_accounts[1];
-        let base_vault = &stored_accounts[2];
-        let quote_vault = &stored_accounts[3];
-        let base_token = &stored_accounts[4];
-        let quote_token = &stored_accounts[5];
-        let oracle = &stored_accounts[6];
-        let host_fee_in = &stored_accounts[7];
-        let memo = &stored_accounts[8];
-        let event_authority = &stored_accounts[9];
-        let bitmap_extension = &stored_accounts[10];
+        let program_id = &accounts[self.start_index + 0];
+        let pool_id = &accounts[self.start_index + 1];
+        let base_vault = &accounts[self.start_index + 2];
+        let quote_vault = &accounts[self.start_index + 3];
+        let base_token = &accounts[self.start_index + 4];
+        let quote_token = &accounts[self.start_index + 5];
+        let oracle = &accounts[self.start_index + 6];
+        let host_fee_in = &accounts[self.start_index + 7];
+        let memo = &accounts[self.start_index + 8];
+        let event_authority = &accounts[self.start_index + 9];
+        let bitmap_extension = &accounts[self.start_index + 10];
 
         let swap_for_y = input_mint == *base_token.key;
 
         let bin_arrays = if swap_for_y {
             // Keep bin_array_accounts alive in the same scope where it's used
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_buy(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         } else {
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_sell(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         };
 
@@ -488,7 +607,7 @@ impl<'info> MeteoraDlmm<'info> {
 
         // Collect AccountInfo into a vector and use unsafe to cast lifetimes
         // Order must match metas order exactly
-        let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
+        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
             pool_id.clone(),          // 0: pool_id
             bitmap_extension.clone(), // 1: bitmap_extension (readonly)
             base_vault.clone(),       // 2: base_vault
@@ -502,9 +621,9 @@ impl<'info> MeteoraDlmm<'info> {
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
-            memo.clone(),              // 13: memo (readonly)
-            event_authority.clone(),   // 14: event_authority (readonly)
-            program_id_stored.clone(), // 15: program_id (readonly)
+            memo.clone(),            // 13: memo (readonly)
+            event_authority.clone(), // 14: event_authority (readonly)
+            program_id.clone(),      // 15: program_id (readonly)
         ];
         // Add bin arrays (buy arrays for swap_base_in)
         for account in bin_arrays {
@@ -520,6 +639,7 @@ impl<'info> MeteoraDlmm<'info> {
 
     pub fn invoke_swap_base_out_impl<'a>(
         &self,
+        accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
@@ -536,14 +656,14 @@ impl<'info> MeteoraDlmm<'info> {
             quote_token_program,
             user_base_token_account,
             user_quote_token_account,
-        ) = if mint_1_account.key == self.base_token.key {
+        ) = if mint_1_account.key == &self.base_token_pk {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
             )
-        } else if mint_2_account.key == self.base_token.key {
+        } else if mint_2_account.key == &self.base_token_pk {
             (
                 mint_2_token_program,
                 mint_1_token_program,
@@ -557,27 +677,28 @@ impl<'info> MeteoraDlmm<'info> {
         let min_amount_out_value = min_amount_out.unwrap_or(0);
 
         // Get stored accounts from self.accounts - these are the accounts stored in the struct
-        let stored_accounts = self.accounts.clone();
-        let program_id_stored = &stored_accounts[0];
-        let pool_id = &stored_accounts[1];
-        let base_vault = &stored_accounts[2];
-        let quote_vault = &stored_accounts[3];
-        let base_token = &stored_accounts[4];
-        let quote_token = &stored_accounts[5];
-        let oracle = &stored_accounts[6];
-        let host_fee_in = &stored_accounts[7];
-        let memo = &stored_accounts[8];
-        let event_authority = &stored_accounts[9];
-        let bitmap_extension = &stored_accounts[10];
+        let program_id = &accounts[self.start_index + 0];
+        let pool_id = &accounts[self.start_index + 1];
+        let base_vault = &accounts[self.start_index + 2];
+        let quote_vault = &accounts[self.start_index + 3];
+        let base_token = &accounts[self.start_index + 4];
+        let quote_token = &accounts[self.start_index + 5];
+        let oracle = &accounts[self.start_index + 6];
+        let host_fee_in = &accounts[self.start_index + 7];
+        let memo = &accounts[self.start_index + 8];
+        let event_authority = &accounts[self.start_index + 9];
+        let bitmap_extension = &accounts[self.start_index + 10];
 
         let swap_for_y = input_mint == *base_token.key;
 
-        let bin_arrays = if swap_for_y {
+        let bin_arrays: Vec<AccountInfo<'_>> = if swap_for_y {
             // Keep bin_array_accounts alive in the same scope where it's used
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_buy().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_buy(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         } else {
-            let bin_arrays: Vec<AccountInfo<'_>> = self.get_bin_arrays_sell().unwrap_or_default();
+            let bin_arrays: Vec<AccountInfo<'_>> =
+                get_bin_arrays_sell(accounts, self.start_index, self.end_index).unwrap_or_default();
             bin_arrays
         };
 
@@ -624,7 +745,7 @@ impl<'info> MeteoraDlmm<'info> {
 
         // Collect AccountInfo into a vector and use unsafe to cast lifetimes
         // Order must match metas order exactly
-        let mut accounts_vec: Vec<AccountInfo<'info>> = vec![
+        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
             pool_id.clone(),          // 0: pool_id
             bitmap_extension.clone(), // 1: bitmap_extension
             base_vault.clone(),       // 2: base_vault
@@ -638,9 +759,9 @@ impl<'info> MeteoraDlmm<'info> {
             unsafe { std::mem::transmute(payer.to_account_info()) }, // 10: payer (signer)
             unsafe { std::mem::transmute(base_token_program.to_account_info()) }, // 11: base_token_program (readonly)
             unsafe { std::mem::transmute(quote_token_program.to_account_info()) }, // 12: quote_token_program (readonly)
-            memo.clone(),              // 13: memo (readonly)
-            event_authority.clone(),   // 14: event_authority (readonly)
-            program_id_stored.clone(), // 15: program_id (readonly)
+            memo.clone(),            // 13: memo (readonly)
+            event_authority.clone(), // 14: event_authority (readonly)
+            program_id.clone(),      // 15: program_id (readonly)
         ];
         // Add bin arrays (sell arrays for swap_base_out)
         for account in bin_arrays {
@@ -689,8 +810,8 @@ impl<'info> MeteoraDlmm<'info> {
     // }
 
     fn get_amount_out(self, amount_in: u64, input_mint: Pubkey) -> Result<u64> {
-        let swap_for_y = *self.base_token.key == input_mint;
-        let price = self.price;
+        let swap_for_y = self.base_token_pk == input_mint;
+        let price = self.lb_price;
         let fee = self
             .lb_pair
             .compute_fee_from_amount(amount_in)
@@ -725,10 +846,61 @@ impl<'info> MeteoraDlmm<'info> {
         };
         Ok(amount_out)
     }
+
+    // pub fn get_amount_out_from_amount_in(
+    //     &self,
+    //     price: u128,
+    //     amount_in: u64,
+    //     input_mint: Pubkey,
+    // ) -> Result<u128> {
+    //     let swap_for_y = self.base_token_pk == input_mint;
+    //     let swap_result = self
+    //         .active_bin
+    //         .clone()
+    //         .swap(amount_in, price, swap_for_y, &self.lb_pair, None)
+    //         .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+    //     Ok(swap_result.amount_out as u128)
+    // }
+
+    // pub fn get_amount_in_from_amount_out(
+    //     &self,
+    //     price: u128,
+    //     amount_out: u64,
+    //     input_mint: Pubkey,
+    // ) -> Result<u128> {
+    //     let swap_for_y = self.base_token_pk == input_mint;
+    //     let amount_in = Bin::get_amount_in(amount_out, price, swap_for_y)
+    //         .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+    //     let fee = self
+    //         .lb_pair
+    //         .compute_fee(amount_out)
+    //         .map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+    //     let total_amount_in = amount_in
+    //         .checked_add(fee)
+    //         .ok_or_else(|| error!(SolarBError::TransferFeeCalculationError))?;
+    //     Ok(total_amount_in as u128)
+    //     // total_amount_in = amount_in + transfer_fee
+    // }
+
+    // Gives always the maxmimum amount in of the token provided
+    pub fn get_max_amount_in(&self, input_mint: Pubkey) -> Result<u64> {
+        let price = self.lb_price;
+        let swap_for_y = self.base_token_pk == input_mint;
+        let amount: u64 = self
+            .active_bin
+            .get_max_amount_in(price, swap_for_y)
+            .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+        Ok(amount as u64)
+    }
+
+    // Gives always the maxmimum amount out of the contrary token provided
+    pub fn get_max_amount_out(&self, input_mint: Pubkey) -> Result<u64> {
+        let swap_for_y = self.base_token_pk == input_mint;
+        Ok(self.active_bin.get_max_amount_out(swap_for_y))
+    }
 }
 
-// Use the function from dlmm::quote module instead of duplicating
-pub use dlmm::quote::get_bin_array_pubkeys_for_swap;
+
 
 #[cfg(test)]
 mod tests {
@@ -736,8 +908,9 @@ mod tests {
     use anchor_lang::prelude::{Clock, InterfaceAccount};
     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
     use anchor_spl::token_interface::Mint;
+    use dlmm;
     use dlmm::dlmm::accounts::BinArray;
-    use dlmm::{self, lb_pair};
+    use dlmm::quote::get_bin_array_pubkeys_for_swap;
 
     // Helper function to create a mock AccountInfo with provided data
     fn create_mock_account_info_with_data(
@@ -892,21 +1065,20 @@ mod tests {
         InterfaceAccount::<Mint>::try_from(account_info).expect("Failed to create InterfaceAccount")
     }
 
-    #[tokio::test]
-    async fn test_dlmm_swap_quote_exact_in() {
+    async fn build_test_scenario() -> (MeteoraDlmm<'static>, Vec<AccountInfo<'static>>) {
         use anchor_client::Cluster;
         use dlmm::pda;
         use solana_client::nonblocking::rpc_client::RpcClient;
         use std::collections::HashMap;
-        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
 
-        // // RPC client. No gPA is required.
-        // let rpc_client = RpcClient::new(Cluster::Devnet.url().to_string());
-        // let pool_id = Pubkey::from_str_const("DUpw2YXNGJU2w49kyfpsYXDkXRJp9ibtM6mJQtWKu4RY");
+        let cluster: Cluster = Cluster::Mainnet;
+        let rpc_client = RpcClient::new(cluster.url().to_string());
 
-        // // RPC client. No gPA is required.
-        let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
-        let pool_id = Pubkey::from_str_const("DrSo4GMLEZQHEWKDr9TEbzjoc7Yff5suQmNVKTNok8GK");
+        let pool_id: Pubkey = if cluster == Cluster::Mainnet {
+            Pubkey::from_str_const("LJGCprfvx4qZVXktL24CLArGwzpAsQXjq5AQFa5w6WT")
+        } else {
+            Pubkey::from_str_const("FT8ueq7bP7DpBoP6b3QSsos3TkRY9JYCbGLCLKA3tgUn")
+        };
 
         let lb_pair_account = rpc_client.get_account(&pool_id).await.unwrap();
 
@@ -921,11 +1093,11 @@ mod tests {
         let (bitmap_extension_key, _) = pda::derive_bin_array_bitmap_extension(pool_id);
 
         let left_bin_array_pubkeys =
-            dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, true, 5).unwrap();
+            get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, true, 5).unwrap();
 
         // Get more bin arrays to the right (sell arrays) - increase from 5 to handle larger swaps
         let right_bin_array_pubkeys =
-            dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, false, 10)
+            get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, false, 10)
                 .unwrap();
 
         eprintln!("mint_x_account: {:?}", token_x_mint_key);
@@ -1035,15 +1207,22 @@ mod tests {
         let sol_mint_account_info = fetch_account_info_from_rpc(&rpc_client, sol_mint_key).await;
         accounts.push(sol_mint_account_info);
         accounts.extend(bin_array_sell_infos);
+        let meteora_dlmm = MeteoraDlmm::new(&accounts, 0, accounts.len()).unwrap();
+        (meteora_dlmm, accounts)
+    }
 
+    #[tokio::test]
+    async fn test_dlmm_swap_quote_exact_in() {
+        use anchor_client::Cluster;
+        use solana_client::nonblocking::rpc_client::RpcClient;
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let (meteora_dlmm, accounts) = build_test_scenario().await;
+        let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
         let clock1 = get_clock(&rpc_client).await.unwrap();
         let clock_2 = clock1.clone();
         let clock_3 = clock1.clone();
 
         // Create MeteoraDlmm instance
-        let meteora_dlmm = MeteoraDlmm::new(&accounts).unwrap();
-
-        let wsol = anchor_spl::token::spl_token::native_mint::ID;
         // let (token_a_decimal, token_b_decimal) = if token_x_mint_key == wsol {
         //     (9, 6) // token_a is SOL (9 decimals), token_b is likely USDC/USDT (6 decimals)
         // } else if token_y_mint_key == wsol {
@@ -1058,7 +1237,7 @@ mod tests {
         let inverse_price = prices.1;
         eprintln!("price: {:?}", price);
 
-        let (sol_price, token_price) = if lb_pair.token_x_mint == sol_mint {
+        let (sol_price, token_price) = if meteora_dlmm.base_token_pk == sol_mint {
             (price, inverse_price)
         } else {
             (inverse_price, price)
@@ -1067,15 +1246,15 @@ mod tests {
         eprintln!("token_price: {:?}", token_price);
 
         // 1 SOL -> USDC
-        let in_sol_amount = 1_000_000_000;
+        let in_sol_amount = 1_000;
 
         // Determine swap_for_y: if SOL is token_x, we swap X for Y (swap_for_y = true)
         // If SOL is token_y, we swap Y for X (swap_for_y = false)
-        let swap_for_y = lb_pair.token_x_mint == sol_mint;
+        let swap_for_y = meteora_dlmm.lb_pair.token_x_mint == sol_mint;
         eprintln!("swap_for_y: {:?}", swap_for_y);
 
         let amount_out = meteora_dlmm
-            .swap_base_in(sol_mint, in_sol_amount, clock1)
+            .swap_base_in(&accounts, sol_mint, in_sol_amount, clock1)
             .unwrap();
         let amount_out_v2 = in_sol_amount as f64 * inverse_price;
         let amount_out_v2_2 = meteora_dlmm
@@ -1092,14 +1271,14 @@ mod tests {
         );
         eprintln!("================================================");
         // Step 2: Swap quote -> base (reverse swap)
-        let other_mint = if token_y_mint_key != sol_mint {
-            token_y_mint_key
+        let other_mint = if meteora_dlmm.quote_token_pk != sol_mint {
+            meteora_dlmm.quote_token_pk
         } else {
-            token_x_mint_key
+            meteora_dlmm.base_token_pk
         };
 
         let token_amount_out = meteora_dlmm
-            .swap_base_out(other_mint, amount_out, clock_2)
+            .swap_base_out(&accounts, other_mint, amount_out, clock_2)
             .unwrap();
         let token_amount_out_v2 = amount_out as f64 * token_price;
         let token_amount_out_v2_2 = meteora_dlmm
