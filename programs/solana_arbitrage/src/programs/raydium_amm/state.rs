@@ -15,6 +15,7 @@ const NEED_TAKE_PNL_PC_OFFSET: usize = 200;
 // Pubkeys after StateData (192 + 144 = 336)
 const COIN_VAULT_MINT_OFFSET: usize = 400; // 336 + 2*32
 const PC_VAULT_MINT_OFFSET: usize = 432;   // 336 + 3*32
+const OPEN_ORDERS_OFFSET: usize = 496;     // 336 + 5*32
 
 fn read_u64(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
@@ -34,6 +35,7 @@ pub struct AmmInfoFields {
     pub need_take_pnl_pc: u64,
     pub coin_vault_mint: Pubkey,
     pub pc_vault_mint: Pubkey,
+    pub open_orders: Pubkey,
 }
 
 impl AmmInfoFields {
@@ -49,6 +51,7 @@ impl AmmInfoFields {
             need_take_pnl_pc: read_u64(data, NEED_TAKE_PNL_PC_OFFSET),
             coin_vault_mint: read_pubkey(data, COIN_VAULT_MINT_OFFSET),
             pc_vault_mint: read_pubkey(data, PC_VAULT_MINT_OFFSET),
+            open_orders: read_pubkey(data, OPEN_ORDERS_OFFSET),
         }
     }
 }

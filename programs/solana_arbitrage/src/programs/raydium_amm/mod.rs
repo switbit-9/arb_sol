@@ -439,6 +439,38 @@ impl<'info> RaydiumAmm<'info> {
     pub const COIN_TOKEN_IDX: usize = 4;
     pub const PC_TOKEN_IDX: usize = 5;
     pub const AUTHORITY_IDX: usize = 6;
+    pub const OPEN_ORDERS_IDX: usize = 7;
+
+    // Serum/OpenBook OpenOrders account layout offsets
+    // Layout: 5-byte head padding, u64 account_flags, Pubkey market, Pubkey owner,
+    //         u64 native_coin_free, u64 native_coin_total, u64 native_pc_free, u64 native_pc_total
+    const OO_NATIVE_COIN_TOTAL_OFFSET: usize = 85;
+    const OO_NATIVE_PC_TOTAL_OFFSET: usize = 101;
+
+    /// Parse native_coin_total and native_pc_total from a Serum/OpenBook OpenOrders account.
+    /// Returns (0, 0) if the account is the system program (no open orders).
+    fn parse_open_orders(open_orders: &AccountInfo) -> (u64, u64) {
+        let data = match open_orders.try_borrow_data() {
+            Ok(d) => d,
+            Err(_) => return (0, 0),
+        };
+        // OpenOrders minimum size: 5 (head padding) + 8 (flags) + 32 (market) + 32 (owner)
+        //   + 8 (coin_free) + 8 (coin_total) + 8 (pc_free) + 8 (pc_total) = 109
+        if data.len() < 109 {
+            return (0, 0);
+        }
+        let native_coin_total = u64::from_le_bytes(
+            data[Self::OO_NATIVE_COIN_TOTAL_OFFSET..Self::OO_NATIVE_COIN_TOTAL_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let native_pc_total = u64::from_le_bytes(
+            data[Self::OO_NATIVE_PC_TOTAL_OFFSET..Self::OO_NATIVE_PC_TOTAL_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        );
+        (native_coin_total, native_pc_total)
+    }
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
@@ -462,20 +494,27 @@ impl<'info> RaydiumAmm<'info> {
         let coin_vault_amount = parse_token_account(&coin_vault)?.amount;
         let pc_vault_amount = parse_token_account(&pc_vault)?.amount;
 
-        // Compute effective reserves: vault_amount - need_take_pnl
+        // Read open orders amounts from Serum/OpenBook (if account is provided)
+        let (oo_native_coin, oo_native_pc) =
+            if start_index + Self::OPEN_ORDERS_IDX < end_index {
+                let open_orders = &accounts[start_index + Self::OPEN_ORDERS_IDX];
+                Self::parse_open_orders(open_orders)
+            } else {
+                (0, 0)
+            };
+
+        // Compute effective reserves:
+        // total = vault_amount + open_orders_amount - need_take_pnl
         let base_vault_amount = coin_vault_amount
-            .checked_sub(amm.need_take_pnl_coin)
-            .unwrap_or(coin_vault_amount);
+            .saturating_add(oo_native_coin)
+            .saturating_sub(amm.need_take_pnl_coin);
         let quote_vault_amount = pc_vault_amount
-            .checked_sub(amm.need_take_pnl_pc)
-            .unwrap_or(pc_vault_amount);
+            .saturating_add(oo_native_pc)
+            .saturating_sub(amm.need_take_pnl_pc);
 
         // Compute price with decimal adjustment
         let raw_price = quote_vault_amount as f64 / base_vault_amount as f64;
-        eprintln!("base_decimals: {}, quote_decimals: {}", amm.coin_decimals, amm.pc_decimals);
-        let decimal_adjustment =
-            10f64.powi(amm.coin_decimals as i32 - amm.pc_decimals as i32);
-        let price = raw_price * decimal_adjustment;
+        let price = raw_price;
         let inverse_price = 1.0 / price;
 
         let fee_rate = amm.swap_fee_numerator as f64 / amm.swap_fee_denominator as f64;
@@ -580,14 +619,8 @@ mod tests {
         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
 
         // SOL/USDC Raydium AMM pool on mainnet
-        let pool_id_key =
-            Pubkey::from_str_const("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq");
-
-        eprintln!(
-            "Testing Raydium AMM round trip swap for pool: {}",
-            pool_id_key
-        );
-
+        let pool_id_key = Pubkey::from_str_const("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq");
+        
         // Fetch pool account (AmmInfo - 752 bytes, no Anchor discriminator)
         let pool_account = rpc_client
             .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
@@ -664,6 +697,19 @@ mod tests {
         .expect("Failed to derive authority PDA");
 
         eprintln!("authority: {}", authority_key);
+        eprintln!("open_orders: {}", amm.open_orders);
+
+        // Fetch open orders account from Serum/OpenBook
+        let open_orders_account = rpc_client
+            .get_account(&SdkPubkey::try_from(amm.open_orders.to_bytes().as_ref()).unwrap())
+            .await;
+        let open_orders_account = match open_orders_account {
+            Ok(acc) => acc,
+            Err(e) => {
+                eprintln!("Warning: Could not fetch open_orders account: {:?}", e);
+                return;
+            }
+        };
 
         // Convert to AccountInfo
         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
@@ -671,13 +717,14 @@ mod tests {
         let pc_vault_info = account_to_account_info(pc_vault_key, pc_vault_account);
         let coin_mint_info = account_to_account_info(amm.coin_vault_mint, coin_mint_account);
         let pc_mint_info = account_to_account_info(amm.pc_vault_mint, pc_mint_account);
+        let open_orders_info = account_to_account_info(amm.open_orders, open_orders_account);
 
         let program_id_account =
             create_mock_account_info_with_data(RaydiumAmm::PROGRAM_ID, system_program::id(), None);
         let authority_account =
             create_mock_account_info_with_data(authority_key, system_program::id(), None);
 
-        // Accounts order: program_id, pool_id, coin_vault, pc_vault, coin_mint, pc_mint, authority
+        // Accounts order: program_id, pool_id, coin_vault, pc_vault, coin_mint, pc_mint, authority, open_orders
         let accounts = vec![
             program_id_account,
             pool_id_account_info,
@@ -686,6 +733,7 @@ mod tests {
             coin_mint_info,
             pc_mint_info,
             authority_account,
+            open_orders_info,
         ];
 
         let raydium_amm =
