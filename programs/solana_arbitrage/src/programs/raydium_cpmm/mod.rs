@@ -491,8 +491,9 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 }
 
 impl<'info> RaydiumCPMM<'info> {
-    pub const PROGRAM_ID: Pubkey =
-        Pubkey::from_str_const("CPMDWBwJDtYax9qW7AyRuVC19Cc4L4Vcy4n2BHAbHkCW"); //TO DO: be changed for mainnet
+    // pub const PROGRAM_ID: Pubkey =
+        // Pubkey::from_str_const("CPMDWBwJDtYax9qW7AyRuVC19Cc4L4Vcy4n2BHAbHkCW"); //TO DO: be changed for mainnet
+    pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
     pub const PROGRAM_ID_IDX: usize = 0;
     pub const POOL_ID_IDX: usize = 1;
     pub const BASE_VAULT_IDX: usize = 2;

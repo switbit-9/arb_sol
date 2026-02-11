@@ -34,4 +34,6 @@ pub enum SolarBError {
     InvalidAccountData,
     #[msg("Invalid arbitrage mode specified")]
     InvalidMode,
+    #[msg("Unauthorized: invalid auth key")]
+    Unauthorized,
 }

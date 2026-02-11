@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
 
 // Import all program types (uncomment as needed)
-// use crate::programs::meteora_damm_v1::MeteoraDammV1;
+use crate::programs::meteora_damm_v1::MeteoraDammV1;
 use crate::programs::meteora_damm_v2::MeteoraDammV2;
 use crate::programs::meteora_dlmm::MeteoraDlmm;
 use crate::programs::orca::OrcaWhirlpool;
@@ -14,7 +14,7 @@ use crate::programs::raydium_clmm::RaydiumCLMM;
 /// Enum to hold different program instances - eliminates lifetime complexity
 pub enum ProgramInstance<'info> {
     MeteoraDlmm(MeteoraDlmm<'info>),
-    // MeteoraDammV1(MeteoraDammV1<'info>),
+    MeteoraDammV1(MeteoraDammV1<'info>),
     MeteoraDammV2(MeteoraDammV2<'info>),
     OrcaWhirlpool(OrcaWhirlpool<'info>),
     PumpAmm(PumpAmm<'info>),
@@ -27,6 +27,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_id(&self) -> &Pubkey {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.get_id(),
+            ProgramInstance::MeteoraDammV1(p) => p.get_id(),
             ProgramInstance::MeteoraDammV2(p) => p.get_id(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_id(),
             ProgramInstance::PumpAmm(p) => p.get_id(),
@@ -39,6 +40,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_pool_id(&self) -> &Pubkey {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.get_pool_id(),
+            ProgramInstance::MeteoraDammV1(p) => p.get_pool_id(),
             ProgramInstance::MeteoraDammV2(p) => p.get_pool_id(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_pool_id(),
             ProgramInstance::PumpAmm(p) => p.get_pool_id(),
@@ -51,6 +53,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_mints(&self) -> (&Pubkey, &Pubkey) {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.get_mints(),
+            ProgramInstance::MeteoraDammV1(p) => p.get_mints(),
             ProgramInstance::MeteoraDammV2(p) => p.get_mints(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_mints(),
             ProgramInstance::PumpAmm(p) => p.get_mints(),
@@ -63,6 +66,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_prices(&self) -> Result<(f64, f64)> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.get_prices(),
+            ProgramInstance::MeteoraDammV1(p) => p.get_prices(),
             ProgramInstance::MeteoraDammV2(p) => p.get_prices(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_prices(),
             ProgramInstance::PumpAmm(p) => p.get_prices(),
@@ -84,6 +88,9 @@ impl<'info> ProgramInstance<'info> {
                 Err(error!(crate::programs::SolarBError::InvalidProgramType))
             }
             ProgramInstance::PumpAmm(p) => p.calculate_optimal_amount_in(input_mint, target_price),
+            ProgramInstance::MeteoraDammV1(p) => {
+                p.calculate_optimal_amount_in(input_mint, target_price)
+            }
             ProgramInstance::MeteoraDammV2(p) => {
                 p.calculate_optimal_amount_in(input_mint, target_price)
             }
@@ -97,6 +104,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_base_token(&self) -> Result<Pubkey> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(p.base_token_pk),
+            ProgramInstance::MeteoraDammV1(p) => Ok(p.base_token_pk),
             ProgramInstance::MeteoraDammV2(p) => Ok(p.base_token_pk),
             ProgramInstance::OrcaWhirlpool(p) => Ok(p.base_token_pk),
             ProgramInstance::PumpAmm(p) => Ok(p.base_token_pk),
@@ -110,6 +118,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_quote_token(&self) -> Result<Pubkey> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(p.quote_token_pk),
+            ProgramInstance::MeteoraDammV1(p) => Ok(p.quote_token_pk),
             ProgramInstance::MeteoraDammV2(p) => Ok(p.quote_token_pk),
             ProgramInstance::OrcaWhirlpool(p) => Ok(p.quote_token_pk),
             ProgramInstance::PumpAmm(p) => Ok(p.quote_token_pk),
@@ -127,6 +136,7 @@ impl<'info> ProgramInstance<'info> {
                 // Concentrated liquidity pools don't have traditional reserves
                 Err(error!(crate::programs::SolarBError::InvalidProgramType))
             }
+            ProgramInstance::MeteoraDammV1(p) => p.get_vault_amounts(),
             ProgramInstance::PumpAmm(p) => p.get_vault_amounts(),
             ProgramInstance::RaydiumAmm(p) => p.get_vault_amounts(),
             ProgramInstance::RaydiumCLMM(p) => p.get_vault_amounts(),
@@ -137,6 +147,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.get_max_amounts_in_out(input_mint),
+            ProgramInstance::MeteoraDammV1(p) => p.get_max_amounts_in_out(input_mint),
             ProgramInstance::MeteoraDammV2(p) => p.get_max_amounts_in_out(input_mint),
             ProgramInstance::OrcaWhirlpool(p) => p.get_max_amounts_in_out(input_mint),
             ProgramInstance::PumpAmm(p) => p.get_max_amounts_in_out(input_mint),
@@ -151,6 +162,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_fee_factor(&self) -> Result<f64> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(1.0 - p.fee_rate),
+            ProgramInstance::MeteoraDammV1(p) => Ok(1.0 - p.fee_rate),
             ProgramInstance::MeteoraDammV2(p) => Ok(1.0 - p.fee_rate),
             ProgramInstance::OrcaWhirlpool(p) => {
                 // Orca fee_rate is in hundredths of basis point (1_000_000 = 100%)
@@ -172,6 +184,9 @@ impl<'info> ProgramInstance<'info> {
     ) -> Result<u64> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => {
+                p.swap_base_in(accounts, input_mint, amount_in, clock)
+            }
+            ProgramInstance::MeteoraDammV1(p) => {
                 p.swap_base_in(accounts, input_mint, amount_in, clock)
             }
             ProgramInstance::MeteoraDammV2(p) => {
@@ -196,6 +211,9 @@ impl<'info> ProgramInstance<'info> {
     ) -> Result<u64> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => {
+                p.swap_base_out(accounts, output_mint, amount_out, clock)
+            }
+            ProgramInstance::MeteoraDammV1(p) => {
                 p.swap_base_out(accounts, output_mint, amount_out, clock)
             }
             ProgramInstance::MeteoraDammV2(p) => {
@@ -227,6 +245,19 @@ impl<'info> ProgramInstance<'info> {
     ) -> Result<()> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.invoke_swap_base_in(
+                accounts,
+                input_mint,
+                max_amount_in,
+                amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::MeteoraDammV1(p) => p.invoke_swap_base_in(
                 accounts,
                 input_mint,
                 max_amount_in,
@@ -348,6 +379,19 @@ impl<'info> ProgramInstance<'info> {
                 mint_1_token_program,
                 mint_2_token_program,
             ),
+            ProgramInstance::MeteoraDammV1(p) => p.invoke_swap_base_out(
+                accounts,
+                input_mint,
+                amount_in,
+                min_amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
             ProgramInstance::MeteoraDammV2(p) => p.invoke_swap_base_out(
                 accounts,
                 input_mint,
@@ -432,6 +476,7 @@ impl<'info> ProgramInstance<'info> {
     pub fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => p.log_accounts(accounts),
+            ProgramInstance::MeteoraDammV1(p) => p.log_accounts(accounts),
             ProgramInstance::MeteoraDammV2(p) => p.log_accounts(accounts),
             ProgramInstance::OrcaWhirlpool(p) => p.log_accounts(accounts),
             ProgramInstance::PumpAmm(p) => p.log_accounts(accounts),

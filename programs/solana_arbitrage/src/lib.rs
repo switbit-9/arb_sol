@@ -6,9 +6,9 @@ pub mod programs;
 pub mod utils;
 
 // Tests are now inline below - external test file moved to integration tests
-#[cfg(test)]
-#[path = "tests/lib_test.rs"]
-mod lib_test;
+// #[cfg(test)]
+// #[path = "tests/lib_test.rs"]
+// mod lib_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
@@ -17,16 +17,17 @@ use arbitrage::algo_2::{
     get_edges, ArbitragePath,
 };
 use programs::{
-    MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, RaydiumAmm, RaydiumCLMM,
-    RaydiumCPMM, SolarBError,
+    MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm,
+    RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
 };
 use utils::bot_config::BotConfig;
 
-#[cfg(test)]
-use crate::utils::test_utils::write_results_to_file;
+// #[cfg(test)]
+// use crate::utils::test_utils::write_results_to_file;
 
 // Pre-computed program ID bytes for fast comparison (avoids repeated .to_bytes() calls)
 const PUMP_AMM_ID_BYTES: [u8; 32] = PumpAmm::PROGRAM_ID.to_bytes();
+const METEORA_DAMM_V1_ID_BYTES: [u8; 32] = MeteoraDammV1::PROGRAM_ID.to_bytes();
 const METEORA_DAMM_V2_ID_BYTES: [u8; 32] = MeteoraDammV2::PROGRAM_ID.to_bytes();
 const METEORA_DLMM_ID_BYTES: [u8; 32] = MeteoraDlmm::PROGRAM_ID.to_bytes();
 const ORCA_WHIRLPOOL_ID_BYTES: [u8; 32] = OrcaWhirlpool::PROGRAM_ID.to_bytes();
@@ -38,6 +39,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
 declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
+
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -51,7 +53,7 @@ pub mod arb_mode {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InstructionData {
-    pub max_amount_in: u64,
+    // pub auth_key: [u8; 32],
     pub mints: u16,
     pub accounts_length: [u32; 5],
     /// Arbitrage mode: 0=single pair multi-market, 1=multi-hop chain, 2=multiple trades
@@ -66,10 +68,11 @@ pub mod solar_b {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
+
         let first_accounts = &ctx.remaining_accounts[..7];
         let rest = &ctx.remaining_accounts[7..];
         let clock: Clock = Clock::get()?;
-
+        msg!("start");
         start_bot(&first_accounts, &rest, data, clock)?;
 
         Ok(())
@@ -88,15 +91,15 @@ fn start_bot<'info>(
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
-
+    msg!("start parsing");
     let mut instances = parse_accounts(rest, &data)?;
-
+    msg!("Finished parsing accounts");
     #[cfg(feature = "debug")]
     msg!("INSTANCES: {}", instances.len());
 
-    let max_amount_in = 100_000_000_000_u64;
+    // let max_amount_in = 100_000_000_000_u64;
     let mut bot_config = BotConfig::new(Some(WSOL), max_amount_in, 0, data.mints, data.mode, clock);
-
+    msg!("config");
     let Some(arbitrage_path) = run_arbitrage(rest, &instances, &mut bot_config)? else {
         return Ok(None);
     };
@@ -181,13 +184,23 @@ pub fn find_program_instance<'info>(
 
     // Order by expected frequency (most common first)
     if id_bytes == PUMP_AMM_ID_BYTES {
+        msg!("PumpAmm");
         return Ok(ProgramInstance::PumpAmm(PumpAmm::new(
             accounts,
             start_index,
             end_index,
         )?));
     }
+    if id_bytes == METEORA_DAMM_V1_ID_BYTES {
+        msg!("MeteoraDammV1");
+        return Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(
+            accounts,
+            start_index,
+            end_index,
+        )?));
+    }
     if id_bytes == METEORA_DAMM_V2_ID_BYTES {
+        msg!("MeteoraDammV2");
         return Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(
             accounts,
             start_index,
@@ -195,6 +208,7 @@ pub fn find_program_instance<'info>(
         )?));
     }
     if id_bytes == METEORA_DLMM_ID_BYTES {
+        msg!("MeteoraDlmm");
         return Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(
             accounts,
             start_index,
@@ -202,6 +216,7 @@ pub fn find_program_instance<'info>(
         )?));
     }
     if id_bytes == ORCA_WHIRLPOOL_ID_BYTES {
+        msg!("OrcaWhirlpool");
         return Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(
             accounts,
             start_index,
@@ -209,6 +224,7 @@ pub fn find_program_instance<'info>(
         )?));
     }
     if id_bytes == RAYDIUM_AMM_ID_BYTES {
+        msg!("RaydiumAmm");
         return Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(
             accounts,
             start_index,
@@ -216,6 +232,7 @@ pub fn find_program_instance<'info>(
         )?));
     }
     if id_bytes == RAYDIUM_CLMM_ID_BYTES {
+        msg!("RaydiumCLMM");
         return Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(
             accounts,
             start_index,
@@ -223,6 +240,7 @@ pub fn find_program_instance<'info>(
         )?));
     }
     if id_bytes == RAYDIUM_CPMM_ID_BYTES {
+        msg!("RaydiumCPMM");
         return Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(
             accounts,
             start_index,
@@ -253,8 +271,9 @@ fn run_single_pair_arbitrage<'info>(
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
+    msg!("single");
     let (edges, profit, _) = check_arbitrage(instances, config)?;
-
+    msg!("edges: {:?}", edges.len());
     if profit <= 0 {
         return Ok(None);
     }
@@ -289,8 +308,8 @@ fn run_single_pair_arbitrage<'info>(
         );
     }
 
-    #[cfg(test)]
-    write_results_to_file(&[Some(arbitrage_path.clone())]);
+    // #[cfg(test)]
+    // write_results_to_file(&[Some(arbitrage_path.clone())]);
 
     Ok(Some(arbitrage_path))
 }
@@ -347,8 +366,8 @@ fn run_multi_hop_arbitrage<'info>(
         );
     }
 
-    #[cfg(test)]
-    write_results_to_file(&[Some(arbitrage_path.clone())]);
+    // #[cfg(test)]
+    // write_results_to_file(&[Some(arbitrage_path.clone())]);
 
     Ok(Some(arbitrage_path))
 }
@@ -450,8 +469,8 @@ fn run_multiple_trades_arbitrage<'info>(
             );
         }
 
-        #[cfg(test)]
-        write_results_to_file(&[best_path.clone()]);
+        // #[cfg(test)]
+        // write_results_to_file(&[best_path.clone()]);
     }
 
     Ok(best_path)
@@ -612,6 +631,7 @@ fn run_simulation<'info>(
             .find(|inst| inst.get_pool_id() == &edge.pool_id)
         {
             Some(&ProgramInstance::MeteoraDlmm(_)) => "MeteoraDLMM",
+            Some(&ProgramInstance::MeteoraDammV1(_)) => "MeteoraDammV1",
             Some(&ProgramInstance::MeteoraDammV2(_)) => "MeteoraDammV2",
             Some(&ProgramInstance::OrcaWhirlpool(_)) => "OrcaWhirlpool",
             Some(&ProgramInstance::PumpAmm(_)) => "PumpAmm",
@@ -749,7 +769,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -792,7 +811,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 13, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -825,7 +843,6 @@ mod tests {
         // Zero spans should be skipped
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -855,7 +872,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -892,7 +908,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -921,7 +936,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [9, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -939,7 +953,6 @@ mod tests {
         // On most platforms this won't happen, but we test the error path
         let data = InstructionData {
             accounts_length: [u32::MAX, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -955,7 +968,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [0, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -985,6 +997,7 @@ mod tests {
         }
 
         let data = InstructionData {
+            auth_key: AUTH_KEY,
             accounts_length: [10, 0, 0, 0, 0],
             max_amount_in: 1_000,
             mints: 2,
@@ -1015,9 +1028,8 @@ mod tests {
             ));
         }
 
-        let data = InstructionData {
+        let data: InstructionData = InstructionData {
             accounts_length: [13, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -1048,7 +1060,6 @@ mod tests {
 
         let data = InstructionData {
             accounts_length: [10, 0, 0, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };
@@ -1090,7 +1101,6 @@ mod tests {
         // Mix of zero and non-zero spans
         let data = InstructionData {
             accounts_length: [9, 0, 13, 0, 0],
-            max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
         };

@@ -254,7 +254,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes());
         data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit_x64 = 0
-        data.push(1); // is_base_input = true
+        data.push(if zero_for_one { 1 } else { 0 }); // is_base_input = true
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -382,7 +382,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         data.extend_from_slice(&amount_out.unwrap_or(0).to_le_bytes());
         data.extend_from_slice(&max_amount_in.to_le_bytes());
         data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit_x64 = 0
-        data.push(0); // is_base_input = false
+        data.push(if zero_for_one { 0 } else { 1 }); // is_base_input = false
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,

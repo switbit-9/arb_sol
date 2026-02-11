@@ -254,7 +254,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             quote_token_program,
             user_base_token_account,
             user_quote_token_account,
-        ) = if input_mint == *mint_1_account.key {
+        ) = if self.base_token_pk == *mint_1_account.key {
             (
                 mint_1_token_program,
                 mint_2_token_program,
@@ -268,6 +268,12 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
                 user_mint_2_token_account,
                 user_mint_1_token_account,
             )
+        };
+
+        let (input_token_account, output_token_account) = if self.base_token_pk == input_mint {
+            (user_base_token_account, user_quote_token_account)
+        } else {
+            (user_quote_token_account, user_base_token_account)
         };
 
         let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
@@ -284,8 +290,8 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let metas = vec![
             AccountMeta::new_readonly(*pool_authority.key, false),
             AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*user_quote_token_account.key, false),
-            AccountMeta::new(*user_base_token_account.key, false),
+            AccountMeta::new(*input_token_account.key, false),
+            AccountMeta::new(*output_token_account.key, false),
             AccountMeta::new(*base_vault.key, false),
             AccountMeta::new(*quote_vault.key, false),
             AccountMeta::new_readonly(self.base_token_pk, false),
@@ -323,9 +329,9 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         ];
         // Cast parameter AccountInfo<'a> to AccountInfo<'info> to add to vector
         accounts_vec
-            .push(unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) });
+            .push(unsafe { std::mem::transmute(input_token_account.to_account_info()) });
         accounts_vec
-            .push(unsafe { std::mem::transmute(user_base_token_account.to_account_info()) });
+            .push(unsafe { std::mem::transmute(output_token_account.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
@@ -1044,7 +1050,7 @@ mod tests {
 
         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
 
-        let pool_id = Pubkey::from_str_const("D5JnazxpKDqWtUwKHnyzHvEasxTous7PDapzeMGxQuaW");
+        let pool_id = Pubkey::from_str_const("EHxQbaBa2Mc4MjgGnTuf9iv2yZnzugwq4RcMEMgujN9d");
         let pool_account_info = fetch_account_info_from_rpc(&rpc_client, pool_id).await;
 
         // Read pool data from AccountInfo in a separate scope to drop the borrow
@@ -1121,7 +1127,7 @@ mod tests {
         eprintln!("inverse_price: {:?}", inverse_price);
         eprintln!("================================================");
 
-        let in_sol_amount = 1_000;
+        let in_sol_amount = 1_000_000_000;
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
         let token_mint = if token_a_mint == sol_mint {
             token_b_mint

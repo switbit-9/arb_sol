@@ -11,13 +11,48 @@ mod tests {
         create_mock_account_info,
         create_mock_account_info_with_data,
         fetch_account_info_from_rpc,
-        try_fetch_account_info_from_rpc, write_results_to_file,
+        try_fetch_account_info_from_rpc, //write_results_to_file,
     };
-    use crate::InstructionData;
+    use crate::{InstructionData, AUTH_KEY};
     use anchor_lang::prelude::Clock;
     use dlmm::dlmm::accounts::{BinArray, LbPair};
     use solana_client::nonblocking::rpc_client::RpcClient;
     use std::collections::HashMap;
+
+    /// Configuration for a test pool scenario.
+    /// Each variant holds the keys needed to build accounts for that DEX type.
+    #[allow(dead_code)]
+    enum PoolTestConfig {
+        MeteoraDlmm {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        PumpAmm {
+            pool_id: Pubkey,
+            base_vault: Pubkey,
+            quote_vault: Pubkey,
+            base_token: Pubkey,
+            quote_token: Pubkey,
+        },
+    }
+
+    impl PoolTestConfig {
+        fn mints(&self) -> (Pubkey, Pubkey) {
+            match self {
+                Self::MeteoraDlmm {
+                    base_mint,
+                    quote_mint,
+                    ..
+                } => (*base_mint, *quote_mint),
+                Self::PumpAmm {
+                    base_token,
+                    quote_token,
+                    ..
+                } => (*base_token, *quote_token),
+            }
+        }
+    }
 
     fn get_api_url() -> String {
         let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
@@ -2886,18 +2921,6 @@ mod tests {
         let right_bin_array_pubkeys =
             dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, false, 3).unwrap();
 
-        // eprintln!("mint_x_account: {:?}", token_x_mint_key);
-        // eprintln!("mint_y_account: {:?}", token_y_mint_key);
-        // eprintln!("reserve_x: {:?}", base_vault_key);
-        // eprintln!("reserve_y: {:?}", quote_vault_key);
-        // eprintln!("oracle: {:?}", oracle_key);
-        // eprintln!("bitmap_extension: {:?}", bitmap_extension_key);
-        // for key in left_bin_array_pubkeys.clone() {
-        //     eprintln!("left_bin_array: {:?}", key);
-        // }
-        // for key in right_bin_array_pubkeys.clone() {
-        //     eprintln!("right_bin_array: {:?}", key);
-        // }
 
         // Fetch bin arrays separately to maintain order
         let left_bin_array_accounts = rpc_client
@@ -2910,25 +2933,6 @@ mod tests {
             .await
             .unwrap();
 
-        // for bin_array_pubkey in left_bin_array_pubkeys.iter() {
-        //     eprintln!("");
-        //     let bin_array = rpc_client.get_account(&bin_array_pubkey).await.unwrap();
-        //     eprintln!(
-        //         "left_bin_array: {:?} --> {:?}",
-        //         bin_array_pubkey, bin_array.data
-        //     );
-        // }
-
-        // for bin_array_pubkey in right_bin_array_pubkeys.iter() {
-        //     eprintln!("");
-        //     let bin_array = rpc_client.get_account(&bin_array_pubkey).await.unwrap();
-        //     eprintln!(
-        //         "right_bin_array: {:?} -->  {:?}",
-        //         bin_array_pubkey, bin_array.data
-        //     );
-        // }
-
-        // eprintln!("right_bin_array_accounts: {:?}", right_bin_array_accounts);
 
         // Process left bin arrays (buy arrays)
         let mut bin_array_buy_infos = Vec::new();
@@ -3096,6 +3100,70 @@ mod tests {
         return accounts;
     }
 
+    /// Build pool accounts from a PoolTestConfig, dispatching to the right builder.
+    async fn build_pool_accounts(
+        rpc_client: &RpcClient,
+        config: &PoolTestConfig,
+        mocked: bool,
+    ) -> Vec<AccountInfo<'static>> {
+        match config {
+            PoolTestConfig::MeteoraDlmm { pool_id, .. } => {
+                if mocked {
+                    build_test_scenario_meteora_dlmm_mock()
+                } else {
+                    build_test_scenario_meteora_dlmm(rpc_client, *pool_id).await
+                }
+            }
+            PoolTestConfig::PumpAmm {
+                pool_id,
+                base_vault,
+                quote_vault,
+                base_token,
+                quote_token,
+            } => {
+                if mocked {
+                    build_test_scenario_pump_amm_mock(
+                        *pool_id,
+                        *base_vault,
+                        *quote_vault,
+                        *base_token,
+                        *quote_token,
+                    )
+                } else {
+                    build_test_scenario_pump_amm(
+                        rpc_client,
+                        *pool_id,
+                        *base_vault,
+                        *quote_vault,
+                        *base_token,
+                        *quote_token,
+                    )
+                    .await
+                }
+            }
+        }
+    }
+
+    /// Default Meteora DLMM pool configs for testing.
+    fn default_meteora_dlmm_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let token = Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap();
+        vec![
+            PoolTestConfig::MeteoraDlmm {
+                pool_id: Pubkey::from_str("HVbTXMBy8aFaNCMhS5uN3vrN3QoYysYE1iBo8RVutYVC")
+                    .unwrap(),
+                base_mint: token,
+                quote_mint: sol,
+            },
+            PoolTestConfig::MeteoraDlmm {
+                pool_id: Pubkey::from_str("E6sr5aGsJwkmvxQxLWrLzo78wMFQm7JUn6aCTGpF4zmH")
+                    .unwrap(),
+                base_mint: token,
+                quote_mint: sol,
+            },
+        ]
+    }
+
     // Helper function to get clock from RPC
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
         use anchor_client::solana_sdk::sysvar;
@@ -3152,34 +3220,32 @@ mod tests {
         })
     }
 
-    async fn run_bot_iteration(mocked: Option<bool>, mode: u8) {
-        let cluster: Cluster = Cluster::Mainnet;
-        // Test with multiple pool instances
-        let mocked: bool = mocked.unwrap_or(false);
-        let rpc_client: RpcClient = if cluster == Cluster::Devnet {
-            RpcClient::new(Cluster::Devnet.url().to_string())
-        } else {
-            RpcClient::new(get_api_url())
-        };
+    async fn run_bot_iteration(mocked: Option<bool>, mode: u8, pools: &[PoolTestConfig]) {
+        let mocked = mocked.unwrap_or(false);
+        let rpc_client = RpcClient::new(get_api_url());
 
-        let mint_1_key = Pubkey::default();
-        let mint_2_key = Pubkey::default();
-
-        if cluster == Cluster::Devnet {
-            let mint_1_key =
-                Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
-            let mint_2_key =
-                Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap();
-        } else {
-            let mint_1_key =
-                Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
-            let mint_2_key =
-                Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap();
+        // Collect unique mints from all pool configs
+        let mut unique_mints: Vec<Pubkey> = Vec::new();
+        for pool in pools {
+            let (base, quote) = pool.mints();
+            if !unique_mints.contains(&base) {
+                unique_mints.push(base);
+            }
+            if !unique_mints.contains(&quote) {
+                unique_mints.push(quote);
+            }
         }
+        assert!(
+            unique_mints.len() >= 2,
+            "need at least 2 unique mints, got {}",
+            unique_mints.len()
+        );
+        let mint_1_key = unique_mints[0];
+        let mint_2_key = unique_mints[1];
 
         // Create AccountInfo instances for the first 7 required accounts
         let payer_key = Pubkey::new_unique();
-        let payer_lamports = Box::leak(Box::new(1_000_000_000u64)); // 1 SOL for payer
+        let payer_lamports = Box::leak(Box::new(1_000_000_000u64));
         let payer_data = Box::leak(Box::new(Vec::<u8>::new()));
         let payer_key_static = Box::leak(Box::new(payer_key));
         let system_program_id = system_program::id();
@@ -3192,13 +3258,13 @@ mod tests {
 
         let payer = AccountInfo::new(
             payer_key_static,
-            true, // is_signer
-            true, // is_writable
+            true,
+            true,
             payer_lamports,
             payer_data,
             payer_owner,
-            false, // executable
-            0,     // rent_epoch
+            false,
+            0,
         );
 
         let user_mint_1_token_account =
@@ -3216,111 +3282,30 @@ mod tests {
             user_mint_2_token_account,
         ];
 
-        let pool_id: Pubkey = if cluster == Cluster::Mainnet {
-            Pubkey::from_str("HVbTXMBy8aFaNCMhS5uN3vrN3QoYysYE1iBo8RVutYVC").unwrap()
-        } else {
-            Pubkey::from_str("FT8ueq7bP7DpBoP6b3QSsos3TkRY9JYCbGLCLKA3tgUn").unwrap()
-        };
-
+        // Build pool accounts dynamically from configs
         let mut rest_accounts = Vec::new();
-        let meteora_dlmm_accounts = if mocked {
-            build_test_scenario_meteora_dlmm_mock()
-        } else {
-            build_test_scenario_meteora_dlmm(&rpc_client, pool_id).await
-        };
-        let meteora_dlmm_len = meteora_dlmm_accounts.len();
-        rest_accounts.extend(meteora_dlmm_accounts);
+        let mut accounts_length = [0u32; 5];
 
+        for (i, pool_config) in pools.iter().enumerate() {
+            if i >= 5 {
+                break;
+            }
+            let pool_accounts =
+                build_pool_accounts(&rpc_client, pool_config, mocked).await;
+            accounts_length[i] = pool_accounts.len() as u32;
+            rest_accounts.extend(pool_accounts);
+        }
 
-        let pool_id_2 = Pubkey::from_str("E6sr5aGsJwkmvxQxLWrLzo78wMFQm7JUn6aCTGpF4zmH").unwrap();
-        let meteora_dlmm_accounts_2 = if mocked {
-            build_test_scenario_meteora_dlmm_mock()
-        } else {
-            build_test_scenario_meteora_dlmm(&rpc_client, pool_id_2).await
-        };
-        let meteora_dlmm_len_2 = meteora_dlmm_accounts_2.len();
-        rest_accounts.extend(meteora_dlmm_accounts_2);
-        
-
-        // let pool_id = Pubkey::from_str("DRAf8QxQY86h7yeHdo9GytXAF6GoTTT8oZjknwXV6dCS").unwrap();
-        // let base_vault_key =
-        //     Pubkey::from_str("3zzL3ykMSsYfcGDKMLD3VNNh1aWfHcPkq6M9i4rv3yyb").unwrap();
-        // let quote_vault_key =
-        //     Pubkey::from_str("7nZEh7yDgVRAvws6XzwXsGutoNk1LoiBKWvPgfbwuQTv").unwrap();
-        // let base_token_key =
-        //     Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
-        // let quote_token_key =
-        //     Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap();
-
-        // let pump_amm_accounts_2 = if mocked {
-        //     build_test_scenario_pump_amm_mock(pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key)
-        // } else {
-        //     build_test_scenario_pump_amm(pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key).await
-        // };
-
-        //////////////////////////////////////////// PUMP AMM /////////////////////////////////////////////
-        // let (pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key) =
-        //     if cluster == Cluster::Mainnet {
-        //         (
-        //             Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
-        //             Pubkey::from_str("GC4bQRtMhR4MYTVfthgqwRw9j1i44ft9WnTur5wWkXGb").unwrap(),
-        //             Pubkey::from_str("3p46jxhF6vejNp6F1ocSwgRLNWKAjd62KJ41kSUcRz2R").unwrap(),
-        //             Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap(),
-        //             Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
-        //         )
-        //     } else {
-        //         (
-        //             Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
-        //             Pubkey::from_str("8x1b4DBqmhqVnwK741aqm5icSd99o5Mgt2n4qxGk28uQ").unwrap(),
-        //             Pubkey::from_str("FSS5GcYpWyzd3hmE7xZUbfXsu4gEsNTmxiP1F2MKo7KN").unwrap(),
-        //             Pubkey::from_str("Gr59XVxtki7y4kcLCPDQDdtKT3hQ66VAxyQ8xSbZEymp").unwrap(),
-        //             Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
-        //         )
-        //     };
-        // let pump_amm_accounts = if mocked {
-        //     build_test_scenario_pump_amm_mock(
-        //         pool_id,
-        //         base_vault_key,
-        //         quote_vault_key,
-        //         base_token_key,
-        //         quote_token_key,
-        //     )
-        // } else {
-        //     build_test_scenario_pump_amm(
-        //         &rpc_client,
-        //         pool_id,
-        //         base_vault_key,
-        //         quote_vault_key,
-        //         base_token_key,
-        //         quote_token_key,
-        //     )
-        //     .await
-        // };
-        // let pump_amm_len = pump_amm_accounts.len();
-        // // let pump_amm_len_2 = pump_amm_accounts_2.len();
-        // rest_accounts.extend(pump_amm_accounts);
-
-
-
-
-        // rest_accounts.extend(pump_amm_accounts_2);
         let data = InstructionData {
-            max_amount_in: 100_000_000_000,
-            mints: 2,
-            accounts_length: [meteora_dlmm_len as u32, meteora_dlmm_len_2 as u32, 0, 0, 0],
+            mints: unique_mints.len() as u16,
+            accounts_length,
             mode,
         };
-
-        // eprintln!("Test setup complete:");
-        // eprintln!("  Fixed accounts: 7");
-        // eprintln!("  Meteora DLMM accounts: {}", meteora_dlmm_len);
-        // eprintln!("  Pump AMM accounts: {}", pump_amm_len);
 
         let clock = get_clock_from_rpc(&rpc_client)
             .await
             .expect("failed to fetch clock");
 
-        // Call start_bot (not async, so no .await)
         eprintln!("\n=== Calling start_bot ===");
         let arbitrage_path =
             start_bot(&first_accounts, &rest_accounts, data.clone(), clock.clone()).unwrap();
@@ -3328,7 +3313,7 @@ mod tests {
             eprintln!("No arbitrage path found");
             return;
         }
-        write_results_to_file(&[arbitrage_path.clone()]);
+        // write_results_to_file(&[arbitrage_path.clone()]);
     }
 
     /// Run the test bot in a separate thread with bounded parallel workers.
@@ -3377,8 +3362,8 @@ mod tests {
                         );
                         let start_time = std::time::Instant::now();
 
-                        // Run the bot iteration - continue even if it errors
-                        let _ = run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
+                        let pools = default_meteora_dlmm_pools();
+                        let _ = run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
 
                         let elapsed = start_time.elapsed();
                         eprintln!(
@@ -3419,12 +3404,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mode_0_single_pair_multi_market_real() {
-        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
     }
 
     #[tokio::test]
     async fn test_mode_0_single_pair_multi_market_mocked() {
-        run_bot_iteration(Some(true), crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(Some(true), crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
     }
 
     // ========== Mode 1: MULTI_HOP_CHAIN ==========
@@ -3432,12 +3419,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mode_1_multi_hop_chain_real() {
-        run_bot_iteration(None, crate::arb_mode::MULTI_HOP_CHAIN).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(None, crate::arb_mode::MULTI_HOP_CHAIN, &pools).await;
     }
 
     #[tokio::test]
     async fn test_mode_1_multi_hop_chain_mocked() {
-        run_bot_iteration(Some(true), crate::arb_mode::MULTI_HOP_CHAIN).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(Some(true), crate::arb_mode::MULTI_HOP_CHAIN, &pools).await;
     }
 
     // ========== Mode 2: MULTIPLE_TRADES ==========
@@ -3445,11 +3434,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_mode_2_multiple_trades_real() {
-        run_bot_iteration(None, crate::arb_mode::MULTIPLE_TRADES).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(None, crate::arb_mode::MULTIPLE_TRADES, &pools).await;
     }
 
     #[tokio::test]
     async fn test_mode_2_multiple_trades_mocked() {
-        run_bot_iteration(Some(true), crate::arb_mode::MULTIPLE_TRADES).await;
+        let pools = default_meteora_dlmm_pools();
+        run_bot_iteration(Some(true), crate::arb_mode::MULTIPLE_TRADES, &pools).await;
     }
 }

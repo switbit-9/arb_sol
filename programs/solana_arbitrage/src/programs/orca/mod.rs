@@ -516,8 +516,6 @@ impl<'info> OrcaWhirlpool<'info> {
         })
     }
 
-
-
     /// Get the tick boundaries for the current tick
     fn get_current_tick_boundaries(&self) -> (i32, i32) {
         let tick_spacing = self.tick_spacing as i32;
