@@ -7,7 +7,9 @@ use crate::programs::meteora_damm_v2::MeteoraDammV2;
 use crate::programs::meteora_dlmm::MeteoraDlmm;
 use crate::programs::orca::OrcaWhirlpool;
 use crate::programs::pump_amm::PumpAmm;
-// use crate::programs::raydium_cpmm::RaydiumCPMM;
+use crate::programs::raydium_cpmm::RaydiumCPMM;
+use crate::programs::raydium_amm::RaydiumAmm;
+use crate::programs::raydium_clmm::RaydiumCLMM;
 
 /// Enum to hold different program instances - eliminates lifetime complexity
 pub enum ProgramInstance<'info> {
@@ -16,7 +18,9 @@ pub enum ProgramInstance<'info> {
     MeteoraDammV2(MeteoraDammV2<'info>),
     OrcaWhirlpool(OrcaWhirlpool<'info>),
     PumpAmm(PumpAmm<'info>),
-    // RaydiumCPMM(RaydiumCPMM<'info>),
+    RaydiumAmm(RaydiumAmm<'info>),
+    RaydiumCPMM(RaydiumCPMM<'info>),
+    RaydiumCLMM(RaydiumCLMM<'info>),
 }
 
 impl<'info> ProgramInstance<'info> {
@@ -26,6 +30,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.get_id(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_id(),
             ProgramInstance::PumpAmm(p) => p.get_id(),
+            ProgramInstance::RaydiumAmm(p) => p.get_id(),
+            ProgramInstance::RaydiumCPMM(p) => p.get_id(),
+            ProgramInstance::RaydiumCLMM(p) => p.get_id(),
         }
     }
 
@@ -35,6 +42,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.get_pool_id(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_pool_id(),
             ProgramInstance::PumpAmm(p) => p.get_pool_id(),
+            ProgramInstance::RaydiumAmm(p) => p.get_pool_id(),
+            ProgramInstance::RaydiumCLMM(p) => p.get_pool_id(),
+            ProgramInstance::RaydiumCPMM(p) => p.get_pool_id(),
         }
     }
 
@@ -44,6 +54,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.get_mints(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_mints(),
             ProgramInstance::PumpAmm(p) => p.get_mints(),
+            ProgramInstance::RaydiumAmm(p) => p.get_mints(),
+            ProgramInstance::RaydiumCLMM(p) => p.get_mints(),
+            ProgramInstance::RaydiumCPMM(p) => p.get_mints(),
         }
     }
 
@@ -53,6 +66,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.get_prices(),
             ProgramInstance::OrcaWhirlpool(p) => p.get_prices(),
             ProgramInstance::PumpAmm(p) => p.get_prices(),
+            ProgramInstance::RaydiumAmm(p) => p.get_prices(),
+            ProgramInstance::RaydiumCLMM(p) => p.get_prices(),
+            ProgramInstance::RaydiumCPMM(p) => p.get_prices(),
         }
     }
 
@@ -71,6 +87,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => {
                 p.calculate_optimal_amount_in(input_mint, target_price)
             }
+            ProgramInstance::RaydiumAmm(p) => p.calculate_optimal_amount_in(input_mint, target_price),
+            ProgramInstance::RaydiumCLMM(p) => p.calculate_optimal_amount_in(input_mint, target_price),
+            ProgramInstance::RaydiumCPMM(p) => p.calculate_optimal_amount_in(input_mint, target_price),
         }
     }
 
@@ -79,8 +98,11 @@ impl<'info> ProgramInstance<'info> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(p.base_token_pk),
             ProgramInstance::MeteoraDammV2(p) => Ok(p.base_token_pk),
-            ProgramInstance::OrcaWhirlpool(p) => Ok(p.token_mint_a),
+            ProgramInstance::OrcaWhirlpool(p) => Ok(p.base_token_pk),
             ProgramInstance::PumpAmm(p) => Ok(p.base_token_pk),
+            ProgramInstance::RaydiumAmm(p) => Ok(p.base_token_pk),
+            ProgramInstance::RaydiumCLMM(p) => Ok(p.base_token_pk),
+            ProgramInstance::RaydiumCPMM(p) => Ok(p.base_token_pk),
         }
     }
 
@@ -89,8 +111,11 @@ impl<'info> ProgramInstance<'info> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(p.quote_token_pk),
             ProgramInstance::MeteoraDammV2(p) => Ok(p.quote_token_pk),
-            ProgramInstance::OrcaWhirlpool(p) => Ok(p.token_mint_b),
+            ProgramInstance::OrcaWhirlpool(p) => Ok(p.quote_token_pk),
             ProgramInstance::PumpAmm(p) => Ok(p.quote_token_pk),
+            ProgramInstance::RaydiumAmm(p) => Ok(p.quote_token_pk),
+            ProgramInstance::RaydiumCLMM(p) => Ok(p.quote_token_pk),
+            ProgramInstance::RaydiumCPMM(p) => Ok(p.quote_token_pk),
         }
     }
 
@@ -103,6 +128,9 @@ impl<'info> ProgramInstance<'info> {
                 Err(error!(crate::programs::SolarBError::InvalidProgramType))
             }
             ProgramInstance::PumpAmm(p) => p.get_vault_amounts(),
+            ProgramInstance::RaydiumAmm(p) => p.get_vault_amounts(),
+            ProgramInstance::RaydiumCLMM(p) => p.get_vault_amounts(),
+            ProgramInstance::RaydiumCPMM(p) => p.get_vault_amounts(),
         }
     }
 
@@ -112,6 +140,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.get_max_amounts_in_out(input_mint),
             ProgramInstance::OrcaWhirlpool(p) => p.get_max_amounts_in_out(input_mint),
             ProgramInstance::PumpAmm(p) => p.get_max_amounts_in_out(input_mint),
+            ProgramInstance::RaydiumAmm(p) => p.get_max_amounts_in_out(input_mint),
+            ProgramInstance::RaydiumCLMM(p) => p.get_max_amounts_in_out(input_mint),
+            ProgramInstance::RaydiumCPMM(p) => p.get_max_amounts_in_out(input_mint),
         }
     }
 
@@ -120,15 +151,15 @@ impl<'info> ProgramInstance<'info> {
     pub fn get_fee_factor(&self) -> Result<f64> {
         match self {
             ProgramInstance::MeteoraDlmm(p) => Ok(1.0 - p.fee_rate),
-            ProgramInstance::MeteoraDammV2(_) => {
-                // MeteoraDammV2 uses 0.25% fee typically
-                Ok(0.9975)
-            }
+            ProgramInstance::MeteoraDammV2(p) => Ok(1.0 - p.fee_rate),
             ProgramInstance::OrcaWhirlpool(p) => {
                 // Orca fee_rate is in hundredths of basis point (1_000_000 = 100%)
                 Ok(1.0 - (p.fee_rate as f64 / 1_000_000.0))
             }
-            ProgramInstance::PumpAmm(p) => Ok(1.0 - p.fee),
+            ProgramInstance::PumpAmm(p) => Ok(1.0 - p.fee_rate),
+            ProgramInstance::RaydiumAmm(p) => Ok(1.0 - p.fee_rate),
+            ProgramInstance::RaydiumCLMM(p) => Ok(1.0 - p.fee_rate),
+            ProgramInstance::RaydiumCPMM(p) => Ok(1.0 - p.fee_rate),
         }
     }
 
@@ -150,6 +181,9 @@ impl<'info> ProgramInstance<'info> {
                 p.swap_base_in(accounts, input_mint, amount_in, clock)
             }
             ProgramInstance::PumpAmm(p) => p.swap_base_in(accounts, input_mint, amount_in, clock),
+            ProgramInstance::RaydiumAmm(p) => p.swap_base_in(accounts, input_mint, amount_in, clock),
+            ProgramInstance::RaydiumCLMM(p) => p.swap_base_in(accounts, input_mint, amount_in, clock),
+            ProgramInstance::RaydiumCPMM(p) => p.swap_base_in(accounts, input_mint, amount_in, clock),
         }
     }
 
@@ -171,6 +205,9 @@ impl<'info> ProgramInstance<'info> {
                 p.swap_base_out(accounts, output_mint, amount_out, clock)
             }
             ProgramInstance::PumpAmm(p) => p.swap_base_out(accounts, output_mint, amount_out, clock),
+            ProgramInstance::RaydiumAmm(p) => p.swap_base_out(accounts, output_mint, amount_out, clock),
+            ProgramInstance::RaydiumCLMM(p) => p.swap_base_out(accounts, output_mint, amount_out, clock),
+            ProgramInstance::RaydiumCPMM(p) => p.swap_base_out(accounts, output_mint, amount_out, clock),
         }
     }
 
@@ -229,6 +266,45 @@ impl<'info> ProgramInstance<'info> {
                 mint_2_token_program,
             ),
             ProgramInstance::PumpAmm(p) => p.invoke_swap_base_in(
+                accounts,
+                input_mint,
+                max_amount_in,
+                amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::RaydiumAmm(p) => p.invoke_swap_base_in(
+                accounts,
+                input_mint,
+                max_amount_in,
+                amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::RaydiumCLMM(p) => p.invoke_swap_base_in(
+                accounts,
+                input_mint,
+                max_amount_in,
+                amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::RaydiumCPMM(p) => p.invoke_swap_base_in(
                 accounts,
                 input_mint,
                 max_amount_in,
@@ -311,6 +387,45 @@ impl<'info> ProgramInstance<'info> {
                 mint_1_token_program,
                 mint_2_token_program,
             ),
+            ProgramInstance::RaydiumAmm(p) => p.invoke_swap_base_out(
+                accounts,
+                input_mint,
+                amount_in,
+                min_amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::RaydiumCLMM(p) => p.invoke_swap_base_out(
+                accounts,
+                input_mint,
+                amount_in,
+                min_amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
+            ProgramInstance::RaydiumCPMM(p) => p.invoke_swap_base_out(
+                accounts,
+                input_mint,
+                amount_in,
+                min_amount_out,
+                payer,
+                user_mint_1_token_account,
+                user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
+                mint_1_token_program,
+                mint_2_token_program,
+            ),
         }
     }
 
@@ -320,6 +435,9 @@ impl<'info> ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV2(p) => p.log_accounts(accounts),
             ProgramInstance::OrcaWhirlpool(p) => p.log_accounts(accounts),
             ProgramInstance::PumpAmm(p) => p.log_accounts(accounts),
+            ProgramInstance::RaydiumAmm(p) => p.log_accounts(accounts),
+            ProgramInstance::RaydiumCLMM(p) => p.log_accounts(accounts),
+            ProgramInstance::RaydiumCPMM(p) => p.log_accounts(accounts),
         }
     }
 }

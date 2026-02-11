@@ -203,6 +203,10 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
     }
 
 
+    fn get_fee_factor(&self) -> Result<f64> {
+        Ok(1.0 - self.fee_rate)
+    }
+
     fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
         let max_amount_in = self.get_max_amount_in(input_mint)?;
         let max_amount_out = self.get_max_amount_out(input_mint)?;
@@ -775,40 +779,6 @@ impl<'info> MeteoraDlmm<'info> {
         Ok(())
     }
 
-    // fn get_amount_in(self, amount_out: u64, price: u128, input_mint: Pubkey) -> Result<u64> {
-    //     let swap_for_y = *self.base_token.key == input_mint;
-    //     // Price is scaled by 2^64, so we need proper scaling calculations
-    //     if swap_for_y {
-    //         // amount_in = (amount_out << 64) / price (with ceiling)
-    //         let scale = 1u128
-    //             .checked_shl(SCALE_OFFSET as u32)
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         let numerator = (amount_out as u128)
-    //             .checked_mul(scale)
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         let amount_in = numerator
-    //             .checked_add(price)
-    //             .and_then(|x| x.checked_sub(1))
-    //             .and_then(|x| x.checked_div(price))
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         Ok(amount_in as u64)
-    //     } else {
-    //         // amount_in = (amount_out * price) >> 64 (with ceiling)
-    //         let numerator = (amount_out as u128)
-    //             .checked_mul(price)
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         let scale = 1u128
-    //             .checked_shl(SCALE_OFFSET as u32)
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         let amount_in = numerator
-    //             .checked_add(scale)
-    //             .and_then(|x| x.checked_sub(1))
-    //             .and_then(|x| Some(x >> SCALE_OFFSET))
-    //             .ok_or(ProgramError::InvalidArgument)?;
-    //         Ok(amount_in as u64)
-    //     }
-    // }
-
     fn get_amount_out(self, amount_in: u64, input_mint: Pubkey) -> Result<u64> {
         let swap_for_y = self.base_token_pk == input_mint;
         let price = self.lb_price;
@@ -1221,16 +1191,6 @@ mod tests {
         let clock1 = get_clock(&rpc_client).await.unwrap();
         let clock_2 = clock1.clone();
         let clock_3 = clock1.clone();
-
-        // Create MeteoraDlmm instance
-        // let (token_a_decimal, token_b_decimal) = if token_x_mint_key == wsol {
-        //     (9, 6) // token_a is SOL (9 decimals), token_b is likely USDC/USDT (6 decimals)
-        // } else if token_y_mint_key == wsol {
-        //     (6, 9) // token_a is likely USDC/USDT (6 decimals), token_b is SOL (9 decimals)
-        // } else {
-        //     // Neither is SOL, default to common case (e.g., USDC/USDT pair)
-        //     (6, 6)
-        // };
 
         let prices = meteora_dlmm.get_prices().unwrap();
         let price = prices.0;

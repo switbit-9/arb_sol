@@ -13,10 +13,13 @@ mod lib_test;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
 use arbitrage::algo_2::{
-    check_arbitrage, ArbitragePath, get_edges,
-    find_cross_arbitrage_iterative, find_triangular_arbitrage_iterative,
+    check_arbitrage, find_cross_arbitrage_iterative, find_triangular_arbitrage_iterative,
+    get_edges, ArbitragePath,
 };
-use programs::{MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, SolarBError};
+use programs::{
+    MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, RaydiumAmm, RaydiumCLMM,
+    RaydiumCPMM, SolarBError,
+};
 use utils::bot_config::BotConfig;
 
 #[cfg(test)]
@@ -27,6 +30,9 @@ const PUMP_AMM_ID_BYTES: [u8; 32] = PumpAmm::PROGRAM_ID.to_bytes();
 const METEORA_DAMM_V2_ID_BYTES: [u8; 32] = MeteoraDammV2::PROGRAM_ID.to_bytes();
 const METEORA_DLMM_ID_BYTES: [u8; 32] = MeteoraDlmm::PROGRAM_ID.to_bytes();
 const ORCA_WHIRLPOOL_ID_BYTES: [u8; 32] = OrcaWhirlpool::PROGRAM_ID.to_bytes();
+const RAYDIUM_AMM_ID_BYTES: [u8; 32] = RaydiumAmm::PROGRAM_ID.to_bytes();
+const RAYDIUM_CLMM_ID_BYTES: [u8; 32] = RaydiumCLMM::PROGRAM_ID.to_bytes();
+const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
@@ -61,11 +67,6 @@ pub mod solar_b {
 
     pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
         let first_accounts = &ctx.remaining_accounts[..7];
-
-        let payer = &first_accounts[0];
-        if payer.lamports() == 0 {
-            return Err(error!(SolarBError::InsufficientFunds));
-        }
         let rest = &ctx.remaining_accounts[7..];
         let clock: Clock = Clock::get()?;
 
@@ -83,7 +84,8 @@ fn start_bot<'info>(
 ) -> Result<Option<ArbitragePath>> {
     let payer = &first_accounts[0];
 
-    if payer.lamports() == 0 {
+    let max_amount_in = payer.lamports();
+    if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
 
@@ -99,6 +101,8 @@ fn start_bot<'info>(
         return Ok(None);
     };
 
+    run_simulation(rest, &arbitrage_path, &mut instances, &mut bot_config)?;
+
     if arbitrage_path.profit <= 0 {
         return Ok(None);
     }
@@ -106,18 +110,18 @@ fn start_bot<'info>(
     #[cfg(feature = "debug")]
     msg!("Arbitrage found. Profit: {}", arbitrage_path.profit);
 
-    execute_arbitrage_path(
-        rest,
-        &arbitrage_path,
-        &mut instances,
-        payer,
-        &first_accounts[1], // mint_1
-        &first_accounts[2], // mint_1_token_program
-        &first_accounts[3], // user_mint_1_token_account
-        &first_accounts[4], // mint_2
-        &first_accounts[5], // mint_2_token_program
-        &first_accounts[6], // user_mint_2_token_account
-    )?;
+    // execute_arbitrage_path(
+    //     rest,
+    //     &arbitrage_path,
+    //     &mut instances,
+    //     payer,
+    //     &first_accounts[1], // mint_1
+    //     &first_accounts[2], // mint_1_token_program
+    //     &first_accounts[3], // user_mint_1_token_account
+    //     &first_accounts[4], // mint_2
+    //     &first_accounts[5], // mint_2_token_program
+    //     &first_accounts[6], // user_mint_2_token_account
+    // )?;
 
     Ok(Some(arbitrage_path))
 }
@@ -204,7 +208,27 @@ pub fn find_program_instance<'info>(
             end_index,
         )?));
     }
-
+    if id_bytes == RAYDIUM_AMM_ID_BYTES {
+        return Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(
+            accounts,
+            start_index,
+            end_index,
+        )?));
+    }
+    if id_bytes == RAYDIUM_CLMM_ID_BYTES {
+        return Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(
+            accounts,
+            start_index,
+            end_index,
+        )?));
+    }
+    if id_bytes == RAYDIUM_CPMM_ID_BYTES {
+        return Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(
+            accounts,
+            start_index,
+            end_index,
+        )?));
+    }
     Err(error!(SolarBError::UnknownProgram))
 }
 
@@ -214,15 +238,9 @@ pub fn run_arbitrage<'info>(
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     match config.mode {
-        arb_mode::SINGLE_PAIR_MULTI_MARKET => {
-            run_single_pair_arbitrage(accounts, instances, config)
-        }
-        arb_mode::MULTI_HOP_CHAIN => {
-            run_multi_hop_arbitrage(accounts, instances, config)
-        }
-        arb_mode::MULTIPLE_TRADES => {
-            run_multiple_trades_arbitrage(accounts, instances, config)
-        }
+        arb_mode::SINGLE_PAIR_MULTI_MARKET => run_single_pair_arbitrage(accounts, instances, config),
+        arb_mode::MULTI_HOP_CHAIN => run_multi_hop_arbitrage(accounts, instances, config),
+        arb_mode::MULTIPLE_TRADES => run_multiple_trades_arbitrage(accounts, instances, config),
         _ => Err(error!(SolarBError::InvalidMode)),
     }
 }
@@ -241,9 +259,10 @@ fn run_single_pair_arbitrage<'info>(
         return Ok(None);
     }
 
-    let (optimal_amount_in, profit) = find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
+    let (optimal_amount_in, profit) =
+        find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
 
-    if profit <= 0 {
+    if profit <= 0 || optimal_amount_in == 0 {
         return Ok(None);
     }
 
@@ -300,7 +319,8 @@ fn run_multi_hop_arbitrage<'info>(
 
     // Optimize the amount_in for the N-hop path
     // find_optimal_amount_in_v2 now handles any number of edges
-    let (optimal_amount_in, profit) = find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
+    let (optimal_amount_in, profit) =
+        find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
     if profit <= 0 {
         return Ok(None);
@@ -392,10 +412,7 @@ fn run_multiple_trades_arbitrage<'info>(
         }
 
         // Collect edge references for this group
-        let group_edge_refs: Vec<&_> = edge_indices
-            .iter()
-            .map(|&idx| &all_edges[idx])
-            .collect();
+        let group_edge_refs: Vec<&_> = edge_indices.iter().map(|&idx| &all_edges[idx]).collect();
 
         // Run cross arbitrage on this edge group
         let (path_edges, profit, _) = find_cross_arbitrage_iterative(&group_edge_refs, config)?;
@@ -478,7 +495,12 @@ pub fn execute_arbitrage_path<'info>(
         let input_mint = edge.left.mint_account;
 
         #[cfg(feature = "debug")]
-        msg!("Swap {} {} -> {}", current_amount, input_mint, edge.right.mint_account);
+        msg!(
+            "Swap {} {} -> {}",
+            current_amount,
+            input_mint,
+            edge.right.mint_account
+        );
 
         // Execute swap - AccountInfo clone is unavoidable for CPI
         program_instance.invoke_swap_base_in(
@@ -514,8 +536,152 @@ pub fn execute_arbitrage_path<'info>(
     #[cfg(feature = "debug")]
     {
         let final_profit = current_amount as i128 - arbitrage_path.start_amount as i128;
-        msg!("Done: {} -> {} (profit: {})", arbitrage_path.start_amount, current_amount, final_profit);
+        msg!(
+            "Done: {} -> {} (profit: {})",
+            arbitrage_path.start_amount,
+            current_amount,
+            final_profit
+        );
     }
+
+    Ok(())
+}
+
+/// Read mint decimals from SPL Token mint account data (offset 44).
+/// Returns 9 if the account is not found or data is too short.
+fn get_mint_decimals(accounts: &[AccountInfo], mint_key: &Pubkey) -> u8 {
+    for acc in accounts {
+        if acc.key == mint_key {
+            if let Ok(data) = acc.try_borrow_data() {
+                if data.len() >= 45 {
+                    return data[44];
+                }
+            }
+            break;
+        }
+    }
+    9
+}
+
+fn format_amount(amount: u64, decimals: u8) -> String {
+    let divisor = 10u64.pow(decimals as u32) as f64;
+    format!(
+        "{} ({:.dec$})",
+        amount,
+        amount as f64 / divisor,
+        dec = decimals as usize
+    )
+}
+
+fn format_amount_i128(amount: i128, decimals: u8) -> String {
+    let divisor = 10u64.pow(decimals as u32) as f64;
+    format!(
+        "{} ({:.dec$})",
+        amount,
+        amount as f64 / divisor,
+        dec = decimals as usize
+    )
+}
+
+fn run_simulation<'info>(
+    accounts: &[AccountInfo<'info>],
+    arbitrage_path: &ArbitragePath,
+    instances: &mut Vec<ProgramInstance<'info>>,
+    bot_config: &mut BotConfig,
+) -> Result<()> {
+    let start_amount = arbitrage_path.start_amount;
+    let start_decimals = get_mint_decimals(accounts, &arbitrage_path.edges[0].left.mint_account);
+    eprintln!("\n=== SIMULATION ===");
+    eprintln!(
+        "Optimal amount in: {}",
+        format_amount(start_amount, start_decimals)
+    );
+    eprintln!("Edges: {}", arbitrage_path.edges.len());
+    eprintln!("---");
+
+    let mut current_amount = start_amount;
+
+    for (i, edge) in arbitrage_path.edges.iter().enumerate() {
+        let input_mint = edge.left.mint_account;
+        let output_mint = edge.right.mint_account;
+        let in_decimals = get_mint_decimals(accounts, &input_mint);
+        let out_decimals = get_mint_decimals(accounts, &output_mint);
+
+        let program_name = match instances
+            .iter()
+            .find(|inst| inst.get_pool_id() == &edge.pool_id)
+        {
+            Some(&ProgramInstance::MeteoraDlmm(_)) => "MeteoraDLMM",
+            Some(&ProgramInstance::MeteoraDammV2(_)) => "MeteoraDammV2",
+            Some(&ProgramInstance::OrcaWhirlpool(_)) => "OrcaWhirlpool",
+            Some(&ProgramInstance::PumpAmm(_)) => "PumpAmm",
+            Some(&ProgramInstance::RaydiumAmm(_)) => "RaydiumAmm",
+            Some(&ProgramInstance::RaydiumCPMM(_)) => "RaydiumCPMM",
+            Some(&ProgramInstance::RaydiumCLMM(_)) => "RaydiumCLMM",
+            None => "Unknown",
+        };
+
+        let program_instance = instances
+            .iter()
+            .find(|inst| inst.get_pool_id() == &edge.pool_id)
+            .ok_or(SolarBError::UnknownProgram)?;
+
+        // swap_base_in: given amount_in, what do we get out?
+        let amount_out = program_instance.swap_base_in(
+            accounts,
+            input_mint,
+            current_amount,
+            bot_config.clock.clone(),
+        )?;
+
+        // swap_base_out: given that amount_out, how much would we need to put in?
+        let required_in = program_instance.swap_base_out(
+            accounts,
+            output_mint,
+            amount_out,
+            bot_config.clock.clone(),
+        )?;
+
+        let input_short = &input_mint.to_string()[..8];
+        let output_short = &output_mint.to_string()[..8];
+
+        eprintln!(
+            "Edge {}: [{}] {}..-> {}..  |  in={} -> out={}  |  swap_base_out max_in={}  |  diff={}",
+            i + 1,
+            program_name,
+            input_short,
+            output_short,
+            format_amount(current_amount, in_decimals),
+            format_amount(amount_out, out_decimals),
+            format_amount(required_in, in_decimals),
+            current_amount as i128 - required_in as i128,
+        );
+
+        current_amount = amount_out;
+    }
+
+    eprintln!("---");
+    let end_decimals = get_mint_decimals(
+        accounts,
+        &arbitrage_path.edges.last().unwrap().right.mint_account,
+    );
+    let profit = current_amount as i128 - start_amount as i128;
+    if profit > 0 {
+        let profit_pct = (profit as f64 / start_amount as f64) * 100.0;
+        eprintln!(
+            "PROFIT: {} ({:.4}%)",
+            format_amount_i128(profit, end_decimals),
+            profit_pct,
+        );
+    } else {
+        eprintln!("NO PROFIT: {}", format_amount_i128(profit, end_decimals),);
+    }
+    eprintln!(
+        "Final: in={} -> out={}",
+        format_amount(start_amount, start_decimals),
+        format_amount(current_amount, end_decimals)
+    );
+    eprintln!("=== END SIMULATION ===\n");
 
     Ok(())
 }

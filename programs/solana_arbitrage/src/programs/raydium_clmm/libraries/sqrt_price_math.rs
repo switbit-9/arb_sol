@@ -1,7 +1,5 @@
 use super::big_num::U256;
-use super::fixed_point_64::Q64;
 use super::full_math::MulDiv;
-use super::unsafe_math::UnsafeMathTrait;
 
 /// Get the next sqrt price from input amount of token_0 (x)
 /// Formula: sqrt_price_next = sqrt_price * liquidity / (liquidity + amount * sqrt_price)

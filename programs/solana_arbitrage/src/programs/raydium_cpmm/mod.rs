@@ -61,8 +61,8 @@ fn get_prices(
 pub struct RaydiumCPMM<'info> {
     // pub program_id: AccountInfo<'info>,
     pub pool_id: Pubkey,
-    pub base_token_key: Pubkey,
-    pub quote_token_key: Pubkey,
+    pub base_token_pk: Pubkey,
+    pub quote_token_pk: Pubkey,
     pub base_vault_key: Pubkey,
     pub quote_vault_key: Pubkey,
     pub base_vault_amount: u64,
@@ -82,6 +82,7 @@ pub struct RaydiumCPMM<'info> {
     pub trade_fee_rate: u64,
     pub protocol_fee_rate: u64,
     pub fund_fee_rate: u64,
+    pub fee_rate: f64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -99,7 +100,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
     }
 
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
-        (&self.base_token_key, &self.quote_token_key)
+        (&self.base_token_pk, &self.quote_token_pk)
     }
 
     fn swap_base_in<'a>(
@@ -120,7 +121,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             output_vault_amount,
             input_token_account,
             output_token_account,
-        ) = if input_mint == self.base_token_key {
+        ) = if input_mint == self.base_token_pk {
             (
                 self.base_vault_key,
                 self.quote_vault_key,
@@ -201,7 +202,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             output_vault_amount,
             input_token_account,
             output_token_account,
-        ) = if output_mint != self.base_token_key {
+        ) = if output_mint != self.base_token_pk {
             (
                 self.base_vault_key,
                 self.quote_vault_key,
@@ -296,7 +297,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             output_vault,
             input_mint,
             output_mint,
-        ) = if input_mint == self.base_token_key {
+        ) = if input_mint == self.base_token_pk {
             (
                 mint_1_token_program,
                 mint_2_token_program,
@@ -402,7 +403,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             output_vault,
             input_mint,
             output_mint,
-        ) = if input_mint == self.base_token_key {
+        ) = if input_mint == self.base_token_pk {
             (
                 mint_2_token_program,
                 mint_1_token_program,
@@ -482,8 +483,8 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             self.pool_id,
             self.base_vault_key,
             self.quote_vault_key,
-            self.base_token_key,
-            self.quote_token_key,
+            self.base_token_pk,
+            self.quote_token_pk,
         );
         Ok(())
     }
@@ -525,8 +526,8 @@ impl<'info> RaydiumCPMM<'info> {
 
         Ok(RaydiumCPMM {
             pool_id: *pool_id.key,
-            base_token_key: pool.token_0_mint,
-            quote_token_key: pool.token_1_mint,
+            base_token_pk: pool.token_0_mint,
+            quote_token_pk: pool.token_1_mint,
             base_vault_key: pool.token_0_vault,
             quote_vault_key: pool.token_1_vault,
             base_vault_amount: base_vault_amount,
@@ -540,6 +541,7 @@ impl<'info> RaydiumCPMM<'info> {
             trade_fee_rate: amm_config.trade_fee_rate,
             protocol_fee_rate: amm_config.protocol_fee_rate,
             fund_fee_rate: amm_config.fund_fee_rate,
+            fee_rate: (amm_config.trade_fee_rate + pool.adjust_creator_fee_rate(amm_config.creator_fee_rate)) as f64 / 1_000_000.0,
             phantom: PhantomData,
         })
     }
@@ -1097,7 +1099,7 @@ mod tests {
         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
 
         // Pool ID from mainnet
-        let pool_id_key = Pubkey::from_str_const("6Unyzi5atCUn7p75kumRvDqdh6WAEVDwCq5ozBGrh5xt");
+        let pool_id_key = Pubkey::from_str_const("C9U2Ksk6KKWvLEeo5yUQ7Xu46X7NzeBJtd9PBfuXaUSM");
 
         // Fetch all necessary accounts (same as previous tests)
         let pool_account = rpc_client
@@ -1197,7 +1199,7 @@ mod tests {
         eprintln!("Base decimals: {:?}, Quote decimals: {:?}", pool.mint_0_decimals, pool.mint_1_decimals);
 
         // Test round trip: base -> quote -> base
-        let sol_in = 1_000_000_000; // 0.01% of pool
+        let sol_in = 100_000_000_000; // 0.01% of pool
 
         let token_mint = if *base_token.key == sol_mint {
             *quote_token.key
@@ -1207,6 +1209,7 @@ mod tests {
         eprintln!("================================================");
         // Step 1: Swap base -> quote
         let clock1 = get_clock(&rpc_client).await.unwrap();
+        eprintln!("sol_in: {:?}", sol_in);
         let token_out = raydium_cpmm
             .swap_base_in(&accounts, sol_mint, sol_in, clock1.clone())
             .expect("swap_base_in failed");

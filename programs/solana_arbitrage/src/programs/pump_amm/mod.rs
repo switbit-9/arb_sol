@@ -72,7 +72,7 @@ pub struct PumpAmm<'info> {
     pub quote_vault_amount: u64,
     pub price: f64,
     pub inverse_price: f64,
-    pub fee: f64,
+    pub fee_rate: f64,
     pub start_index: usize,
     pub end_index: usize,
     _phantom: PhantomData<&'info ()>,
@@ -126,7 +126,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
-            let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee)) as u128;
+            let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee_rate)) as u128;
 
             let amount_out: u64 =
                 self.calculate_buy_amount_out(base_reserve, quote_reserve, amount_in_after_fees)?;
@@ -143,7 +143,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             let amount_out = self.calculate_sell_amount_out(base_reserve, quote_reserve, amount_in_after_fee as u128)?;
 
             // Apply pool fee on quote output
-            let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee)) as u64;
+            let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee_rate)) as u64;
 
             let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out_after_pool_fee)?;
             let amount_out_after_fee = amount_out_after_pool_fee.checked_sub(transfer_fee_out).unwrap();
@@ -153,7 +153,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
     }
 
     fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
-         let fee_factor = 1.0 - self.fee;
+         let fee_factor = 1.0 - self.fee_rate;
 
         // x = input-side reserve, y = output-side reserve
         let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {
@@ -618,7 +618,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         let k = (base_amount as f64) * (quote_amount as f64);
 
         // Pump AMM fee is 1.25% (0.0125), so f_pump = 1 - 0.0125 = 0.9875
-        let f_pump = 1.0 - self.fee;
+        let f_pump = 1.0 - self.fee_rate;
 
         let optimal_amount_in = if input_mint == self.base_token_pk {
             ((k / target_price).sqrt() - base_amount as f64) / f_pump
@@ -671,14 +671,14 @@ impl<'info> PumpAmm<'info> {
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount / 1_000_000_000);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount / 1_000_000);
-        // let base_vault_amount: u64 = 13_846_044_917_071;
-        // let quote_vault_amount: u64 = 6_569_195_822_634;
+        let base_vault_amount: u64 = 13_846_044_917_071;
+        let quote_vault_amount: u64 = 6_569_195_822_634;
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
 
         let (price, inverse_price) = get_prices(base_vault_amount, quote_vault_amount)?;
-        let fee = get_fees(price, inverse_price)?;
+        let fee_rate = get_fees(price, inverse_price)?;
 
         Ok(PumpAmm {
             // program_id: program_id.clone(),
@@ -687,7 +687,7 @@ impl<'info> PumpAmm<'info> {
             // quote_vault: quote_vault.clone(),
             price: price,
             inverse_price: inverse_price,
-            fee: fee,
+            fee_rate: fee_rate,
             pool_id: *pool_id.key,
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
@@ -877,7 +877,7 @@ impl<'info> PumpAmm<'info> {
             let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
-            let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee)) as u128;
+            let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee_rate)) as u128;
 
             let amount_out: u64 =
                 self.calculate_buy_amount_out(base_reserve, quote_reserve, amount_in_after_fees)?;
@@ -894,7 +894,7 @@ impl<'info> PumpAmm<'info> {
             let amount_out = self.calculate_sell_amount_out(base_reserve, quote_reserve, amount_in_after_fee as u128)?;
 
             // Apply pool fee on quote output
-            let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee)) as u64;
+            let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee_rate)) as u64;
 
             let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out_after_pool_fee)?;
             let amount_out_after_fee = amount_out_after_pool_fee.checked_sub(transfer_fee_out).unwrap();
@@ -952,7 +952,7 @@ impl<'info> PumpAmm<'info> {
                 .ok_or(ProgramError::InvalidArgument)?;
 
             // Add back pool fee: amount_in_before_fee = amount_in_after_fee / (1 - fee)
-            let amount_in_before_fee = (amount_in_after_fee as f64 / (1.0 - self.fee)) as u128;
+            let amount_in_before_fee = (amount_in_after_fee as f64 / (1.0 - self.fee_rate)) as u128;
 
             // Add transfer fee on input
             let amount_in_u64 = u64::try_from(amount_in_before_fee)
@@ -972,7 +972,7 @@ impl<'info> PumpAmm<'info> {
                 .ok_or(ProgramError::InvalidArgument)?;
 
             // Add back pool fee on quote output: quote_before_fee = quote_after_fee / (1 - fee)
-            let quote_out_before_fee = (amount_out_before_transfer_fee as f64 / (1.0 - self.fee)) as u128;
+            let quote_out_before_fee = (amount_out_before_transfer_fee as f64 / (1.0 - self.fee_rate)) as u128;
 
             // Inverse formula: base_in = (base_reserve * quote_out) / (quote_reserve - quote_out)
             let numerator = base_reserve

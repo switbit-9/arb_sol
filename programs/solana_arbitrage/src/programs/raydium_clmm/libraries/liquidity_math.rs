@@ -1,7 +1,6 @@
 use super::big_num::U256;
 use super::fixed_point_64::Q64;
 use super::full_math::MulDiv;
-use super::unsafe_math::UnsafeMathTrait;
 
 /// Add a signed delta to liquidity
 pub fn add_delta(x: u128, y: i128) -> Option<u128> {

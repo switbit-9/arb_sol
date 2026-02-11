@@ -3152,8 +3152,8 @@ mod tests {
         })
     }
 
-    async fn run_bot_iteration(mocked: Option<bool>) {
-        let cluster: Cluster = Cluster::Devnet;
+    async fn run_bot_iteration(mocked: Option<bool>, mode: u8) {
+        let cluster: Cluster = Cluster::Mainnet;
         // Test with multiple pool instances
         let mocked: bool = mocked.unwrap_or(false);
         let rpc_client: RpcClient = if cluster == Cluster::Devnet {
@@ -3217,7 +3217,7 @@ mod tests {
         ];
 
         let pool_id: Pubkey = if cluster == Cluster::Mainnet {
-            Pubkey::from_str("LJGCprfvx4qZVXktL24CLArGwzpAsQXjq5AQFa5w6WT").unwrap()
+            Pubkey::from_str("HVbTXMBy8aFaNCMhS5uN3vrN3QoYysYE1iBo8RVutYVC").unwrap()
         } else {
             Pubkey::from_str("FT8ueq7bP7DpBoP6b3QSsos3TkRY9JYCbGLCLKA3tgUn").unwrap()
         };
@@ -3230,6 +3230,17 @@ mod tests {
         };
         let meteora_dlmm_len = meteora_dlmm_accounts.len();
         rest_accounts.extend(meteora_dlmm_accounts);
+
+
+        let pool_id_2 = Pubkey::from_str("E6sr5aGsJwkmvxQxLWrLzo78wMFQm7JUn6aCTGpF4zmH").unwrap();
+        let meteora_dlmm_accounts_2 = if mocked {
+            build_test_scenario_meteora_dlmm_mock()
+        } else {
+            build_test_scenario_meteora_dlmm(&rpc_client, pool_id_2).await
+        };
+        let meteora_dlmm_len_2 = meteora_dlmm_accounts_2.len();
+        rest_accounts.extend(meteora_dlmm_accounts_2);
+        
 
         // let pool_id = Pubkey::from_str("DRAf8QxQY86h7yeHdo9GytXAF6GoTTT8oZjknwXV6dCS").unwrap();
         // let base_vault_key =
@@ -3247,53 +3258,57 @@ mod tests {
         //     build_test_scenario_pump_amm(pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key).await
         // };
 
-        let (pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key) =
-            if cluster == Cluster::Mainnet {
-                (
-                    Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
-                    Pubkey::from_str("GC4bQRtMhR4MYTVfthgqwRw9j1i44ft9WnTur5wWkXGb").unwrap(),
-                    Pubkey::from_str("3p46jxhF6vejNp6F1ocSwgRLNWKAjd62KJ41kSUcRz2R").unwrap(),
-                    Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap(),
-                    Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
-                )
-            } else {
-                (
-                    Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
-                    Pubkey::from_str("8x1b4DBqmhqVnwK741aqm5icSd99o5Mgt2n4qxGk28uQ").unwrap(),
-                    Pubkey::from_str("FSS5GcYpWyzd3hmE7xZUbfXsu4gEsNTmxiP1F2MKo7KN").unwrap(),
-                    Pubkey::from_str("Gr59XVxtki7y4kcLCPDQDdtKT3hQ66VAxyQ8xSbZEymp").unwrap(),
-                    Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
-                )
-            };
+        //////////////////////////////////////////// PUMP AMM /////////////////////////////////////////////
+        // let (pool_id, base_vault_key, quote_vault_key, base_token_key, quote_token_key) =
+        //     if cluster == Cluster::Mainnet {
+        //         (
+        //             Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
+        //             Pubkey::from_str("GC4bQRtMhR4MYTVfthgqwRw9j1i44ft9WnTur5wWkXGb").unwrap(),
+        //             Pubkey::from_str("3p46jxhF6vejNp6F1ocSwgRLNWKAjd62KJ41kSUcRz2R").unwrap(),
+        //             Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap(),
+        //             Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
+        //         )
+        //     } else {
+        //         (
+        //             Pubkey::from_str("GPh6c8VRquFso51ptFPDKb61XnWhaKcR9BAQh4rvCLBQ").unwrap(),
+        //             Pubkey::from_str("8x1b4DBqmhqVnwK741aqm5icSd99o5Mgt2n4qxGk28uQ").unwrap(),
+        //             Pubkey::from_str("FSS5GcYpWyzd3hmE7xZUbfXsu4gEsNTmxiP1F2MKo7KN").unwrap(),
+        //             Pubkey::from_str("Gr59XVxtki7y4kcLCPDQDdtKT3hQ66VAxyQ8xSbZEymp").unwrap(),
+        //             Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
+        //         )
+        //     };
+        // let pump_amm_accounts = if mocked {
+        //     build_test_scenario_pump_amm_mock(
+        //         pool_id,
+        //         base_vault_key,
+        //         quote_vault_key,
+        //         base_token_key,
+        //         quote_token_key,
+        //     )
+        // } else {
+        //     build_test_scenario_pump_amm(
+        //         &rpc_client,
+        //         pool_id,
+        //         base_vault_key,
+        //         quote_vault_key,
+        //         base_token_key,
+        //         quote_token_key,
+        //     )
+        //     .await
+        // };
+        // let pump_amm_len = pump_amm_accounts.len();
+        // // let pump_amm_len_2 = pump_amm_accounts_2.len();
+        // rest_accounts.extend(pump_amm_accounts);
 
-        let pump_amm_accounts = if mocked {
-            build_test_scenario_pump_amm_mock(
-                pool_id,
-                base_vault_key,
-                quote_vault_key,
-                base_token_key,
-                quote_token_key,
-            )
-        } else {
-            build_test_scenario_pump_amm(
-                &rpc_client,
-                pool_id,
-                base_vault_key,
-                quote_vault_key,
-                base_token_key,
-                quote_token_key,
-            )
-            .await
-        };
 
-        let pump_amm_len = pump_amm_accounts.len();
-        // let pump_amm_len_2 = pump_amm_accounts_2.len();
-        rest_accounts.extend(pump_amm_accounts);
+
+
         // rest_accounts.extend(pump_amm_accounts_2);
         let data = InstructionData {
             max_amount_in: 100_000_000_000,
             mints: 2,
-            accounts_length: [meteora_dlmm_len as u32, pump_amm_len as u32, 0, 0, 0],
+            accounts_length: [meteora_dlmm_len as u32, meteora_dlmm_len_2 as u32, 0, 0, 0],
+            mode,
         };
 
         // eprintln!("Test setup complete:");
@@ -3363,7 +3378,7 @@ mod tests {
                         let start_time = std::time::Instant::now();
 
                         // Run the bot iteration - continue even if it errors
-                        let _ = run_bot_iteration(None).await;
+                        let _ = run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
 
                         let elapsed = start_time.elapsed();
                         eprintln!(
@@ -3394,18 +3409,47 @@ mod tests {
 
     #[tokio::test]
     async fn test_bot_in_background() {
-        let handle = run_bot_in_background();
+        let handle: std::thread::JoinHandle<()> = run_bot_in_background();
         // Wait for the background thread to complete all 100 iterations
         handle.join().expect("Failed to join background thread");
     }
 
+    // ========== Mode 0: SINGLE_PAIR_MULTI_MARKET ==========
+    // Tests: SOL -> TOKEN1 -> SOL (single token pair across multiple markets)
+
     #[tokio::test]
-    async fn test_bot_single_iteration_real() {
-        run_bot_iteration(None).await;
+    async fn test_mode_0_single_pair_multi_market_real() {
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
     }
 
     #[tokio::test]
-    async fn test_bot_single_iteration_mocked() {
-        run_bot_iteration(Some(true)).await;
+    async fn test_mode_0_single_pair_multi_market_mocked() {
+        run_bot_iteration(Some(true), crate::arb_mode::SINGLE_PAIR_MULTI_MARKET).await;
+    }
+
+    // ========== Mode 1: MULTI_HOP_CHAIN ==========
+    // Tests: SOL -> TOKEN1 -> USDC -> SOL (triangular arbitrage)
+
+    #[tokio::test]
+    async fn test_mode_1_multi_hop_chain_real() {
+        run_bot_iteration(None, crate::arb_mode::MULTI_HOP_CHAIN).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_1_multi_hop_chain_mocked() {
+        run_bot_iteration(Some(true), crate::arb_mode::MULTI_HOP_CHAIN).await;
+    }
+
+    // ========== Mode 2: MULTIPLE_TRADES ==========
+    // Tests: Multiple independent trades ((SOL -> TOKEN1 -> SOL) vs (SOL -> TOKEN2 -> SOL))
+
+    #[tokio::test]
+    async fn test_mode_2_multiple_trades_real() {
+        run_bot_iteration(None, crate::arb_mode::MULTIPLE_TRADES).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_2_multiple_trades_mocked() {
+        run_bot_iteration(Some(true), crate::arb_mode::MULTIPLE_TRADES).await;
     }
 }

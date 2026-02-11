@@ -170,6 +170,17 @@ impl<'a> TickArraySimple<'a> {
             && tick_index < self.start_tick_index + ticks_in_array
     }
 
+    /// Get the boundary tick index of this array in the swap direction
+    /// For a_to_b: returns the start tick index (lowest tick)
+    /// For b_to_a: returns the last tick index (highest tick)
+    pub fn get_boundary_tick(&self, a_to_b: bool, tick_spacing: u16) -> i32 {
+        if a_to_b {
+            self.start_tick_index
+        } else {
+            self.start_tick_index + (TICK_ARRAY_SIZE - 1) * tick_spacing as i32
+        }
+    }
+
     /// Get the next initialized tick in the swap direction
     /// Returns (tick_index, tick) or None if no initialized tick found
     pub fn get_next_initialized_tick(

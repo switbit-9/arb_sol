@@ -65,6 +65,7 @@ pub struct MeteoraDammV2<'info> {
     pub end_index: usize,
     pub price: f64,
     pub inverse_price: f64,
+    pub fee_rate: f64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -98,36 +99,6 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    //     /// Returns (max_in, max_out) for the given input mint using virtual reserves
-    // /// and a 99% target of the opposite reserve to avoid the asymptote.
-    // fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
-    //     let fee_factor = 0.9975_f64; // adjust if fee differs
-    //     let sqrt_price = self.pool.sqrt_price as f64 / Q64_SCALE;
-
-    //     let l = self.pool.liquidity as f64;
-    //     let (base_reserve, quote_reserve) = (l / sqrt_price, l * sqrt_price); // virtual reserves
-
-    //     // choose in/out sides based on input mint
-    //     let (in_reserve, out_reserve) = if input_mint == self.base_token_pk {
-    //         (base_reserve, quote_reserve) // input is base, output is quote
-    //     } else {
-    //         (quote_reserve, base_reserve) // input is quote, output is base
-    //     };
-
-    //     // target 99% of the output reserve to avoid asymptote
-    //     let target_out = out_reserve * 0.99;
-    //     if target_out <= 0.0 {
-    //         return Ok((0, 0));
-    //     }
-
-    //     // Solve for dx: dx = (x/f) * ((y/(y - dy)) - 1)
-    //     let max_in = (in_reserve / fee_factor) * ((out_reserve / (out_reserve - target_out)) - 1.0);
-    //     let max_in = max_in.max(0.0).min(u64::MAX as f64) as u64;
-    //     let max_out = target_out as u64; // Fixed: return 99%, not 100%
-
-    //     Ok((max_in, max_out))
-    // }
-
     fn log_accounts<'a>(&self, _accounts: &[AccountInfo<'a>]) -> Result<()> {
         // Note: This method would need accounts parameter to log, but it's only for debugging
         // For now, just log the stored token keys
@@ -160,9 +131,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let current_point =
             get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
-
-
-        let referral_token_account = accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
         let has_referral = !referral_token_account.key.eq(&Pubkey::default()); // TODO: check if this is correct
         let fee_mode: FeeMode =
             FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
@@ -227,7 +196,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let transfer_fee = get_transfer_fee(token_out_mint, amount_out)?;
         let amount_out_with_fees = amount_out.checked_add(transfer_fee).unwrap();
 
-        let referral_token_account = accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
         let has_referral = !referral_token_account.key.eq(&Pubkey::default()); // TODO: check if this is correct
         let fee_mode =
             FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
@@ -252,7 +221,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn calculate_optimal_amount_in(&self, input_mint: Pubkey, target_price: f64) -> Result<u64> {
         let liquidity = self.pool.liquidity as f64;
-        let f_amm = 0.9975;
+        let f_amm = 1.0 - self.fee_rate;
         let sqrt_price = self.pool.sqrt_price as f64 / Q64_SCALE;
         let target_sqrt_price = target_price.sqrt();
         let current_sqrt_price = sqrt_price;
@@ -265,10 +234,6 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         };
         return Ok(optimal_amount_in as u64);
     }
-
-
-
-
 
     fn invoke_swap_base_in<'a>(
         &self,
@@ -509,10 +474,12 @@ impl<'info> MeteoraDammV2<'info> {
         eprintln!("base_vault_amount: {:?}", base_vault_amount);
         eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
 
+        // FEE_DENOMINATOR in DAMM v2 is 1_000_000_000
+        let fee_rate = pool.pool_fees.base_fee.cliff_fee_numerator as f64 / 1_000_000_000.0;
+
         Ok(MeteoraDammV2 {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
-            // referral_token_account: referral_token_account.clone(),
             pool: pool.clone(),
             pool_id: *pool_id.key,
             price: price,
@@ -521,334 +488,11 @@ impl<'info> MeteoraDammV2<'info> {
             quote_vault_amount: quote_vault_amount,
             start_index,
             end_index,
+            fee_rate,
             phantom: PhantomData,
         })
     }
-
-    // pub fn calculate_optimal_amount_in_impl(&self, input_mint: Pubkey, target_price: f64) -> Result<u64> {
-    //     let liquidity = self.pool.liquidity as f64;
-    //     let f_amm = 0.9975;
-    //     let sqrt_price = self.pool.sqrt_price as f64 / Q64_SCALE;
-    //     let target_sqrt_price = target_price.sqrt();
-    //     let current_sqrt_price = sqrt_price;
-    //     let optimal_amount_in = if self.base_token_pk == input_mint {
-    //         // Input X to DAMMV2
-    //         (liquidity / f_amm) * (1.0 / target_sqrt_price - 1.0 / current_sqrt_price)
-    //     } else {
-    //         // Input Y to DAMMV2
-    //         (liquidity / f_amm) * (target_sqrt_price - current_sqrt_price)
-    //     };
-    //     return Ok(optimal_amount_in as u64);
-    // }
-
-    // pub fn swap_base_in_impl<'a>(
-    //     &self,
-    //     accounts: &[AccountInfo<'a>],
-    //     input_mint: Pubkey,
-    //     amount_in: u64,
-    //     clock: Clock,
-    // ) -> Result<u64> {
-    //     // Determine trade direction based on input_mint
-    //     let trade_direction = if input_mint == self.base_token_pk {
-    //         TradeDirection::AtoB
-    //     } else {
-    //         TradeDirection::BtoA
-    //     };
-    //     let current_timestamp = clock.unix_timestamp as u64;
-    //     let current_slot = clock.slot as u64;
-
-    //     let current_point =
-    //         get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
-
-    //     let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
-    //     let fee_mode: FeeMode =
-    //         FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
-
-    //     let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-    //     let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-    //     let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-    //         (base_token, quote_token)
-    //     } else {
-    //         (quote_token, base_token)
-    //     };
-
-    //     let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
-    //     let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
-
-    //     let results = self.pool.get_swap_result_from_exact_input(
-    //         amount_in_after_fee,
-    //         &fee_mode,
-    //         trade_direction,
-    //         current_point,
-    //     )?;
-
-    //     let transfer_fee_out = get_transfer_fee(token_out_mint, results.output_amount)?;
-    //     let amount_out_after_fee = results.output_amount.checked_sub(transfer_fee_out).unwrap();
-
-    //     Ok(amount_out_after_fee)
-    // }
-
-    // pub fn swap_base_out_impl<'a>(
-    //     &self,
-    //     accounts: &[AccountInfo<'a>],
-    //     input_mint: Pubkey,
-    //     amount_out: u64,
-    //     clock: Clock,
-    // ) -> Result<u64> {
-    //     // Determine trade direction based on input_mint
-    //     let trade_direction = if input_mint == self.base_token_pk {
-    //         TradeDirection::AtoB
-    //     } else {
-    //         TradeDirection::BtoA
-    //     };
-    //     let current_timestamp = clock.unix_timestamp as u64;
-    //     let current_slot = clock.slot as u64;
-
-    //     let current_point =
-    //         get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
-
-    //     let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-    //     let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-    //     let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-    //         (quote_token, base_token)
-    //     } else {
-    //         (base_token, quote_token)
-    //     };
-
-    //     let transfer_fee = get_transfer_fee(token_out_mint, amount_out)?;
-    //     let amount_out_with_fees = amount_out.checked_add(transfer_fee).unwrap();
-
-    //     let has_referral = !self.referral_token_account.key.eq(&Pubkey::default());
-    //     let fee_mode =
-    //         FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
-    //     let results = self.pool.get_swap_result_from_exact_output(
-    //         amount_out_with_fees,
-    //         &fee_mode,
-    //         trade_direction,
-    //         current_point,
-    //     )?;
-
-    //     let transfer_fee = get_transfer_fee(token_in_mint, results.excluded_fee_input_amount)?;
-    //     let amount_in_with_fees = results.excluded_fee_input_amount.checked_add(transfer_fee).unwrap();
-
-    //     eprintln!("results: {:?}", results);
-
-    //     // Return the input amount needed to get the desired output
-    //     Ok(amount_in_with_fees)
-    // }
-
-    // pub fn invoke_swap_base_in_impl<'a>(
-    //     &self,
-    //     accounts: &[AccountInfo<'a>],
-    //     _input_mint: Pubkey,
-    //     max_amount_in: u64,
-    //     amount_out: Option<u64>,
-    //     payer: AccountInfo<'a>,
-    //     user_mint_1_token_account: AccountInfo<'a>,
-    //     user_mint_2_token_account: AccountInfo<'a>,
-    //     mint_1_account: AccountInfo<'a>,
-    //     mint_2_account: AccountInfo<'a>,
-    //     mint_1_token_program: AccountInfo<'a>,
-    //     mint_2_token_program: AccountInfo<'a>,
-    // ) -> Result<()> {
-
-    //     let (
-    //         base_token_program,
-    //         quote_token_program,
-    //         user_base_token_account,
-    //         user_quote_token_account,
-    //     ) = if mint_1_account.key == &self.base_token_pk {
-    //         (
-    //             mint_1_token_program,
-    //             mint_2_token_program,
-    //             user_mint_1_token_account,
-    //             user_mint_2_token_account,
-    //         )
-    //     } else if mint_2_account.key == &self.base_token_pk {
-    //         (
-    //             mint_2_token_program,
-    //             mint_1_token_program,
-    //             user_mint_2_token_account,
-    //             user_mint_1_token_account,
-    //         )
-    //     } else {
-    //         return Err(ProgramError::InvalidAccountData.into());
-    //     };
-
-    //     let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-    //     let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-    //     let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
-    //     let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
-    //     let pool_authority = &accounts[self.start_index + Self::POOL_AUTHORITY_IDX];
-    //     let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
-    //     let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-    //     let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-    //     let amount_out_value = amount_out.unwrap_or(0);
-    //     let metas = vec![
-    //         AccountMeta::new_readonly(*pool_authority.key, false),
-    //         AccountMeta::new(*pool_id.key, false),
-    //         AccountMeta::new(*user_quote_token_account.key, false),
-    //         AccountMeta::new(*user_base_token_account.key, false),
-    //         AccountMeta::new(*base_vault.key, false),
-    //         AccountMeta::new(*quote_vault.key, false),
-    //         AccountMeta::new_readonly(self.base_token_pk, false),
-    //         AccountMeta::new_readonly(self.quote_token_pk, false),
-    //         AccountMeta::new(*payer.key, true),
-    //         AccountMeta::new_readonly(*base_token_program.key, false),
-    //         AccountMeta::new_readonly(*quote_token_program.key, false),
-    //         AccountMeta::new_readonly(*self.referral_token_account.key, false),
-    //         AccountMeta::new_readonly(*event_authority.key, false),
-    //         AccountMeta::new_readonly(*program_id.key, false),
-    //     ];
-
-    //     let mut data = vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
-    //     data.extend_from_slice(&max_amount_in.to_le_bytes());
-    //     data.extend_from_slice(&amount_out_value.to_le_bytes());
-
-    //     let swap_ix = Instruction {
-    //         program_id: *program_id.key,
-    //         accounts: metas,
-    //         data,
-    //     };
-
-    //     // Collect AccountInfo into a vector and use unsafe to cast lifetimes
-    //     // This is safe because 'a outlives 'info in practice when called from execute_arbitrage_path
-    //     let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-    //         pool_authority.clone(),                                   // pool_authority
-    //         pool_id.clone(),                                          // pool_id
-    //         base_vault.clone(),                                       // base_vault
-    //         quote_vault.clone(),                                      // quote_vault
-    //         unsafe { std::mem::transmute(base_token.clone()) },  // base_token
-    //         unsafe { std::mem::transmute(quote_token.clone()) }, // quote_token
-    //         unsafe { std::mem::transmute(self.referral_token_account.clone()) }, // referral_token_accountclea
-    //         event_authority.clone(),                                             // event_authority
-    //         program_id.clone(),                                                  // program_id
-    //     ];
-    //     // Cast parameter AccountInfo<'a> to AccountInfo<'info> to add to vector
-    //     accounts_vec
-    //         .push(unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) });
-    //     accounts_vec
-    //         .push(unsafe { std::mem::transmute(user_base_token_account.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
-
-    //     // Cast entire vector to AccountInfo<'a> for invoke
-    //     unsafe {
-    //         let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-    //         invoke(&swap_ix, accounts)?;
-    //     }
-
-    //     Ok(())
-    // }
-
-    // pub fn invoke_swap_base_out_impl<'a>(
-    //     &self,
-    //     accounts: &[AccountInfo<'a>],
-    //     _input_mint: Pubkey,
-    //     amount_in: u64,
-    //     min_amount_out: Option<u64>,
-    //     payer: AccountInfo<'a>,
-    //     user_mint_1_token_account: AccountInfo<'a>,
-    //     user_mint_2_token_account: AccountInfo<'a>,
-    //     mint_1_account: AccountInfo<'a>,
-    //     mint_2_account: AccountInfo<'a>,
-    //     mint_1_token_program: AccountInfo<'a>,
-    //     mint_2_token_program: AccountInfo<'a>,
-    // ) -> Result<()> {
-    //     use anchor_lang::solana_program::{
-    //         instruction::{AccountMeta, Instruction},
-    //         program::invoke,
-    //     };
-
-    //     let (
-    //         base_token_program,
-    //         quote_token_program,
-    //         user_base_token_account,
-    //         user_quote_token_account,
-    //     ) = if mint_1_account.key == &self.base_token_pk {
-    //         (
-    //             mint_1_token_program,
-    //             mint_2_token_program,
-    //             user_mint_1_token_account,
-    //             user_mint_2_token_account,
-    //         )
-    //     } else if mint_2_account.key == &self.base_token_pk {
-    //         (
-    //             mint_2_token_program,
-    //             mint_1_token_program,
-    //             user_mint_2_token_account,
-    //             user_mint_1_token_account,
-    //         )
-    //     } else {
-    //         return Err(ProgramError::InvalidAccountData.into());
-    //     };
-
-    //     let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-    //     let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-    //     let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
-    //     let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
-    //     let pool_authority = &accounts[self.start_index + Self::POOL_AUTHORITY_IDX];
-    //     let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
-    //     let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-    //     let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-    //     let min_amount_out_value = min_amount_out.unwrap_or(0);
-    //     let metas = vec![
-    //         AccountMeta::new_readonly(*pool_authority.key, false), // pool_authority
-    //         AccountMeta::new(*pool_id.key, false),                 // pool_id
-    //         AccountMeta::new(*user_base_token_account.key, false),
-    //         AccountMeta::new(*user_quote_token_account.key, false),
-    //         AccountMeta::new(*base_vault.key, false), // base_vault
-    //         AccountMeta::new(*quote_vault.key, false), // quote_vault
-    //         AccountMeta::new_readonly(self.base_token_pk, false),
-    //         AccountMeta::new_readonly(self.quote_token_pk, false),
-    //         AccountMeta::new(*payer.key, true),
-    //         AccountMeta::new_readonly(*base_token_program.key, false),
-    //         AccountMeta::new_readonly(*quote_token_program.key, false),
-    //         AccountMeta::new_readonly(*self.referral_token_account.key, false),
-    //         AccountMeta::new_readonly(*event_authority.key, false), // event_authority
-    //         AccountMeta::new_readonly(*program_id.key, false),      // program_id
-    //     ];
-    //     let mut data = vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
-    //     data.extend_from_slice(&amount_in.to_le_bytes());
-    //     data.extend_from_slice(&min_amount_out_value.to_le_bytes());
-
-    //     let swap_ix = Instruction {
-    //         program_id: *accounts[self.start_index + 0].key, // program_id
-    //         accounts: metas,
-    //         data,
-    //     };
-
-    //     // Collect AccountInfo into a vector
-    //     let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-    //         accounts[self.start_index + Self::POOL_AUTHORITY_IDX].clone(), // pool_authority
-    //         accounts[self.start_index + Self::POOL_ID_IDX].clone(),        // pool_id
-    //         accounts[self.start_index + Self::BASE_VAULT_IDX].clone(),     // base_vault
-    //         accounts[self.start_index + Self::QUOTE_VAULT_IDX].clone(),    // quote_vault
-    //         unsafe { std::mem::transmute(base_token.clone()) },       // base_token
-    //         unsafe { std::mem::transmute(quote_token.clone()) },      // quote_token
-    //         unsafe { std::mem::transmute(self.referral_token_account.clone()) }, // referral_token_account
-    //         accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].clone(),      // event_authority
-    //         accounts[self.start_index + Self::PROGRAM_ID_IDX].clone(),           // program_id
-    //     ];
-    //     accounts_vec
-    //         .push(unsafe { std::mem::transmute(user_base_token_account.to_account_info()) });
-    //     accounts_vec
-    //         .push(unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
-    //     accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
-
-    //     unsafe {
-    //         let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-    //         invoke(&swap_ix, accounts)?;
-    //     }
-    //     Ok(())
-    // }
+    
 }
 
 #[cfg(test)]
@@ -1103,7 +747,6 @@ mod tests {
         // assert_eq!(*meteora.accounts[3].key, quote_vault);
         assert_eq!(meteora.base_token_pk, base_token);
         assert_eq!(meteora.quote_token_pk, quote_token);
-        assert_eq!(meteora.referral_token_account.key(), referral_token_account);
     }
 
     #[test]

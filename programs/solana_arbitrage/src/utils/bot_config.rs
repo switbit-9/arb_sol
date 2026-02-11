@@ -56,9 +56,7 @@ pub struct BotConfig {
     pub min_profit: i128,
     pub mints: u16,
     pub mode: u8,
-    pub clock: Clock,
-    // pub mint_1: MintInfo<'info>,
-    // pub mint_2: MintInfo<'info>,
+    pub clock: Clock
 }
 
 impl BotConfig {

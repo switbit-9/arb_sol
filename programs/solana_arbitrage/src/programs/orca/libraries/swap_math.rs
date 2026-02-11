@@ -25,7 +25,7 @@ pub struct SwapStep {
 /// * `sqrt_price_target_x64` - Target sqrt price (tick boundary or limit)
 /// * `liquidity` - Available liquidity in current range
 /// * `amount_remaining` - Remaining amount to swap
-/// * `fee_rate` - Fee rate in hundredths of basis point (out of 1,000,000)
+/// * `fee_rate` - Total fee rate (static + adaptive) in hundredths of basis point (out of 1,000,000)
 /// * `is_base_input` - True if amount_remaining is input, false if output
 /// * `a_to_b` - True if swapping token A for token B
 ///
@@ -36,7 +36,7 @@ pub fn compute_swap_step(
     sqrt_price_target_x64: u128,
     liquidity: u128,
     amount_remaining: u64,
-    fee_rate: u16,
+    fee_rate: u32,
     is_base_input: bool,
     a_to_b: bool,
 ) -> SwapStep {
