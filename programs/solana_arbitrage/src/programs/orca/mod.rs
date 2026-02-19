@@ -79,6 +79,25 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         (&self.base_token_pk, &self.quote_token_pk)
     }
 
+    fn name(&self) -> &'static str {
+        "OrcaWhirlpool"
+    }
+
+    fn get_fee_factor(&self) -> Result<(f64, f64)> {
+        // Orca fee_rate is in hundredths of basis point (1_000_000 = 100%)
+        // Symmetric fee: same rate for both A->B and B->A
+        let f = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
+        Ok((f, f))
+    }
+
+    fn get_liquidity(&self) -> Result<u128> {
+        Ok(self.liquidity)
+    }
+
+    fn get_sqrt_price(&self) -> Result<u128> {
+        Ok(self.sqrt_price)
+    }
+
     fn swap_base_in<'a>(
         &self,
         accounts: &[AccountInfo<'a>],
@@ -102,18 +121,19 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         let actual_amount_in = amount_in.saturating_sub(transfer_fee);
 
         // Borrow tick array data at this level to avoid nested stack frames
-        let data_0 = accounts[self.start_index + Self::TICK_ARRAY_0_IDX].try_borrow_data().ok();
-        let data_1 = accounts[self.start_index + Self::TICK_ARRAY_1_IDX].try_borrow_data().ok();
-        let data_2 = accounts[self.start_index + Self::TICK_ARRAY_2_IDX].try_borrow_data().ok();
+        let data_0 = accounts[self.start_index + Self::TICK_ARRAY_0_IDX]
+            .try_borrow_data()
+            .ok();
+        let data_1 = accounts[self.start_index + Self::TICK_ARRAY_1_IDX]
+            .try_borrow_data()
+            .ok();
+        let data_2 = accounts[self.start_index + Self::TICK_ARRAY_2_IDX]
+            .try_borrow_data()
+            .ok();
 
         // Calculate swap output using tick traversal
-        let amount_out = self.calculate_swap_base_in(
-            actual_amount_in,
-            a_to_b,
-            &data_0,
-            &data_1,
-            &data_2,
-        )?;
+        let amount_out =
+            self.calculate_swap_base_in(actual_amount_in, a_to_b, &data_0, &data_1, &data_2)?;
 
         // Account for output transfer fees
         let out_transfer_fee = get_transfer_fee(output_token_account, amount_out)?;
@@ -149,18 +169,19 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             .ok_or(error!(crate::programs::SolarBError::FeeOverflow))?;
 
         // Borrow tick array data at this level to avoid nested stack frames
-        let data_0 = accounts[self.start_index + Self::TICK_ARRAY_0_IDX].try_borrow_data().ok();
-        let data_1 = accounts[self.start_index + Self::TICK_ARRAY_1_IDX].try_borrow_data().ok();
-        let data_2 = accounts[self.start_index + Self::TICK_ARRAY_2_IDX].try_borrow_data().ok();
+        let data_0 = accounts[self.start_index + Self::TICK_ARRAY_0_IDX]
+            .try_borrow_data()
+            .ok();
+        let data_1 = accounts[self.start_index + Self::TICK_ARRAY_1_IDX]
+            .try_borrow_data()
+            .ok();
+        let data_2 = accounts[self.start_index + Self::TICK_ARRAY_2_IDX]
+            .try_borrow_data()
+            .ok();
 
         // Calculate required input
-        let amount_in = self.calculate_swap_base_out(
-            amount_out_with_fee,
-            a_to_b,
-            &data_0,
-            &data_1,
-            &data_2,
-        )?;
+        let amount_in =
+            self.calculate_swap_base_out(amount_out_with_fee, a_to_b, &data_0, &data_1, &data_2)?;
 
         // Account for input transfer fees
         let in_transfer_fee = get_transfer_inverse_fee(input_token_account, amount_in)?;
@@ -198,11 +219,22 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
 
         let a_to_b = input_mint == self.base_token_pk;
 
-        let (user_token_account_a, user_token_account_b, token_program_a, token_program_b) = if mint_1_account.key == token_a.key {
-            (user_mint_1_token_account, user_mint_2_token_account, mint_1_token_program, mint_2_token_program)
-        } else {
-            (user_mint_2_token_account, user_mint_1_token_account, mint_2_token_program, mint_1_token_program)
-        };
+        let (user_token_account_a, user_token_account_b, token_program_a, token_program_b) =
+            if mint_1_account.key == token_a.key {
+                (
+                    user_mint_1_token_account,
+                    user_mint_2_token_account,
+                    mint_1_token_program,
+                    mint_2_token_program,
+                )
+            } else {
+                (
+                    user_mint_2_token_account,
+                    user_mint_1_token_account,
+                    mint_2_token_program,
+                    mint_1_token_program,
+                )
+            };
 
         // Build swap instruction
         let metas = vec![
@@ -223,20 +255,19 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             AccountMeta::new(*oracle.key, false),
         ];
 
-
         // Swap discriminator: swap_v2 (SHA256("global:swap_v2")[..8])
         let mut data = vec![0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62];
-        data.extend_from_slice(&amount_in.to_le_bytes());              // amount: u64
+        data.extend_from_slice(&amount_in.to_le_bytes()); // amount: u64
         data.extend_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes()); // other_amount_threshold: u64
-        data.extend_from_slice(&0u128.to_le_bytes());                  // sqrt_price_limit: u128 = 0
-        data.push(1);                                                  // amount_specified_is_input: bool = true
-        data.push(if a_to_b { 1 } else { 0 });                        // a_to_b: bool
-        // remaining_accounts_info: Option<RemainingAccountsInfo> = None (Borsh: 0x00)
-        // For Token-2022 transfer hooks, serialize as:
-        //   0x01 (Some) | vec_len: u32 LE | [AccountsType: u8, length: u8] per slice
-        // AccountsType: TransferHookA=0, TransferHookB=1, TransferHookReward=2,
-        //   TransferHookInput=3, TransferHookIntermediate=4, TransferHookOutput=5,
-        //   SupplementalTickArrays=6, SupplementalTickArraysOne=7, SupplementalTickArraysTwo=8
+        data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit: u128 = 0
+        data.push(1); // amount_specified_is_input: bool = true
+        data.push(if a_to_b { 1 } else { 0 }); // a_to_b: bool
+                                               // remaining_accounts_info: Option<RemainingAccountsInfo> = None (Borsh: 0x00)
+                                               // For Token-2022 transfer hooks, serialize as:
+                                               //   0x01 (Some) | vec_len: u32 LE | [AccountsType: u8, length: u8] per slice
+                                               // AccountsType: TransferHookA=0, TransferHookB=1, TransferHookReward=2,
+                                               //   TransferHookInput=3, TransferHookIntermediate=4, TransferHookOutput=5,
+                                               //   SupplementalTickArrays=6, SupplementalTickArraysOne=7, SupplementalTickArraysTwo=8
         data.push(0);
 
         let swap_ix = Instruction {
@@ -284,58 +315,47 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
         let vault_a = &accounts[self.start_index + Self::VAULT_A_IDX];
         let vault_b = &accounts[self.start_index + Self::VAULT_B_IDX];
+        let token_a = &accounts[self.start_index + Self::TOKEN_A_IDX];
+        let token_b = &accounts[self.start_index + Self::TOKEN_B_IDX];
+        let oracle = &accounts[self.start_index + Self::ORACLE_IDX];
+        let memo = &accounts[self.start_index + Self::MEMO_IDX];
         let tick_array_0 = &accounts[self.start_index + Self::TICK_ARRAY_0_IDX];
         let tick_array_1 = &accounts[self.start_index + Self::TICK_ARRAY_1_IDX];
         let tick_array_2 = &accounts[self.start_index + Self::TICK_ARRAY_2_IDX];
-        let oracle = &accounts[self.start_index + Self::ORACLE_IDX];
 
         let a_to_b = input_mint == self.base_token_pk;
 
-        let (
-            input_token_program,
-            output_token_program,
-            user_input_account,
-            user_output_account,
-            input_vault,
-            output_vault,
-            input_mint_acc,
-            output_mint_acc,
-        ) = if a_to_b {
-            (
-                mint_1_token_program,
-                mint_2_token_program,
-                user_mint_1_token_account,
-                user_mint_2_token_account,
-                vault_a,
-                vault_b,
-                mint_1_account,
-                mint_2_account,
-            )
-        } else {
-            (
-                mint_2_token_program,
-                mint_1_token_program,
-                user_mint_2_token_account,
-                user_mint_1_token_account,
-                vault_b,
-                vault_a,
-                mint_2_account,
-                mint_1_account,
-            )
-        };
+        // Map mint_1/mint_2 to A/B order (same approach as invoke_swap_base_in)
+        let (user_token_account_a, user_token_account_b, token_program_a, token_program_b) =
+            if mint_1_account.key == token_a.key {
+                (
+                    user_mint_1_token_account,
+                    user_mint_2_token_account,
+                    mint_1_token_program,
+                    mint_2_token_program,
+                )
+            } else {
+                (
+                    user_mint_2_token_account,
+                    user_mint_1_token_account,
+                    mint_2_token_program,
+                    mint_1_token_program,
+                )
+            };
 
+        // Build swap instruction — accounts always in A/B order
         let metas = vec![
-            AccountMeta::new_readonly(*input_token_program.key, false),
-            AccountMeta::new_readonly(*output_token_program.key, false),
-            AccountMeta::new_readonly(anchor_spl::associated_token::ID, false),
+            AccountMeta::new_readonly(*token_program_a.key, false),
+            AccountMeta::new_readonly(*token_program_b.key, false),
+            AccountMeta::new_readonly(*memo.key, false),
             AccountMeta::new(*payer.key, true),
             AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new_readonly(*input_mint_acc.key, false),
-            AccountMeta::new_readonly(*output_mint_acc.key, false),
-            AccountMeta::new(*user_input_account.key, false),
-            AccountMeta::new(*input_vault.key, false),
-            AccountMeta::new(*user_output_account.key, false),
-            AccountMeta::new(*output_vault.key, false),
+            AccountMeta::new_readonly(*token_a.key, false),
+            AccountMeta::new_readonly(*token_b.key, false),
+            AccountMeta::new(*user_token_account_a.key, false),
+            AccountMeta::new(*vault_a.key, false),
+            AccountMeta::new(*user_token_account_b.key, false),
+            AccountMeta::new(*vault_b.key, false),
             AccountMeta::new(*tick_array_0.key, false),
             AccountMeta::new(*tick_array_1.key, false),
             AccountMeta::new(*tick_array_2.key, false),
@@ -345,11 +365,11 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         // Swap discriminator: swap_v2 (SHA256("global:swap_v2")[..8])
         let mut data = vec![0x2b, 0x04, 0xed, 0x0b, 0x1a, 0xc9, 0x1e, 0x62];
         data.extend_from_slice(&amount_out.unwrap_or(0).to_le_bytes()); // amount: u64 (specified output)
-        data.extend_from_slice(&max_amount_in.to_le_bytes());           // other_amount_threshold: u64 (max input)
-        data.extend_from_slice(&0u128.to_le_bytes());                   // sqrt_price_limit: u128 = 0
-        data.push(0);                                                   // amount_specified_is_input: bool = false
-        data.push(if a_to_b { 1 } else { 0 });                         // a_to_b: bool
-        // remaining_accounts_info: Option<RemainingAccountsInfo> = None (Borsh: 0x00)
+        data.extend_from_slice(&max_amount_in.to_le_bytes()); // other_amount_threshold: u64 (max input)
+        data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit: u128 = 0
+        data.push(0); // amount_specified_is_input: bool = false
+        data.push(if a_to_b { 1 } else { 0 }); // a_to_b: bool
+                                               // remaining_accounts_info: Option<RemainingAccountsInfo> = None (Borsh: 0x00)
         data.push(0);
 
         let swap_ix = Instruction {
@@ -359,17 +379,17 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         };
 
         let accounts_vec: Vec<AccountInfo<'a>> = vec![
-            input_token_program.clone(),
-            output_token_program.clone(),
-            payer.clone(),
+            token_program_a.clone(),
+            token_program_b.clone(),
+            memo.clone(),
             payer.clone(),
             pool_id.clone(),
-            input_mint_acc.clone(),
-            output_mint_acc.clone(),
-            user_input_account.clone(),
-            input_vault.clone(),
-            user_output_account.clone(),
-            output_vault.clone(),
+            token_a.clone(),
+            token_b.clone(),
+            user_token_account_a.clone(),
+            vault_a.clone(),
+            user_token_account_b.clone(),
+            vault_b.clone(),
             tick_array_0.clone(),
             tick_array_1.clone(),
             tick_array_2.clone(),
@@ -380,20 +400,61 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         Ok(())
     }
 
-    fn log_accounts<'a>(&self, _accounts: &[AccountInfo<'a>]) -> Result<()> {
+    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        msg!("=== Orca Whirlpool ===");
         msg!(
-            "Orca Whirlpool: pool={}, mint_a={}, mint_b={}, sqrt_price={}, tick={}",
-            self.pool_id,
-            self.base_token_pk,
-            self.quote_token_pk,
-            self.sqrt_price,
-            self.tick_current_index,
+            "0 program_id: {}",
+            accounts[self.start_index + Self::PROGRAM_ID_IDX].key
+        );
+        msg!(
+            "1 pool_id: {}",
+            accounts[self.start_index + Self::POOL_ID_IDX].key
+        );
+        msg!(
+            "2 vault_a: {}",
+            accounts[self.start_index + Self::VAULT_A_IDX].key
+        );
+        msg!(
+            "3 vault_b: {}",
+            accounts[self.start_index + Self::VAULT_B_IDX].key
+        );
+        msg!(
+            "4 token_a: {}",
+            accounts[self.start_index + Self::TOKEN_A_IDX].key
+        );
+        msg!(
+            "5 token_b: {}",
+            accounts[self.start_index + Self::TOKEN_B_IDX].key
+        );
+        msg!(
+            "6 oracle: {}",
+            accounts[self.start_index + Self::ORACLE_IDX].key
+        );
+        msg!(
+            "7 memo: {}",
+            accounts[self.start_index + Self::MEMO_IDX].key
+        );
+        msg!(
+            "8 tick_array_0: {}",
+            accounts[self.start_index + Self::TICK_ARRAY_0_IDX].key
+        );
+        msg!(
+            "9 tick_array_1: {}",
+            accounts[self.start_index + Self::TICK_ARRAY_1_IDX].key
+        );
+        msg!(
+            "10 tick_array_2: {}",
+            accounts[self.start_index + Self::TICK_ARRAY_2_IDX].key
         );
         Ok(())
     }
 
     fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
         let a_to_b = input_mint == self.base_token_pk;
+
+        if self.liquidity == 0 {
+            return Ok((0, 0));
+        }
 
         // For concentrated liquidity, max amounts depend on the liquidity depth
         // Estimate based on moving the price to the boundary of the current tick range
@@ -490,12 +551,10 @@ impl<'info> OrcaWhirlpool<'info> {
         // Compute total fee rate (static + adaptive) once from Oracle account
         let oracle_account = &accounts[start_index + Self::ORACLE_IDX];
         let oracle_data = oracle_account.try_borrow_data().ok();
-        let total_fee_rate = compute_total_fee_rate(
-            pool.fee_rate,
-            oracle_data.as_ref().map(|d| &***d),
-        );
+        let total_fee_rate =
+            compute_total_fee_rate(pool.fee_rate, oracle_data.as_ref().map(|d| &***d));
 
-        Ok(OrcaWhirlpool {
+        let instance = OrcaWhirlpool {
             pool_id: *pool_account.key,
             whirlpools_config: pool.whirlpools_config,
             base_token_pk: pool.token_mint_a,
@@ -513,7 +572,9 @@ impl<'info> OrcaWhirlpool<'info> {
             start_index,
             end_index,
             phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
 
     /// Get the tick boundaries for the current tick
@@ -799,12 +860,12 @@ impl<'info> OrcaWhirlpool<'info> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::programs::orca::states::{get_tick_array_start_index, TICK_ARRAY_SIZE};
+    use crate::utils::utils::get_mint_decimals;
     use anchor_lang::prelude::Clock;
     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
     use solana_client::nonblocking::rpc_client::RpcClient;
     use solana_sdk::pubkey::Pubkey as SdkPubkey;
-    use crate::utils::utils::get_mint_decimals;
-    use crate::programs::orca::states::{TICK_ARRAY_SIZE, get_tick_array_start_index};
 
     fn create_mock_account_info_with_data(
         key: Pubkey,
@@ -947,11 +1008,9 @@ mod tests {
 
         // SOL/USDC Whirlpool on mainnet
         let pool_id_key = Pubkey::from_str_const("HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF");
-        
+
         // let pool_id_key = Pubkey::from_str_const("Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE");
         // let pool_id_key = Pubkey::from_str_const("6jwmmjnx3mDbA6QauSZ7DY8Z1B8wZncxXM1tJd2unpuS");
-
-
 
         eprintln!("Testing Orca Whirlpool round trip swap: {}", pool_id_key);
 
@@ -1062,9 +1121,18 @@ mod tests {
             &OrcaWhirlpool::PROGRAM_ID,
         );
 
-        eprintln!("Tick array 0 (start={}): {}", start_tick_index_0, tick_array_0_key);
-        eprintln!("Tick array 1 (start={}): {}", start_tick_index_1, tick_array_1_key);
-        eprintln!("Tick array 2 (start={}): {}", start_tick_index_2, tick_array_2_key);
+        eprintln!(
+            "Tick array 0 (start={}): {}",
+            start_tick_index_0, tick_array_0_key
+        );
+        eprintln!(
+            "Tick array 1 (start={}): {}",
+            start_tick_index_1, tick_array_1_key
+        );
+        eprintln!(
+            "Tick array 2 (start={}): {}",
+            start_tick_index_2, tick_array_2_key
+        );
         eprintln!("Oracle: {}", oracle_key);
 
         // Fetch tick array and oracle accounts from RPC
@@ -1078,7 +1146,11 @@ mod tests {
             Ok(acct) => account_to_account_info(tick_array_0_key, acct),
             Err(e) => {
                 eprintln!("Tick array 0 not found ({}), using empty mock", e);
-                create_mock_account_info_with_data(tick_array_0_key, program_id_key, Some(vec![0u8; 1000]))
+                create_mock_account_info_with_data(
+                    tick_array_0_key,
+                    program_id_key,
+                    Some(vec![0u8; 1000]),
+                )
             }
         };
         let tick_array_1_account = match rpc_client
@@ -1088,7 +1160,11 @@ mod tests {
             Ok(acct) => account_to_account_info(tick_array_1_key, acct),
             Err(e) => {
                 eprintln!("Tick array 1 not found ({}), using empty mock", e);
-                create_mock_account_info_with_data(tick_array_1_key, program_id_key, Some(vec![0u8; 1000]))
+                create_mock_account_info_with_data(
+                    tick_array_1_key,
+                    program_id_key,
+                    Some(vec![0u8; 1000]),
+                )
             }
         };
         let tick_array_2_account = match rpc_client
@@ -1098,7 +1174,11 @@ mod tests {
             Ok(acct) => account_to_account_info(tick_array_2_key, acct),
             Err(e) => {
                 eprintln!("Tick array 2 not found ({}), using empty mock", e);
-                create_mock_account_info_with_data(tick_array_2_key, program_id_key, Some(vec![0u8; 1000]))
+                create_mock_account_info_with_data(
+                    tick_array_2_key,
+                    program_id_key,
+                    Some(vec![0u8; 1000]),
+                )
             }
         };
         let oracle_account = match rpc_client
@@ -1108,7 +1188,11 @@ mod tests {
             Ok(acct) => account_to_account_info(oracle_key, acct),
             Err(e) => {
                 eprintln!("Oracle not found ({}), using empty mock", e);
-                create_mock_account_info_with_data(oracle_key, program_id_key, Some(vec![0u8; 1000]))
+                create_mock_account_info_with_data(
+                    oracle_key,
+                    program_id_key,
+                    Some(vec![0u8; 1000]),
+                )
             }
         };
 
@@ -1167,7 +1251,11 @@ mod tests {
         };
 
         let (max_sol_in, max_token_out) = orca_whirlpool.get_max_amounts_in_out(sol_mint).unwrap();
-        eprintln!("Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}", max_sol_in as f64 / 1_000_000_000.0, max_token_out as f64 / 1_000_000.0);
+        eprintln!(
+            "Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}",
+            max_sol_in as f64 / 1_000_000_000.0,
+            max_token_out as f64 / 1_000_000.0
+        );
 
         eprintln!("================================================");
         // Step 1: Swap SOL -> TOKEN

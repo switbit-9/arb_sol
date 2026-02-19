@@ -53,6 +53,10 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         (&self.base_token_pk, &self.quote_token_pk)
     }
 
+    fn name(&self) -> &'static str { "RaydiumAmm" }
+
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
+
     fn get_prices(&self) -> Result<(f64, f64)> {
         Ok((self.price, self.inverse_price))
     }
@@ -391,22 +395,15 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
     }
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let coin_vault = &accounts[self.start_index + Self::COIN_VAULT_IDX];
-        let pc_vault = &accounts[self.start_index + Self::PC_VAULT_IDX];
-        let coin_token = &accounts[self.start_index + Self::COIN_TOKEN_IDX];
-        let pc_token = &accounts[self.start_index + Self::PC_TOKEN_IDX];
-        let authority = &accounts[self.start_index + Self::AUTHORITY_IDX];
-
-        msg!(
-            "Raydium AMM accounts: pool={}, coin_vault={}, pc_vault={}, coin_mint={}, pc_mint={}, authority={}",
-            pool_id.key,
-            coin_vault.key,
-            pc_vault.key,
-            coin_token.key,
-            pc_token.key,
-            authority.key,
-        );
+        msg!("=== Raydium AMM ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
+        msg!("2 coin_vault: {}", accounts[self.start_index + Self::COIN_VAULT_IDX].key);
+        msg!("3 pc_vault: {}", accounts[self.start_index + Self::PC_VAULT_IDX].key);
+        msg!("4 coin_token: {}", accounts[self.start_index + Self::COIN_TOKEN_IDX].key);
+        msg!("5 pc_token: {}", accounts[self.start_index + Self::PC_TOKEN_IDX].key);
+        msg!("6 authority: {}", accounts[self.start_index + Self::AUTHORITY_IDX].key);
+        msg!("7 open_orders: {}", accounts[self.start_index + Self::OPEN_ORDERS_IDX].key);
         Ok(())
     }
 
@@ -519,7 +516,7 @@ impl<'info> RaydiumAmm<'info> {
 
         let fee_rate = amm.swap_fee_numerator as f64 / amm.swap_fee_denominator as f64;
 
-        Ok(RaydiumAmm {
+        let instance = RaydiumAmm {
             pool_id: *pool_id.key,
             base_token_pk: *coin_token.key,
             quote_token_pk: *pc_token.key,
@@ -533,7 +530,9 @@ impl<'info> RaydiumAmm<'info> {
             start_index,
             end_index,
             _phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::arbitrage::base::Edge;
 use crate::arbitrage::algo_2::path_classifier::{classify_path, PathType};
-use crate::programs::ProgramInstance;
+use crate::programs::{ProgramInstance, ProgramMeta};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::account_info::AccountInfo;
 
@@ -349,27 +349,22 @@ pub fn optimize_path_smart<'info>(
 
     let path_type = classify_path(&path_edges);
 
-    msg!("Optimizing path type: {:?}", path_type);
 
     match path_type {
         PathType::AmmToAmm => {
             // Use golden ratio search (works well for smooth AMM curves)
-            msg!("  Using golden ratio search for AMM-AMM path");
             golden_ratio_search(accounts, path, edges, instances, min_amount, max_amount, clock)
         },
         PathType::AmmToDlmm | PathType::DlmmToAmm => {
             // Use binary search optimized for mixed paths
-            msg!("  Using binary search for mixed AMM-DLMM path");
             binary_search_optimize(accounts, path, edges, instances, min_amount, max_amount, clock)
         },
         PathType::DlmmToDlmm => {
             // Use logarithmic grid search for DLMM-DLMM
-            msg!("  Using logarithmic grid search for DLMM-DLMM path");
             grid_search_logarithmic(accounts, path, edges, instances, min_amount, max_amount, clock)
         },
         PathType::MultiHop => {
             // Use hybrid optimizer for complex paths
-            msg!("  Using hybrid optimizer for multi-hop path");
             hybrid_optimize(accounts, path, edges, instances, min_amount, max_amount, clock)
         },
     }
@@ -397,7 +392,6 @@ pub fn binary_search_optimize<'info>(
     let mut best_profit = i128::MIN;
     let mut iterations = 0;
 
-    msg!("  Binary search: range [{}, {}]", min_amount, max_amount);
 
     while iterations < BINARY_SEARCH_MAX_ITERATIONS {
         iterations += 1;
@@ -435,14 +429,12 @@ pub fn binary_search_optimize<'info>(
         // Check convergence
         let range_pct = (right - left) / (max_amount as f64);
         if range_pct < GRID_SEARCH_CONVERGENCE {
-            msg!("  Binary search converged at iteration {}", iterations);
             break;
         }
     }
 
     let (final_amount, _) = calculate_path_profit(accounts, path, edges, instances, best_amount, clock)?;
 
-    msg!("  Binary search result: optimal_amount={}, profit={}, iterations={}", best_amount, best_profit, iterations);
 
     Ok(OptimizationResult {
         optimal_amount: best_amount,
@@ -470,7 +462,6 @@ pub fn grid_search_logarithmic<'info>(
     max_amount: u128,
     clock: Clock,
 ) -> Result<OptimizationResult> {
-    msg!("  Logarithmic grid search: range [{}, {}]", min_amount, max_amount);
 
     // Phase 1: Coarse logarithmic sampling to cover bin boundaries
     // These samples are logarithmically spaced to cover orders of magnitude
@@ -506,12 +497,14 @@ pub fn grid_search_logarithmic<'info>(
             if profit > best_profit {
                 best_profit = profit;
                 best_amount = amount;
-                msg!("  New best at {}: profit={}", amount, profit);
+                #[cfg(test)]
+                {
+                    debug_eprintln!("  New best at {}: profit={}", amount, profit);
+                }
             }
         }
     }
 
-    msg!("  Coarse search complete: best_amount={}, profit={}", best_amount, best_profit);
 
     // Phase 2: Refine around best point with linear sampling
     let range = best_amount / 10; // +/- 10% of best
@@ -535,14 +528,20 @@ pub fn grid_search_logarithmic<'info>(
             if profit > best_profit {
                 best_profit = profit;
                 best_amount = amount;
-                msg!("  Refinement improved: amount={}, profit={}", amount, profit);
+                #[cfg(test)]
+                {
+                    debug_eprintln!("  Refinement improved: amount={}, profit={}", amount, profit);
+                }
             }
         }
     }
 
     let (final_amount, _) = calculate_path_profit(accounts, path, edges, instances, best_amount, clock)?;
 
-    msg!("  Logarithmic grid result: optimal_amount={}, profit={}, iterations={}", best_amount, best_profit, iterations);
+    #[cfg(test)]
+    {
+        debug_eprintln!("  Logarithmic grid result: optimal_amount={}, profit={}, iterations={}", best_amount, best_profit, iterations);
+    }
 
     Ok(OptimizationResult {
         optimal_amount: best_amount,

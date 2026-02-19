@@ -33,7 +33,7 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
         let prices = self.program.get_prices().unwrap();
         let price = prices.0;
         let inverse_price = prices.1;
-        let fee_factor = self.program.get_fee_factor().unwrap_or(1.0);
+        let (fee_a_to_b, fee_b_to_a) = self.program.get_fee_factor().unwrap_or((1.0, 1.0));
         let program_id = *self.program.get_id();
         let pool_id = *self.program.get_pool_id();
         vec![
@@ -42,7 +42,8 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
                 pool_id,
                 EdgeSide::LeftToRight,
                 price,
-                fee_factor,
+                fee_a_to_b,
+                fee_b_to_a,
                 self.left.clone(),
                 self.right.clone(),
             ),
@@ -51,7 +52,8 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
                 pool_id,
                 EdgeSide::RightToLeft,
                 inverse_price,
-                fee_factor,
+                fee_b_to_a,
+                fee_a_to_b,
                 self.right.clone(),
                 self.left.clone(),
             ),

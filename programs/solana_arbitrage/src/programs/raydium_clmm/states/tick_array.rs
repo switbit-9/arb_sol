@@ -191,12 +191,127 @@ impl TickArrayState {
         }
     }
 
-    /// Try to parse from account data (skipping 8-byte discriminator)
-    pub fn try_from_bytes(data: &[u8]) -> Option<Self> {
+    /// Try to parse from account data (skipping 8-byte discriminator).
+    /// Returns Box<Self> to avoid putting ~10KB TickArrayState on the stack,
+    /// which would cause stack overflow in Solana's 32KB stack limit.
+    pub fn try_from_bytes(data: &[u8]) -> Option<Box<Self>> {
         let struct_size = std::mem::size_of::<Self>();
         if data.len() < 8 + struct_size {
             return None;
         }
-        Some(bytemuck::pod_read_unaligned(&data[8..8 + struct_size]))
+        unsafe {
+            let mut boxed: Box<Self> = Box::new(std::mem::zeroed());
+            std::ptr::copy_nonoverlapping(
+                data[8..].as_ptr(),
+                boxed.as_mut() as *mut Self as *mut u8,
+                struct_size,
+            );
+            Some(boxed)
+        }
+    }
+}
+
+/// Compact tick: only the fields needed for swap calculation.
+/// 20 bytes vs 168 bytes for full TickState.
+#[derive(Clone, Debug)]
+pub struct CompactTick {
+    pub tick: i32,
+    pub liquidity_net: i128,
+}
+
+/// Compact tick array: stores only initialized ticks.
+/// Typically ~100-400 bytes vs ~10,232 bytes for full TickArrayState.
+#[derive(Clone, Debug)]
+pub struct CompactTickArray {
+    pub start_tick_index: i32,
+    pub ticks: Vec<CompactTick>,
+}
+
+impl CompactTickArray {
+    // Byte offsets within raw account data
+    const DISCRIMINATOR_LEN: usize = 8;
+    const POOL_ID_OFFSET: usize = Self::DISCRIMINATOR_LEN;
+    const START_TICK_OFFSET: usize = Self::POOL_ID_OFFSET + 32;
+    const TICKS_OFFSET: usize = Self::START_TICK_OFFSET + 4;
+    const TICK_STATE_SIZE: usize = 168;
+    const TICK_COUNT: usize = TICK_ARRAY_SIZE_USIZE;
+    const MIN_DATA_LEN: usize = Self::TICKS_OFFSET + Self::TICK_STATE_SIZE * Self::TICK_COUNT;
+
+    // Field offsets within each packed TickState
+    const LIQ_NET_OFFSET: usize = 4;    // i128, after tick (i32)
+    const LIQ_GROSS_OFFSET: usize = 20; // u128, after liquidity_net (i128)
+
+    /// Parse directly from raw account data without allocating the full ~10KB TickArrayState.
+    /// Only extracts initialized ticks (typically 2-10 per array).
+    #[inline(never)]
+    pub fn try_from_account_data(data: &[u8], expected_pool_id: &Pubkey) -> Option<Self> {
+        if data.len() < Self::MIN_DATA_LEN {
+            return None;
+        }
+
+        // Compare pool_id bytes directly (no Pubkey allocation)
+        let expected_bytes = expected_pool_id.to_bytes();
+        if data[Self::POOL_ID_OFFSET..Self::POOL_ID_OFFSET + 32] != expected_bytes {
+            return None;
+        }
+
+        let start_tick_index = i32::from_le_bytes(
+            data[Self::START_TICK_OFFSET..Self::START_TICK_OFFSET + 4]
+                .try_into()
+                .ok()?,
+        );
+
+        let mut ticks = Vec::new();
+        for i in 0..Self::TICK_COUNT {
+            let base = Self::TICKS_OFFSET + i * Self::TICK_STATE_SIZE;
+
+            // Check liquidity_gross != 0 (initialized tick)
+            let lg_off = base + Self::LIQ_GROSS_OFFSET;
+            let liquidity_gross =
+                u128::from_le_bytes(data[lg_off..lg_off + 16].try_into().ok()?);
+
+            if liquidity_gross != 0 {
+                let tick =
+                    i32::from_le_bytes(data[base..base + 4].try_into().ok()?);
+                let ln_off = base + Self::LIQ_NET_OFFSET;
+                let liquidity_net =
+                    i128::from_le_bytes(data[ln_off..ln_off + 16].try_into().ok()?);
+                ticks.push(CompactTick { tick, liquidity_net });
+            }
+        }
+
+        Some(CompactTickArray { start_tick_index, ticks })
+    }
+
+    /// Find next initialized tick from current position in swap direction.
+    pub fn next_initialized_tick(
+        &self,
+        current_tick_index: i32,
+        tick_spacing: u16,
+        zero_for_one: bool,
+    ) -> Option<&CompactTick> {
+        // Verify current tick belongs to this array
+        let current_start =
+            TickArrayState::get_array_start_index(current_tick_index, tick_spacing);
+        if current_start != self.start_tick_index {
+            return None;
+        }
+
+        if zero_for_one {
+            // Price decreasing - highest initialized tick <= current_tick_index
+            self.ticks.iter().rev().find(|t| t.tick <= current_tick_index)
+        } else {
+            // Price increasing - lowest initialized tick > current_tick_index
+            self.ticks.iter().find(|t| t.tick > current_tick_index)
+        }
+    }
+
+    /// Get the first initialized tick in this array for the given swap direction.
+    pub fn first_initialized_tick(&self, zero_for_one: bool) -> Option<&CompactTick> {
+        if zero_for_one {
+            self.ticks.last()  // highest tick
+        } else {
+            self.ticks.first() // lowest tick
+        }
     }
 }

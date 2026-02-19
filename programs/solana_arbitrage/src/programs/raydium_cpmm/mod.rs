@@ -47,14 +47,8 @@ fn get_prices(
         return Err(ProgramError::InvalidArgument.into());
     }
 
-    // Adjust for decimals: price = raw_price * 10^(base_decimals - quote_decimals)
-    // This gives the actual price: how many quote tokens per 1 base token
-    let decimal_adjustment =
-        10f64.powi((pool.mint_0_decimals as i32) - (pool.mint_1_decimals as i32));
-    let price = raw_price * decimal_adjustment;
-
-    let inverse_price = 1.0 / price;
-    Ok((price, inverse_price))
+    let inverse_price = 1.0 / raw_price;
+    Ok((raw_price, inverse_price))
 }
 
 #[derive(Clone)]
@@ -101,6 +95,38 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
         (&self.base_token_pk, &self.quote_token_pk)
+    }
+
+    fn name(&self) -> &'static str { "RaydiumCPMM" }
+
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
+
+    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+        let fee_factor = 1.0 - self.fee_rate;
+
+        let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {
+            (
+                self.base_vault_amount as f64,
+                self.quote_vault_amount as f64,
+            )
+        } else {
+            (
+                self.quote_vault_amount as f64,
+                self.base_vault_amount as f64,
+            )
+        };
+
+        let target_out = (y_reserve * 0.99).max(0.0);
+        if target_out <= 0.0 || y_reserve <= target_out {
+            return Ok((0, y_reserve as u64));
+        }
+
+        let denom = y_reserve - target_out;
+        let dx = (x_reserve / fee_factor) * ((y_reserve / denom) - 1.0);
+        let max_in = dx.max(0.0).min(u64::MAX as f64) as u64;
+        let max_out = y_reserve as u64;
+
+        Ok((max_in, max_out))
     }
 
     fn swap_base_in<'a>(
@@ -187,13 +213,9 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         amount_out: u64,
         _clock: Clock,
     ) -> Result<u64> {
-        let amm_data = accounts[self.start_index + 6].try_borrow_data()?;
-        let amm_config: AmmConfig = AmmConfig::try_from_bytes(&amm_data)?;
-
         let base_token_account = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
         let quote_token_account = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
 
-        // Determine output mint from input mint
         // Determine input/output vaults and mints
         let (
             input_vault_key,
@@ -243,15 +265,15 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
         let creator_fee_rate = self
             .pool
-            .adjust_creator_fee_rate(amm_config.creator_fee_rate);
+            .adjust_creator_fee_rate(self.creator_fee_rate);
         let result = CurveCalculator::swap_base_output(
             u128::from(amount_out_with_transfer_fee),
             u128::from(total_input_token_amount),
             u128::from(total_output_token_amount),
-            amm_config.trade_fee_rate,
+            self.trade_fee_rate,
             creator_fee_rate,
-            amm_config.protocol_fee_rate,
-            amm_config.fund_fee_rate,
+            self.protocol_fee_rate,
+            self.fund_fee_rate,
             is_creator_fee_on_input,
         )
         .ok_or(ErrorCode::ZeroTradingTokens)?;
@@ -314,8 +336,8 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
                 mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
-                base_vault,
                 quote_vault,
+                base_vault,
                 mint_2_account,
                 mint_1_account,
             )
@@ -405,32 +427,32 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             output_mint,
         ) = if input_mint == self.base_token_pk {
             (
-                mint_2_token_program,
                 mint_1_token_program,
-                user_mint_2_token_account,
+                mint_2_token_program,
                 user_mint_1_token_account,
-                quote_vault,
+                user_mint_2_token_account,
                 base_vault,
-                mint_2_account,
+                quote_vault,
                 mint_1_account,
+                mint_2_account,
             )
         } else {
             (
-                mint_1_token_program,
                 mint_2_token_program,
-                user_mint_1_token_account,
+                mint_1_token_program,
                 user_mint_2_token_account,
+                user_mint_1_token_account,
                 quote_vault,
                 base_vault,
-                mint_1_account,
                 mint_2_account,
+                mint_1_account,
             )
         };
 
         let metas = vec![
             AccountMeta::new(*payer.key, true),
-            AccountMeta::new(*authority_account.key, false),
-            AccountMeta::new(self.pool.amm_config, false),
+            AccountMeta::new_readonly(*authority_account.key, false),
+            AccountMeta::new_readonly(self.pool.amm_config, false),
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*user_input_token_account.key, false),
             AccountMeta::new(*user_output_token_account.key, false),
@@ -440,7 +462,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             AccountMeta::new_readonly(*output_token_program.key, false),
             AccountMeta::new_readonly(*input_mint.key, false),
             AccountMeta::new_readonly(*output_mint.key, false),
-            AccountMeta::new(self.pool.observation_key, false),
+            AccountMeta::new(*observation_account.key, false),
         ];
         let mut data = vec![55, 217, 98, 86, 163, 74, 180, 173];
         data.extend_from_slice(&max_amount_in.to_le_bytes());
@@ -477,15 +499,17 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         Ok(())
     }
 
-    fn log_accounts<'a>(&self, _accounts: &[AccountInfo<'a>]) -> Result<()> {
-        msg!(
-            "Raydium CPMM accounts: pool={}, base_vault={}, quote_vault={}, base_token={}, quote_token={}",
-            self.pool_id,
-            self.base_vault_key,
-            self.quote_vault_key,
-            self.base_token_pk,
-            self.quote_token_pk,
-        );
+    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        msg!("=== Raydium CPMM ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
+        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
+        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
+        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
+        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
+        msg!("6 amm_config: {}", accounts[self.start_index + Self::AMM_CONFIG_IDX].key);
+        msg!("7 observation_key: {}", accounts[self.start_index + Self::OBSERVATION_KEY_IDX].key);
+        msg!("8 vault_authority: {}", accounts[self.start_index + Self::VAULT_AUTHORITY_IDX].key);
         Ok(())
     }
 }
@@ -525,7 +549,8 @@ impl<'info> RaydiumCPMM<'info> {
 
         let (price, inverse_price) = get_prices(&pool, base_vault_amount, quote_vault_amount)?;
 
-        Ok(RaydiumCPMM {
+
+        let instance = RaydiumCPMM {
             pool_id: *pool_id.key,
             base_token_pk: pool.token_0_mint,
             quote_token_pk: pool.token_1_mint,
@@ -544,7 +569,9 @@ impl<'info> RaydiumCPMM<'info> {
             fund_fee_rate: amm_config.fund_fee_rate,
             fee_rate: (amm_config.trade_fee_rate + pool.adjust_creator_fee_rate(amm_config.creator_fee_rate)) as f64 / 1_000_000.0,
             phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
 }
 

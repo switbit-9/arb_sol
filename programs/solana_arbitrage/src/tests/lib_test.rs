@@ -5,7 +5,10 @@ mod tests {
     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
     use std::str::FromStr;
 
-    use crate::programs::{MeteoraDlmm, PumpAmm};
+    use crate::programs::{
+        MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, PumpAmm, RaydiumAmm,
+        RaydiumCLMM, RaydiumCPMM,
+    };
     use crate::utils::test_utils::{
         account_to_account_info,
         create_mock_account_info,
@@ -13,7 +16,7 @@ mod tests {
         fetch_account_info_from_rpc,
         try_fetch_account_info_from_rpc, //write_results_to_file,
     };
-    use crate::{InstructionData, AUTH_KEY};
+    use crate::{InstructionData};
     use anchor_lang::prelude::Clock;
     use dlmm::dlmm::accounts::{BinArray, LbPair};
     use solana_client::nonblocking::rpc_client::RpcClient;
@@ -35,6 +38,36 @@ mod tests {
             base_token: Pubkey,
             quote_token: Pubkey,
         },
+        MeteoraDammV1 {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        MeteoraDammV2 {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        OrcaWhirlpool {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        RaydiumAmm {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        RaydiumCLMM {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
+        RaydiumCPMM {
+            pool_id: Pubkey,
+            base_mint: Pubkey,
+            quote_mint: Pubkey,
+        },
     }
 
     impl PoolTestConfig {
@@ -50,6 +83,36 @@ mod tests {
                     quote_token,
                     ..
                 } => (*base_token, *quote_token),
+                Self::MeteoraDammV1 {
+                    base_mint,
+                    quote_mint,
+                    ..
+                }
+                | Self::MeteoraDammV2 {
+                    base_mint,
+                    quote_mint,
+                    ..
+                }
+                | Self::OrcaWhirlpool {
+                    base_mint,
+                    quote_mint,
+                    ..
+                }
+                | Self::RaydiumAmm {
+                    base_mint,
+                    quote_mint,
+                    ..
+                }
+                | Self::RaydiumCLMM {
+                    base_mint,
+                    quote_mint,
+                    ..
+                }
+                | Self::RaydiumCPMM {
+                    base_mint,
+                    quote_mint,
+                    ..
+                } => (*base_mint, *quote_mint),
             }
         }
     }
@@ -3100,6 +3163,597 @@ mod tests {
         return accounts;
     }
 
+    // ========== MeteoraDammV1 RPC Builder ==========
+
+    async fn build_test_scenario_meteora_damm_v1(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch MeteoraDammV1 pool account");
+
+        // Parse pool state (after 8-byte Anchor discriminator)
+        let d = &pool_account.data[8..];
+
+        // Pool data offsets (after discriminator):
+        // 0-31: lp_mint, 32-63: token_a_mint, 64-95: token_b_mint
+        // 96-127: a_vault, 128-159: b_vault, 160-191: a_vault_lp, 192-223: b_vault_lp
+        let token_a_mint_key = Pubkey::new_from_array(d[32..64].try_into().unwrap());
+        let token_b_mint_key = Pubkey::new_from_array(d[64..96].try_into().unwrap());
+        let a_vault_key = Pubkey::new_from_array(d[96..128].try_into().unwrap());
+        let b_vault_key = Pubkey::new_from_array(d[128..160].try_into().unwrap());
+        let a_vault_lp_key = Pubkey::new_from_array(d[160..192].try_into().unwrap());
+        let b_vault_lp_key = Pubkey::new_from_array(d[192..224].try_into().unwrap());
+
+        eprintln!("MeteoraDammV1 pool: {}", pool_id);
+        eprintln!("  token_a_mint: {}", token_a_mint_key);
+        eprintln!("  token_b_mint: {}", token_b_mint_key);
+        eprintln!("  a_vault: {}", a_vault_key);
+        eprintln!("  b_vault: {}", b_vault_key);
+
+        // Fetch vault accounts to parse token_vault and lp_mint
+        let a_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(a_vault_key.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch a_vault");
+        let b_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(b_vault_key.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch b_vault");
+
+        // Mercurial Vault state layout (after 8-byte discriminator):
+        // offset 0: enabled (u8), 1-2: bumps (2 x u8), 3-10: total_amount (u64)
+        // offset 11-42: token_vault (Pubkey), 43-74: fee_vault (Pubkey)
+        // offset 75-106: token_mint (Pubkey), 107-138: lp_mint (Pubkey)
+        let a_vault_data = &a_vault_account.data[8..];
+        let b_vault_data = &b_vault_account.data[8..];
+        let a_token_vault_key = Pubkey::new_from_array(a_vault_data[11..43].try_into().unwrap());
+        let b_token_vault_key = Pubkey::new_from_array(b_vault_data[11..43].try_into().unwrap());
+        let a_vault_lp_mint_key = Pubkey::new_from_array(a_vault_data[107..139].try_into().unwrap());
+        let b_vault_lp_mint_key = Pubkey::new_from_array(b_vault_data[107..139].try_into().unwrap());
+
+        eprintln!("  a_token_vault: {}", a_token_vault_key);
+        eprintln!("  b_token_vault: {}", b_token_vault_key);
+        eprintln!("  a_vault_lp_mint: {}", a_vault_lp_mint_key);
+        eprintln!("  b_vault_lp_mint: {}", b_vault_lp_mint_key);
+
+        // Fetch all sub-accounts from RPC
+        let a_token_vault_account = fetch_account_info_from_rpc(rpc_client, a_token_vault_key).await;
+        let b_token_vault_account = fetch_account_info_from_rpc(rpc_client, b_token_vault_key).await;
+        let a_vault_lp_mint_account =
+            fetch_account_info_from_rpc(rpc_client, a_vault_lp_mint_key).await;
+        let b_vault_lp_mint_account =
+            fetch_account_info_from_rpc(rpc_client, b_vault_lp_mint_key).await;
+        let a_vault_lp_account = fetch_account_info_from_rpc(rpc_client, a_vault_lp_key).await;
+        let b_vault_lp_account = fetch_account_info_from_rpc(rpc_client, b_vault_lp_key).await;
+        let token_a_mint_account = fetch_account_info_from_rpc(rpc_client, token_a_mint_key).await;
+        let token_b_mint_account = fetch_account_info_from_rpc(rpc_client, token_b_mint_key).await;
+
+        // Mock accounts for protocol fees, vault_program, token_program (not needed for swap calc)
+        let protocol_token_a_fee =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let protocol_token_b_fee =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let vault_program =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let token_program = create_mock_account_info(
+            anchor_spl::token::ID,
+            system_program::id(),
+            None,
+        );
+
+        let program_id_account = create_mock_account_info_with_data(
+            MeteoraDammV1::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+        let a_vault_info = account_to_account_info(a_vault_key, a_vault_account);
+        let b_vault_info = account_to_account_info(b_vault_key, b_vault_account);
+
+        // Accounts in IDX order (0-15)
+        vec![
+            program_id_account,        // 0: PROGRAM_ID_IDX
+            pool_id_account_info,      // 1: POOL_IDX
+            a_vault_info,              // 2: A_VAULT_IDX
+            b_vault_info,              // 3: B_VAULT_IDX
+            a_token_vault_account,     // 4: A_TOKEN_VAULT_IDX
+            b_token_vault_account,     // 5: B_TOKEN_VAULT_IDX
+            a_vault_lp_mint_account,   // 6: A_VAULT_LP_MINT_IDX
+            b_vault_lp_mint_account,   // 7: B_VAULT_LP_MINT_IDX
+            a_vault_lp_account,        // 8: A_VAULT_LP_IDX
+            b_vault_lp_account,        // 9: B_VAULT_LP_IDX
+            token_a_mint_account,      // 10: TOKEN_A_MINT_IDX
+            token_b_mint_account,      // 11: TOKEN_B_MINT_IDX
+            protocol_token_a_fee,      // 12: PROTOCOL_TOKEN_A_FEE_IDX
+            protocol_token_b_fee,      // 13: PROTOCOL_TOKEN_B_FEE_IDX
+            vault_program,             // 14: VAULT_PROGRAM_IDX
+            token_program,             // 15: TOKEN_PROGRAM_IDX
+        ]
+    }
+
+    // ========== MeteoraDammV2 RPC Builder ==========
+
+    async fn build_test_scenario_meteora_damm_v2(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use crate::programs::meteora_damm_v2::Pool;
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch MeteoraDammV2 pool account");
+
+        // Parse pool state (skip 8-byte Anchor discriminator)
+        let pool: Pool = bytemuck::pod_read_unaligned(&pool_account.data[8..]);
+
+        eprintln!("MeteoraDammV2 pool: {}", pool_id);
+        eprintln!("  token_a_mint: {}", pool.token_a_mint);
+        eprintln!("  token_b_mint: {}", pool.token_b_mint);
+        eprintln!("  token_a_vault: {}", pool.token_a_vault);
+        eprintln!("  token_b_vault: {}", pool.token_b_vault);
+
+        // Fetch vault and mint accounts from RPC
+        let base_vault_account = fetch_account_info_from_rpc(rpc_client, pool.token_a_vault).await;
+        let quote_vault_account = fetch_account_info_from_rpc(rpc_client, pool.token_b_vault).await;
+        let base_token_account = fetch_account_info_from_rpc(rpc_client, pool.token_a_mint).await;
+        let quote_token_account = fetch_account_info_from_rpc(rpc_client, pool.token_b_mint).await;
+
+        // Mock accounts for pool_authority, event_authority, referral_token_account
+        let pool_authority =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let event_authority =
+            create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);
+        let referral_token_account =
+            create_mock_account_info(Pubkey::default(), system_program::id(), None);
+
+        let program_id_account = create_mock_account_info_with_data(
+            MeteoraDammV2::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+
+        // Accounts in IDX order (0-8)
+        vec![
+            program_id_account,        // 0: PROGRAM_ID_IDX
+            pool_id_account_info,      // 1: POOL_ID_IDX
+            base_vault_account,        // 2: BASE_VAULT_IDX
+            quote_vault_account,       // 3: QUOTE_VAULT_IDX
+            base_token_account,        // 4: BASE_TOKEN_IDX
+            quote_token_account,       // 5: QUOTE_TOKEN_IDX
+            pool_authority,            // 6: POOL_AUTHORITY_IDX
+            event_authority,           // 7: EVENT_AUTHORITY_IDX
+            referral_token_account,    // 8: REFERRAL_TOKEN_ACCOUNT_IDX
+        ]
+    }
+
+    // ========== OrcaWhirlpool RPC Builder ==========
+
+    async fn build_test_scenario_orca_whirlpool(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use crate::programs::orca::states::{get_tick_array_start_index, WhirlpoolSimple, TICK_ARRAY_SIZE};
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch OrcaWhirlpool pool account");
+
+        let pool = WhirlpoolSimple::try_from_bytes(&pool_account.data)
+            .expect("Failed to parse OrcaWhirlpool pool state");
+
+        let tick_spacing = pool.tick_spacing;
+        let tick_current_index = pool.tick_current_index;
+
+        eprintln!("OrcaWhirlpool pool: {}", pool_id);
+        eprintln!("  token_mint_a: {}", pool.token_mint_a);
+        eprintln!("  token_mint_b: {}", pool.token_mint_b);
+        eprintln!("  tick_current: {}, tick_spacing: {}", tick_current_index, tick_spacing);
+
+        // Fetch vault and mint accounts
+        let vault_a_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_vault_a.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch vault_a");
+        let vault_b_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_vault_b.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch vault_b");
+        let token_a_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_mint_a.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_a mint");
+        let token_b_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_mint_b.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_b mint");
+
+        // Derive tick array PDAs
+        let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
+        let start_tick_index_0 = get_tick_array_start_index(tick_current_index, tick_spacing);
+        let start_tick_index_1 = start_tick_index_0 - ticks_in_array;
+        let start_tick_index_2 = start_tick_index_0 + ticks_in_array;
+
+        let (tick_array_0_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_0.to_string().as_bytes()],
+            &OrcaWhirlpool::PROGRAM_ID,
+        );
+        let (tick_array_1_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_1.to_string().as_bytes()],
+            &OrcaWhirlpool::PROGRAM_ID,
+        );
+        let (tick_array_2_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_2.to_string().as_bytes()],
+            &OrcaWhirlpool::PROGRAM_ID,
+        );
+
+        // Derive oracle PDA
+        let (oracle_key, _) = Pubkey::find_program_address(
+            &[b"oracle", pool_id.as_ref()],
+            &OrcaWhirlpool::PROGRAM_ID,
+        );
+
+        let program_id_key = OrcaWhirlpool::PROGRAM_ID;
+
+        // Fetch tick arrays (may not exist, use empty mock as fallback)
+        let tick_array_0_account = match rpc_client
+            .get_account(&SdkPubkey::try_from(tick_array_0_key.to_bytes().as_ref()).unwrap())
+            .await
+        {
+            Ok(acct) => account_to_account_info(tick_array_0_key, acct),
+            Err(_) => create_mock_account_info_with_data(
+                tick_array_0_key, program_id_key, Some(vec![0u8; 1000]),
+            ),
+        };
+        let tick_array_1_account = match rpc_client
+            .get_account(&SdkPubkey::try_from(tick_array_1_key.to_bytes().as_ref()).unwrap())
+            .await
+        {
+            Ok(acct) => account_to_account_info(tick_array_1_key, acct),
+            Err(_) => create_mock_account_info_with_data(
+                tick_array_1_key, program_id_key, Some(vec![0u8; 1000]),
+            ),
+        };
+        let tick_array_2_account = match rpc_client
+            .get_account(&SdkPubkey::try_from(tick_array_2_key.to_bytes().as_ref()).unwrap())
+            .await
+        {
+            Ok(acct) => account_to_account_info(tick_array_2_key, acct),
+            Err(_) => create_mock_account_info_with_data(
+                tick_array_2_key, program_id_key, Some(vec![0u8; 1000]),
+            ),
+        };
+        let oracle_account = match rpc_client
+            .get_account(&SdkPubkey::try_from(oracle_key.to_bytes().as_ref()).unwrap())
+            .await
+        {
+            Ok(acct) => account_to_account_info(oracle_key, acct),
+            Err(_) => create_mock_account_info_with_data(
+                oracle_key, program_id_key, Some(vec![0u8; 1000]),
+            ),
+        };
+
+        let program_id_account =
+            create_mock_account_info_with_data(program_id_key, system_program::id(), None);
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+        let vault_a_info = account_to_account_info(pool.token_vault_a, vault_a_account);
+        let vault_b_info = account_to_account_info(pool.token_vault_b, vault_b_account);
+        let token_a_info = account_to_account_info(pool.token_mint_a, token_a_account);
+        let token_b_info = account_to_account_info(pool.token_mint_b, token_b_account);
+
+        // Memo account (placeholder)
+        let memo_account = create_mock_account_info_with_data(
+            anchor_spl::associated_token::ID,
+            system_program::id(),
+            None,
+        );
+
+        // Accounts in IDX order (0-10)
+        vec![
+            program_id_account,         // 0: PROGRAM_ID_IDX
+            pool_id_account_info,       // 1: POOL_ID_IDX
+            vault_a_info,               // 2: VAULT_A_IDX
+            vault_b_info,               // 3: VAULT_B_IDX
+            token_a_info,               // 4: TOKEN_A_IDX
+            token_b_info,               // 5: TOKEN_B_IDX
+            oracle_account,             // 6: ORACLE_IDX
+            memo_account,               // 7: MEMO_IDX
+            tick_array_0_account,       // 8: TICK_ARRAY_0_IDX
+            tick_array_1_account,       // 9: TICK_ARRAY_1_IDX
+            tick_array_2_account,       // 10: TICK_ARRAY_2_IDX
+        ]
+    }
+
+    // ========== RaydiumAmm RPC Builder ==========
+
+    async fn build_test_scenario_raydium_amm(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use crate::programs::raydium_amm::state;
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch RaydiumAmm pool account");
+
+        assert!(
+            pool_account.data.len() >= state::AMM_INFO_SIZE,
+            "Pool data too short for RaydiumAmm"
+        );
+
+        let amm = state::AmmInfoFields::from_bytes(&pool_account.data);
+
+        // Read vault pubkeys from AmmInfo (coin_vault at offset 336, pc_vault at offset 368)
+        let coin_vault_key =
+            Pubkey::try_from(&pool_account.data[336..368]).unwrap();
+        let pc_vault_key =
+            Pubkey::try_from(&pool_account.data[368..400]).unwrap();
+
+        eprintln!("RaydiumAmm pool: {}", pool_id);
+        eprintln!("  coin_vault: {}", coin_vault_key);
+        eprintln!("  pc_vault: {}", pc_vault_key);
+        eprintln!("  coin_mint: {}", amm.coin_vault_mint);
+        eprintln!("  pc_mint: {}", amm.pc_vault_mint);
+
+        // Fetch vault accounts
+        let coin_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(coin_vault_key.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch coin_vault");
+        let pc_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pc_vault_key.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch pc_vault");
+
+        // Fetch mint accounts
+        let coin_mint_account = rpc_client
+            .get_account(&SdkPubkey::try_from(amm.coin_vault_mint.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch coin_mint");
+        let pc_mint_account = rpc_client
+            .get_account(&SdkPubkey::try_from(amm.pc_vault_mint.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch pc_mint");
+
+        // Derive authority PDA
+        let authority_key = Pubkey::create_program_address(
+            &[b"amm authority", &[amm.nonce]],
+            &RaydiumAmm::PROGRAM_ID,
+        )
+        .expect("Failed to derive RaydiumAmm authority PDA");
+
+        // Fetch open orders account
+        let open_orders_account = rpc_client
+            .get_account(&SdkPubkey::try_from(amm.open_orders.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch open_orders");
+
+        let program_id_account = create_mock_account_info_with_data(
+            RaydiumAmm::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+        let coin_vault_info = account_to_account_info(coin_vault_key, coin_vault_account);
+        let pc_vault_info = account_to_account_info(pc_vault_key, pc_vault_account);
+        let coin_mint_info = account_to_account_info(amm.coin_vault_mint, coin_mint_account);
+        let pc_mint_info = account_to_account_info(amm.pc_vault_mint, pc_mint_account);
+        let authority_account =
+            create_mock_account_info_with_data(authority_key, system_program::id(), None);
+        let open_orders_info = account_to_account_info(amm.open_orders, open_orders_account);
+
+        // Accounts in IDX order (0-7)
+        vec![
+            program_id_account,     // 0: PROGRAM_ID_IDX
+            pool_id_account_info,   // 1: POOL_ID_IDX
+            coin_vault_info,        // 2: COIN_VAULT_IDX
+            pc_vault_info,          // 3: PC_VAULT_IDX
+            coin_mint_info,         // 4: COIN_TOKEN_IDX
+            pc_mint_info,           // 5: PC_TOKEN_IDX
+            authority_account,      // 6: AUTHORITY_IDX
+            open_orders_info,       // 7: OPEN_ORDERS_IDX
+        ]
+    }
+
+    // ========== RaydiumCLMM RPC Builder ==========
+
+    async fn build_test_scenario_raydium_clmm(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use crate::programs::raydium_clmm::states::{PoolStateSimple, tick_array::{TickArrayState, TICK_ARRAY_SIZE}};
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch RaydiumCLMM pool account");
+
+        let pool_state_size = std::mem::size_of::<PoolStateSimple>();
+        let pool: PoolStateSimple =
+            bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
+
+        eprintln!("RaydiumCLMM pool: {}", pool_id);
+        eprintln!("  token_mint_0: {}", pool.token_mint_0);
+        eprintln!("  token_mint_1: {}", pool.token_mint_1);
+
+        // Fetch vault, mint, config, and observation accounts
+        let vault_0_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_vault_0.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch vault_0");
+        let vault_1_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_vault_1.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch vault_1");
+        let mint_0_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_mint_0.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_mint_0");
+        let mint_1_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_mint_1.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_mint_1");
+        let amm_config_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.amm_config.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch amm_config");
+        let observation_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.observation_key.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch observation");
+
+        // Derive tick array PDAs
+        let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
+        let current_start_index =
+            TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
+        let tick_array_start_indices =
+            [current_start_index, current_start_index - ticks_in_array];
+
+        let mut tick_array_infos = Vec::new();
+        for &start_index in &tick_array_start_indices {
+            let (tick_array_pda, _) = Pubkey::find_program_address(
+                &[
+                    b"tick_array",
+                    pool_id.as_ref(),
+                    &start_index.to_be_bytes(),
+                ],
+                &RaydiumCLMM::PROGRAM_ID,
+            );
+            let tick_array_account = rpc_client
+                .get_account(&SdkPubkey::try_from(tick_array_pda.to_bytes().as_ref()).unwrap())
+                .await
+                .expect(&format!(
+                    "Failed to fetch tick_array for start_index {}",
+                    start_index
+                ));
+            tick_array_infos.push(account_to_account_info(tick_array_pda, tick_array_account));
+        }
+
+        let program_id_account = create_mock_account_info_with_data(
+            RaydiumCLMM::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+        let vault_0_info = account_to_account_info(pool.token_vault_0, vault_0_account);
+        let vault_1_info = account_to_account_info(pool.token_vault_1, vault_1_account);
+        let token_0_info = account_to_account_info(pool.token_mint_0, mint_0_account);
+        let token_1_info = account_to_account_info(pool.token_mint_1, mint_1_account);
+        let amm_config_info = account_to_account_info(pool.amm_config, amm_config_account);
+        let observation_info = account_to_account_info(pool.observation_key, observation_account);
+
+        // Accounts in IDX order (0-9, then tick arrays from IDX 10+)
+        let mut accounts = vec![
+            program_id_account,     // 0: PROGRAM_ID_IDX
+            pool_id_account_info,   // 1: POOL_ID_IDX
+            vault_0_info,           // 2: VAULT_0_IDX
+            vault_1_info,           // 3: VAULT_1_IDX
+            token_0_info,           // 4: TOKEN_0_IDX
+            token_1_info,           // 5: TOKEN_1_IDX
+            amm_config_info,        // 6: AMM_CONFIG_IDX
+            observation_info,       // 7: OBSERVATION_IDX
+        ];
+        // Add tick array accounts (IDX 8+)
+        accounts.extend(tick_array_infos);
+
+        accounts
+    }
+
+    // ========== RaydiumCPMM RPC Builder ==========
+
+    async fn build_test_scenario_raydium_cpmm(
+        rpc_client: &RpcClient,
+        pool_id: Pubkey,
+    ) -> Vec<AccountInfo<'static>> {
+        use crate::programs::raydium_cpmm::states::PoolState;
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+
+        let sdk_pool_id =
+            SdkPubkey::try_from(pool_id.to_bytes().as_ref()).expect("Failed to convert Pubkey");
+        let pool_account = rpc_client
+            .get_account(&sdk_pool_id)
+            .await
+            .expect("Failed to fetch RaydiumCPMM pool account");
+
+        // Parse pool state (skip 8-byte Anchor discriminator)
+        let pool_state_size = PoolState::LEN - 8;
+        let pool: PoolState =
+            bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
+
+        eprintln!("RaydiumCPMM pool: {}", pool_id);
+        eprintln!("  token_0_mint: {}", pool.token_0_mint);
+        eprintln!("  token_1_mint: {}", pool.token_1_mint);
+        eprintln!("  token_0_vault: {}", pool.token_0_vault);
+        eprintln!("  token_1_vault: {}", pool.token_1_vault);
+
+        // Fetch vault, mint, and config accounts
+        let vault_0_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_0_vault.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_0_vault");
+        let vault_1_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_1_vault.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_1_vault");
+        let mint_0_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_0_mint.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_0_mint");
+        let mint_1_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.token_1_mint.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch token_1_mint");
+        let amm_config_account = rpc_client
+            .get_account(&SdkPubkey::try_from(pool.amm_config.to_bytes().as_ref()).unwrap())
+            .await
+            .expect("Failed to fetch amm_config");
+
+        let program_id_account = create_mock_account_info_with_data(
+            RaydiumCPMM::PROGRAM_ID,
+            system_program::id(),
+            None,
+        );
+        let pool_id_account_info = account_to_account_info(pool_id, pool_account);
+        let base_vault_info = account_to_account_info(pool.token_0_vault, vault_0_account);
+        let quote_vault_info = account_to_account_info(pool.token_1_vault, vault_1_account);
+        let base_token_info = account_to_account_info(pool.token_0_mint, mint_0_account);
+        let quote_token_info = account_to_account_info(pool.token_1_mint, mint_1_account);
+        let amm_config_info = account_to_account_info(pool.amm_config, amm_config_account);
+
+        // Accounts in IDX order (0-6, matching inline test pattern)
+        vec![
+            program_id_account,     // 0: PROGRAM_ID_IDX
+            pool_id_account_info,   // 1: POOL_ID_IDX
+            base_vault_info,        // 2: BASE_VAULT_IDX
+            quote_vault_info,       // 3: QUOTE_VAULT_IDX
+            base_token_info,        // 4: BASE_TOKEN_IDX
+            quote_token_info,       // 5: QUOTE_TOKEN_IDX
+            amm_config_info,        // 6: AMM_CONFIG_IDX
+        ]
+    }
+
     /// Build pool accounts from a PoolTestConfig, dispatching to the right builder.
     async fn build_pool_accounts(
         rpc_client: &RpcClient,
@@ -3141,27 +3795,149 @@ mod tests {
                     .await
                 }
             }
+            PoolTestConfig::MeteoraDammV1 { pool_id, .. } => {
+                build_test_scenario_meteora_damm_v1(rpc_client, *pool_id).await
+            }
+            PoolTestConfig::MeteoraDammV2 { pool_id, .. } => {
+                build_test_scenario_meteora_damm_v2(rpc_client, *pool_id).await
+            }
+            PoolTestConfig::OrcaWhirlpool { pool_id, .. } => {
+                build_test_scenario_orca_whirlpool(rpc_client, *pool_id).await
+            }
+            PoolTestConfig::RaydiumAmm { pool_id, .. } => {
+                build_test_scenario_raydium_amm(rpc_client, *pool_id).await
+            }
+            PoolTestConfig::RaydiumCLMM { pool_id, .. } => {
+                build_test_scenario_raydium_clmm(rpc_client, *pool_id).await
+            }
+            PoolTestConfig::RaydiumCPMM { pool_id, .. } => {
+                build_test_scenario_raydium_cpmm(rpc_client, *pool_id).await
+            }
         }
     }
 
     /// Default Meteora DLMM pool configs for testing.
     fn default_meteora_dlmm_pools() -> Vec<PoolTestConfig> {
         let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
-        let token = Pubkey::from_str("8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump").unwrap();
+        let token = Pubkey::from_str("DMYNp65mub3i7LRpBdB66CgBAceLcQnv4gsWeCi6pump").unwrap();
+        let token2 = Pubkey::from_str("13akLGmNC2BnpJ1m1gNe8RaZZnSraw1jYHticgiMpump").unwrap();
+        
         vec![
             PoolTestConfig::MeteoraDlmm {
-                pool_id: Pubkey::from_str("HVbTXMBy8aFaNCMhS5uN3vrN3QoYysYE1iBo8RVutYVC")
+                pool_id: Pubkey::from_str("2AvqsCzg31jLQ3L2GRAbnq8BjumoAQVah7kuBEz1Ymq7")
                     .unwrap(),
                 base_mint: token,
                 quote_mint: sol,
             },
             PoolTestConfig::MeteoraDlmm {
-                pool_id: Pubkey::from_str("E6sr5aGsJwkmvxQxLWrLzo78wMFQm7JUn6aCTGpF4zmH")
+                pool_id: Pubkey::from_str("FhvAUjddRTofU92Bnmuo4cn878KKeo5jwcbtZYVQmEGc")
                     .unwrap(),
-                base_mint: token,
+                base_mint: token2,
                 quote_mint: sol,
             },
         ]
+    }
+
+    /// Default MeteoraDammV2 pool configs for testing.
+    #[allow(dead_code)]
+    fn default_meteora_damm_v2_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let token = Pubkey::from_str("4gfNpwo8LQtcgGrNmgWhuwfFhttgZ8Qb6QXN4Yz8BAGS").unwrap();
+        vec![PoolTestConfig::MeteoraDammV2 {
+            pool_id: Pubkey::from_str("2pBZiM73oiJq2RiW9LxTe4Mc52vmxxvoaT4mj5LcF9Fe")
+                .unwrap(),
+            base_mint: token,
+            quote_mint: sol,
+        }]
+    }
+
+    /// Default OrcaWhirlpool pool configs for testing.
+    #[allow(dead_code)]
+    fn default_orca_whirlpool_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let usdc = Pubkey::from_str("orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE").unwrap();
+        vec![PoolTestConfig::OrcaWhirlpool {
+            pool_id: Pubkey::from_str("HrvrhPtNq8JEGbi7dhMFuXy1Jms49nZrgC6GLjZ3cPyo")
+                .unwrap(),
+            base_mint: sol,
+            quote_mint: usdc,
+        }]
+    }
+
+    /// Default RaydiumAmm pool configs for testing.
+    #[allow(dead_code)]
+    fn default_raydium_amm_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let usdc = Pubkey::from_str("5Jr9hGmJgxBRjjF8XGcGgQzXUdsbpZNNMpigEv8Wpump").unwrap();
+        vec![PoolTestConfig::RaydiumAmm {
+            pool_id: Pubkey::from_str("HXH2Wp1NQ2iCo2RV5hQzmcirh7tvjsGWYKchY8ZjbbR7")
+                .unwrap(),
+            base_mint: sol,
+            quote_mint: usdc,
+        }]
+    }
+
+    /// Default RaydiumCLMM pool configs for testing.
+    #[allow(dead_code)]
+    fn default_raydium_clmm_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let usdc = Pubkey::from_str("orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE").unwrap();
+        vec![PoolTestConfig::RaydiumCLMM {
+            pool_id: Pubkey::from_str("3KzeAMn3S3RNgdLpr1nwVMdZ1E1Cq4QAv2UadQuKKZiP")
+                .unwrap(),
+            base_mint: sol,
+            quote_mint: usdc,
+        }]
+    }
+
+    /// Default RaydiumCPMM pool configs for testing.
+    #[allow(dead_code)]
+    fn default_raydium_cpmm_pools() -> Vec<PoolTestConfig> {
+        let sol = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+        let usdc = Pubkey::from_str("Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk").unwrap();
+        vec![PoolTestConfig::RaydiumCPMM {
+            pool_id: Pubkey::from_str("Q2sPHPdUWFMg7M7wwrQKLrn619cAucfRsmhVJffodSp")
+                .unwrap(),
+            base_mint: sol,
+            quote_mint: usdc,
+        }]
+    }
+
+    /// Default PumpAmm pool configs for testing.
+    #[allow(dead_code)]
+    fn default_pump_amm_pools() -> Vec<PoolTestConfig> {
+        vec![PoolTestConfig::PumpAmm {
+            pool_id: Pubkey::default(),
+            base_vault: Pubkey::from_str("CYSn6Y3DYGE2hHui5zQhubscwfNBTSCE3XmT6gMB1URZ").unwrap(),
+            quote_vault: Pubkey::from_str("4rHdNzJGt5wB1ikRM5ewhbCUUf8LtzVWiGnuJZND8LHd")
+                .unwrap(),
+            base_token: Pubkey::from_str("DMYNp65mub3i7LRpBdB66CgBAceLcQnv4gsWeCi6pump")
+                .unwrap(),
+            quote_token: Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
+        },
+        PoolTestConfig::PumpAmm {
+            pool_id: Pubkey::default(),
+            base_vault: Pubkey::from_str("91pG31K1YKW8Sgn1V9UeNhLXnuUKbvkYyypKFFwFRJu2").unwrap(),
+            quote_vault: Pubkey::from_str("AWBaowTWzDE6ki4K3HJQFECpBBUQHAVLTpVcXnk8Ae11")
+                .unwrap(),
+            base_token: Pubkey::from_str("13akLGmNC2BnpJ1m1gNe8RaZZnSraw1jYHticgiMpump")
+                .unwrap(),
+            quote_token: Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
+        }]
+    }
+
+    /// All default pool configs combined into one function.
+    #[allow(dead_code)]
+    fn default_all_pools() -> Vec<PoolTestConfig> {
+        let mut pools = Vec::new();
+        pools.extend(default_meteora_dlmm_pools());
+        // pools.extend(default_meteora_damm_v2_pools());
+        // pools.extend(default_orca_whirlpool_pools());
+        // pools.extend(default_raydium_amm_pools());
+        // pools.extend(default_raydium_clmm_pools());
+        // pools.extend(default_raydium_cpmm_pools());
+        pools.extend(default_pump_amm_pools());
+        pools
     }
 
     // Helper function to get clock from RPC
@@ -3222,7 +3998,12 @@ mod tests {
 
     async fn run_bot_iteration(mocked: Option<bool>, mode: u8, pools: &[PoolTestConfig]) {
         let mocked = mocked.unwrap_or(false);
-        let rpc_client = RpcClient::new(get_api_url());
+        let cluster = Cluster::Mainnet;
+        let rpc_client = if cluster == Cluster::Mainnet {
+            RpcClient::new(get_api_url())
+        } else {
+            RpcClient::new(cluster.url().to_string())
+        };
 
         // Collect unique mints from all pool configs
         let mut unique_mints: Vec<Pubkey> = Vec::new();
@@ -3272,7 +4053,7 @@ mod tests {
         let user_mint_2_token_account =
             create_mock_account_info(Pubkey::new_unique(), system_program_id, None);
 
-        let first_accounts = vec![
+        let mut accounts = vec![
             payer,
             mint_1,
             mint_1_token_program,
@@ -3283,7 +4064,7 @@ mod tests {
         ];
 
         // Build pool accounts dynamically from configs
-        let mut rest_accounts = Vec::new();
+        // let mut rest_accounts = Vec::new();
         let mut accounts_length = [0u32; 5];
 
         for (i, pool_config) in pools.iter().enumerate() {
@@ -3293,7 +4074,7 @@ mod tests {
             let pool_accounts =
                 build_pool_accounts(&rpc_client, pool_config, mocked).await;
             accounts_length[i] = pool_accounts.len() as u32;
-            rest_accounts.extend(pool_accounts);
+            accounts.extend(pool_accounts);
         }
 
         let data = InstructionData {
@@ -3308,7 +4089,7 @@ mod tests {
 
         eprintln!("\n=== Calling start_bot ===");
         let arbitrage_path =
-            start_bot(&first_accounts, &rest_accounts, data.clone(), clock.clone()).unwrap();
+            start_bot(&accounts, data.clone(), clock.clone()).unwrap();
         if arbitrage_path.is_none() {
             eprintln!("No arbitrage path found");
             return;
@@ -3399,6 +4180,12 @@ mod tests {
         handle.join().expect("Failed to join background thread");
     }
 
+
+    #[tokio::test]
+    async fn test_bot_real() {
+        let pools = default_all_pools();
+        run_bot_iteration(None, crate::arb_mode::MULTIPLE_TRADES, &pools).await;
+    }
     // ========== Mode 0: SINGLE_PAIR_MULTI_MARKET ==========
     // Tests: SOL -> TOKEN1 -> SOL (single token pair across multiple markets)
 
@@ -3442,5 +4229,37 @@ mod tests {
     async fn test_mode_2_multiple_trades_mocked() {
         let pools = default_meteora_dlmm_pools();
         run_bot_iteration(Some(true), crate::arb_mode::MULTIPLE_TRADES, &pools).await;
+    }
+
+    // ========== Per-Program Mode 0 Tests (RPC) ==========
+
+    #[tokio::test]
+    async fn test_mode_0_meteora_damm_v2_real() {
+        let pools = default_meteora_damm_v2_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_0_orca_whirlpool_real() {
+        let pools = default_orca_whirlpool_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_0_raydium_amm_real() {
+        let pools = default_raydium_amm_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_0_raydium_clmm_real() {
+        let pools = default_raydium_clmm_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
+    }
+
+    #[tokio::test]
+    async fn test_mode_0_raydium_cpmm_real() {
+        let pools = default_raydium_cpmm_pools();
+        run_bot_iteration(None, crate::arb_mode::SINGLE_PAIR_MULTI_MARKET, &pools).await;
     }
 }

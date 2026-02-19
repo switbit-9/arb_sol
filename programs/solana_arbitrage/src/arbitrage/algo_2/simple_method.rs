@@ -1,5 +1,5 @@
 use crate::arbitrage::base::{Edge, EdgeSide, Pool};
-use crate::programs::ProgramInstance;
+use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
 use std::collections::HashMap;
@@ -7,20 +7,13 @@ use std::collections::HashMap;
 /// Price scaling factor for fixed-point arithmetic (10^9 for 9 decimal precision)
 const PRICE_SCALE: u128 = 1_000_000_000;
 
-/// Calculate swap amount using fixed-point arithmetic to avoid float precision loss.
-/// Includes fee calculation: amount_out = amount_in * price * fee_factor
-/// Prices and fees are scaled to u128 integers for precise multiplication.
+/// Calculate swap amount using fixed-point arithmetic: amount_out = amount_in * price * fee_factor
 #[inline]
 fn calculate_swap_amount(edge: &Edge, amount_in: u64) -> u64 {
-    // Scale price and fee_factor to fixed-point integers
     let scaled_price = (edge.get_price() * PRICE_SCALE as f64) as u128;
-    let scaled_fee = (edge.fee_factor * PRICE_SCALE as f64) as u128;
-    // Perform multiplication in u128 space: amount * price * fee / SCALE^2
     let result = (amount_in as u128)
         .saturating_mul(scaled_price)
-        .saturating_mul(scaled_fee)
-        / (PRICE_SCALE * PRICE_SCALE);
-    // Clamp to u64 max
+        / PRICE_SCALE;
     result.min(u64::MAX as u128) as u64
 }
 
@@ -34,7 +27,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
     let start_token = config.start_token;
     let start_amount = config.max_amount_in;
     let min_profit = config.min_profit;
-
+    debug_eprintln!("start_amount: {:?}", start_amount);
     let mut max_profit = 0;
     let mut best_path: Option<(Vec<Edge>, i128, u128)> = None;
 
@@ -73,6 +66,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
                         }
 
                         if profit > max_profit {
+                            debug_eprintln!("profit: {:?}", profit);
                             max_profit = profit;
                             let running_edges = vec![(*edge1).clone(), (*edge2).clone()];
                             best_path = Some((running_edges, profit, final_amount));
@@ -84,14 +78,18 @@ pub fn find_cross_arbitrage_iterative<'info>(
     }
 
     if let Some((edges, profit, final_amount)) = &best_path {
-        let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
-        eprintln!(
-            "Best path: {:?}, pools: {:?}, profit {}",
-            edges, pool_ids, profit
-        );
+        #[cfg(any(test, feature = "debug"))]
+        {
+            let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
+            debug_eprintln!(
+                "Best path: {:?}, pools: {:?}, profit {}",
+                edges, pool_ids, profit
+            );
+        }
         Ok((edges.clone(), *profit, *final_amount))
     } else {
-        eprintln!("No profit found");
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit found");
         Ok((vec![], 0, 0))
     }
 }
@@ -162,28 +160,40 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                                 let profit = final_amount as i128 - start_amount as i128;
 
                                 // Debug logging
-                                // msg!("Triangular: profit={}, min_profit={}", profit, min_profit);
+                                #[cfg(any(test, feature = "debug"))]
+                                {
+                                debug_eprintln!(
+                                    "Triangular: profit={}, min_profit={}",
+                                    profit, min_profit
+                                );
+                                }
 
                                 if profit > max_profit && profit >= min_profit {
-                                    msg!(
+                                    #[cfg(any(test, feature = "debug"))]
+                                    {
+                                    debug_eprintln!(
                                         "Found Triangular Arb: profit={}, final={}, start={}, min_profit={}",
                                         profit,
                                         final_amount,
                                         start_amount,
                                         min_profit
                                     );
+                                    }
                                     max_profit = profit;
                                     let running_edges =
                                         vec![(*edge1).clone(), (*edge2).clone(), (*edge3).clone()];
                                     best_path = Some((running_edges, profit, final_amount));
                                 } else {
-                                    msg!(
+                                    #[cfg(any(test, feature = "debug"))]
+                                    {
+                                    debug_eprintln!(
                                         "Ignored Triangular Arb: profit={}, final={}, start={}, min_profit={}",
                                         profit,
                                         final_amount,
                                         start_amount,
                                         min_profit
                                     );
+                                    }
                                 }
                             }
                         }
@@ -194,14 +204,18 @@ pub fn find_triangular_arbitrage_iterative<'info>(
     }
 
     if let Some((edges, profit, final_amount)) = &best_path {
-        let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
-        eprintln!(
-            "Best path: {:?}, pools: {:?}, profit {}",
-            edges, pool_ids, profit
-        );
+        #[cfg(any(test, feature = "debug"))]
+        {
+            let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
+            debug_eprintln!(
+                "Best path: {:?}, pools: {:?}, profit {}",
+                edges, pool_ids, profit
+            );
+        }
         Ok((edges.clone(), *profit, *final_amount))
     } else {
-        eprintln!("No profit found");
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit found");
         Ok((vec![], 0, 0))
     }
 }
@@ -213,8 +227,8 @@ pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edg
     let price = prices.0;
     let inverse_price = prices.1;
 
-    // Get fee factor (1.0 - fee_rate) from the program
-    let fee_factor = program.get_fee_factor().unwrap_or(0.0);
+    // Get directional fee factors: (fee_a_to_b, fee_b_to_a)
+    let (fee_a_to_b, fee_b_to_a) = program.get_fee_factor().unwrap_or((0.0, 0.0));
 
     // Get vault accounts to extract mints
     let (base_mint, quote_mint) = program.get_mints();
@@ -225,23 +239,29 @@ pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edg
     let program_id = *program.get_id();
     let pool_id = *program.get_pool_id();
 
-    msg!(
-        "Gen Edges: {:?} Pool={} Base={} Quote={} P={} IP={} Fee={}",
+    #[cfg(any(test, feature = "debug"))]
+    {
+    debug_eprintln!("================================================");
+    debug_eprintln!(
+        "Gen Edges: {:?} Pool={} Base={} Quote={} P={} IP={} F={} IF={}",
         program_id,
         pool_id,
         base_mint,
         quote_mint,
         price,
         inverse_price,
-        1.0 - fee_factor
+        fee_a_to_b,
+        fee_b_to_a
     );
+    }
 
     let edge_1 = Edge::new(
         program_id,
         pool_id,
         EdgeSide::LeftToRight,
         price,
-        fee_factor,
+        fee_a_to_b,
+        fee_b_to_a,
         base_pool.clone(),
         quote_pool.clone(),
     );
@@ -250,7 +270,8 @@ pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edg
         pool_id,
         EdgeSide::RightToLeft,
         inverse_price,
-        fee_factor,
+        fee_b_to_a,
+        fee_a_to_b,
         quote_pool, // Move instead of clone
         base_pool,  // Move instead of clone
     );

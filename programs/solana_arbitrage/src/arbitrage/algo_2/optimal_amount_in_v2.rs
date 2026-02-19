@@ -1,6 +1,6 @@
 use crate::arbitrage::base::Edge;
 use crate::arbitrage::utils::find_instance_by_pool_id;
-use crate::programs::programs::ProgramInstance;
+use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::programs::SolarBError;
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
@@ -34,7 +34,6 @@ fn quick_profit_check<'info>(
     ];
 
     for &amount in &test_points {
-        eprint!("amount: {:?} \n", amount);
         let profit = simulate_path(
             accounts,
             program_1,
@@ -58,15 +57,14 @@ fn quick_profit_check<'info>(
 #[inline]
 fn simulate_path<'info>(
     accounts: &[AccountInfo<'info>],
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     amount_in: u64,
     clock: Clock,
 ) -> Result<i128> {
     let token_out = program_1.swap_base_in(accounts, input_mint, amount_in, clock.clone())?;
-    eprint!("token_out: {:?} \n", token_out);
     let sol_out = program_2.swap_base_in(accounts, middle_mint, token_out, clock)?;
 
     Ok(sol_out as i128 - amount_in as i128)
@@ -76,7 +74,7 @@ fn simulate_path<'info>(
 #[inline]
 fn simulate_amm_to_amm_path<'info>(
     accounts: &[AccountInfo<'info>],
-    program_1: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
     program_2: &ProgramInstance<'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
@@ -140,15 +138,15 @@ fn golden_section_search<'info>(
     )
     .unwrap_or(i128::MIN);
 
-    eprintln!(
-        "Golden search initial: a={}, b={}, c={}, d={}, fc={}, fd={}",
-        a, b, c, d, fc, fd
-    );
+    // debug_eprintln!(
+    //     "Golden search initial: a={}, b={}, c={}, d={}, fc={}, fd={}",
+    //     a, b, c, d, fc, fd
+    // );
 
     // Early exit if both initial points are below profit threshold
     // Simplified: fc < 0 && fc < MIN_PROFIT_THRESHOLD is redundant since MIN_PROFIT_THRESHOLD > 0
     if fc < MIN_PROFIT_THRESHOLD && fd < MIN_PROFIT_THRESHOLD {
-        eprintln!("Early exit: both initial points unprofitable");
+        // debug_eprintln!("Early exit: both initial points unprofitable");
         return Ok((if fc > fd { c } else { d }, fc.max(fd)));
     }
 
@@ -159,7 +157,7 @@ fn golden_section_search<'info>(
         // Avoid unused warning when debug logging is disabled
         let _ = iteration;
         if b - a < CONVERGENCE_THRESHOLD {
-            eprintln!("Converged after {} iterations", iteration);
+            // debug_eprintln!("Converged after {} iterations", iteration);
             break;
         }
 
@@ -202,7 +200,7 @@ fn golden_section_search<'info>(
         if current_best < last_best {
             consecutive_decreases += 1;
             if consecutive_decreases >= 3 {
-                eprintln!("Early exit: profit decreasing for 3 iterations");
+                // debug_eprintln!("Early exit: profit decreasing for 3 iterations");
                 break;
             }
         } else {
@@ -223,13 +221,16 @@ fn golden_section_search<'info>(
         clock.clone(),
     )?;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    {
+    debug_eprintln!(
         "Golden search result: optimal={} ({} SOL), profit={} ({} SOL)",
         optimal,
         optimal as f64 / 1_000_000_000.0,
         profit,
         profit as f64 / 1_000_000_000.0
     );
+    }
 
     Ok((optimal, profit))
 }
@@ -246,27 +247,33 @@ fn hybrid_search<'info>(
     max_amount: u64,
     clock: &Clock,
 ) -> Result<(u64, i128)> {
-    // Quick check: is this even potentially profitable?
-    let (is_profitable, hint_amount) = quick_profit_check(
-        accounts,
-        program_1,
-        program_2,
-        input_mint,
-        middle_mint,
-        min_amount,
-        max_amount,
-        clock,
-    );
+    // // Quick check: is this even potentially profitable?
+    // let (is_profitable, hint_amount) = quick_profit_check(
+    //     accounts,
+    //     program_1,
+    //     program_2,
+    //     input_mint,
+    //     middle_mint,
+    //     min_amount,
+    //     max_amount,
+    //     clock,
+    // );
 
-    eprintln!(
-        "Quick check: is_profitable={}, hint_amount={}",
-        is_profitable, hint_amount
-    );
+    // #[cfg(any(test, feature = "debug"))]
+    // {
+    //     debug_eprintln!(
+    //         "Quick check: is_profitable={}, hint_amount={}",
+    //         is_profitable, hint_amount
+    //     );
+    // }
 
-    if !is_profitable {
-        eprintln!("Quick check: not profitable, skipping full search");
-        return Ok((hint_amount, i128::MIN));
-    }
+    // if !is_profitable {
+    //     #[cfg(any(test, feature = "debug"))]
+    //     {
+    //         debug_eprintln!("Quick check: not profitable, skipping full search");
+    //     }
+    //     return Ok((hint_amount, i128::MIN));
+    // }
 
     // Phase 1: Reduced grid search - only 6 points instead of 10
     let grid_points = [0.05, 0.20, 0.40, 0.60, 0.80, 1.0];
@@ -288,14 +295,17 @@ fn hybrid_search<'info>(
         )
         .unwrap_or(i128::MIN);
 
-        eprintln!(
-            "Grid search [{:.0}%]: amount={} ({} SOL), profit={} ({} SOL)",
-            fraction * 100.0,
-            amount,
-            amount as f64 / 1_000_000_000.0,
-            profit,
-            profit as f64 / 1_000_000_000.0
-        );
+        #[cfg(any(test, feature = "debug"))]
+        {
+        debug_eprintln!(
+                "Grid search [{:.0}%]: amount={} ({} SOL), profit={} ({} SOL)",
+                fraction * 100.0,
+                amount,
+                amount as f64 / 1_000_000_000.0,
+                profit,
+                profit as f64 / 1_000_000_000.0
+            );
+        }
 
         if profit > best_profit {
             best_profit = profit;
@@ -304,15 +314,21 @@ fn hybrid_search<'info>(
         }
     }
 
-    eprintln!(
-        "Grid search best: amount={}, profit={}",
-        best_amount, best_profit
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {   
+        debug_eprintln!(
+            "Grid search best: amount={}, profit={}",
+            best_amount, best_profit
+        );
+    }
 
     // OPTIMIZATION: Skip golden section refinement if profit is too low
     // This saves significant CU for unprofitable paths
     if best_profit < MIN_PROFIT_THRESHOLD {
-        eprintln!("Profit below threshold, skipping golden section refinement");
+        #[cfg(any(test, feature = "debug"))]
+        {
+            debug_eprintln!("Profit below threshold, skipping golden section refinement");
+        }
         return Ok((best_amount, best_profit));
     }
 
@@ -331,7 +347,7 @@ fn hybrid_search<'info>(
 
     // Only refine if the range is large enough to matter
     // if upper_bound - lower_bound < CONVERGENCE_THRESHOLD {
-    //     eprintln!("Range too small, skipping golden section refinement");
+    //     debug_eprintln!("Range too small, skipping golden section refinement");
     //     return Ok((best_amount, best_profit));
     // }
 
@@ -364,22 +380,24 @@ pub fn find_optimal_amount<'info>(
     accounts: &[AccountInfo<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
-    eprintln!("");
-    eprintln!("");
-    eprintln!(
-        "========== GRID SEARCH {:?} -> {:?} ==========",
-        program_1.get_id(),
-        program_2.get_id()
-    );
     let (program_1_max_in, program_1_max_out) = program_1
         .get_max_amounts_in_out(input_mint)
         .unwrap_or((0, 0));
     let (program_2_max_in, program_2_max_out) = program_2
         .get_max_amounts_in_out(middle_mint)
         .unwrap_or((0, 0));
+    
+    debug_eprintln!("program_1_max_in: {:?}", program_1_max_in);
+    debug_eprintln!("program_1_max_out: {:?}", program_1_max_out);
+    debug_eprintln!("program_2_max_in: {:?}", program_2_max_in);
+    debug_eprintln!("program_2_max_out: {:?}", program_2_max_out);
 
     // Cap program_1 input so its output does not exceed program_2's capacity.
     let max_in = if program_1_max_out > program_2_max_in && program_2_max_in > 0 {
+        #[cfg(any(test, feature = "debug"))]
+        {
+        debug_eprintln!("enter max out: {:?}", program_1_max_out);
+        }
         program_1.swap_base_out(
             accounts,
             middle_mint,
@@ -389,37 +407,37 @@ pub fn find_optimal_amount<'info>(
     } else {
         program_1_max_in
     };
-    eprint!("max_in: {:?}", max_in as f64 / 1_000_000_000.0);
+    // msg!("max_in: {:?}", max_in as f64 / 1_000_000_000.0);
 
     let max_amount = config.max_amount_in.min(max_in);
     let min_amount = MIN_SEARCH_AMOUNT;
     // let max_amount = 1323;
-    eprintln!(
-        "PROGRAM 1: MAX SOL IN {:?} -> MAX TOKEN OUT {:?}",
-        program_1_max_in as f64 / 1_000_000_000.0,
-        program_1_max_out as f64 / 1_000_000.0
-    );
-    eprintln!(
-        "PROGRAM 2: MAX TOKEN IN {:?} -> MAX SOL OUT {:?}",
-        program_2_max_in as f64 / 1_000_000.0,
-        program_2_max_out as f64 / 1_000_000_000.0
-    );
+    #[cfg(test)]
+    {
+        debug_eprintln!(
+            "PROGRAM 1: MAX SOL IN {:?} -> MAX TOKEN OUT {:?}",
+            program_1_max_in as f64 / 1_000_000_000.0,
+            program_1_max_out as f64 / 1_000_000.0
+        );
+        debug_eprintln!(
+            "PROGRAM 2: MAX TOKEN IN {:?} -> MAX SOL OUT {:?}",
+            program_2_max_in as f64 / 1_000_000.0,
+            program_2_max_out as f64 / 1_000_000_000.0
+        );
+        debug_eprintln!("max_amount: {:?}", max_amount as f64 / 1_000_000_000.0);
+    }
 
-    eprint!("max_amount: {:?}", max_amount);
+    // eprint!("max_amount: {:?}", max_amount);
 
-    eprintln!(
-        "Search bounds: min={} ({} SOL), max={} ({} SOL)",
-        min_amount,
-        min_amount as f64 / 1_000_000_000.0,
-        max_amount,
-        max_amount as f64 / 1_000_000_000.0
-    );
+    // debug_eprintln!(
+    //     "Search bounds: min={} ({} SOL), max={} ({} SOL)",
+    //     min_amount,
+    //     min_amount as f64 / 1_000_000_000.0,
+    //     max_amount,
+    //     max_amount as f64 / 1_000_000_000.0
+    // );
 
     if max_amount <= min_amount {
-        eprintln!(
-            "Search bounds: max <= min, returning 0, {}, {}",
-            min_amount, max_amount
-        );
         return Ok((0, 0));
     }
 
@@ -433,14 +451,7 @@ pub fn find_optimal_amount<'info>(
         max_amount,
         &config.clock,
     )?;
-
-    eprintln!(
-        "Optimal amount: {} ({} SOL), profit={} ({} SOL)",
-        optimal_amount,
-        optimal_amount as f64 / 1_000_000_000.0,
-        profit,
-        profit as f64 / 1_000_000_000.0
-    );
+    debug_eprintln!("optimal_amount: {:?}", optimal_amount);
     Ok((optimal_amount, profit))
 }
 

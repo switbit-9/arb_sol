@@ -68,7 +68,8 @@ pub fn find_optimal_amount_in<'info>(
 
     let max_amount_in = config.max_amount_in;
 
-    eprintln!("PATH: {:?} -> {:?}", first_program, second_program);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("PATH: {:?} -> {:?}", first_program, second_program);
 
     let first_kind = match (is_first_dlmm, is_first_amm, is_first_damm2) {
         (true, false, false) => MarketKind::Dlmm,
@@ -86,7 +87,8 @@ pub fn find_optimal_amount_in<'info>(
 
     let optimal_amount_in: u64 = match (first_kind, second_kind) {
         (MarketKind::Dlmm, MarketKind::Dlmm) => {
-            eprintln!("PATH: DLMM -> DLMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DLMM -> DLMM");
             // Run twice (per user request) and return the second result
             find_optimal_amount_in_dlmm_to_dlmm(
                 first_instance,
@@ -97,7 +99,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Dlmm, MarketKind::Amm) => {
-            eprintln!("PATH: DLMM -> AMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DLMM -> AMM");
             find_optimal_amount_dlmm_to_amm_v2(
                 first_instance,
                 second_instance,
@@ -107,7 +110,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Dlmm, MarketKind::Damm2) => {
-            eprintln!("PATH: DLMM -> DAMM V2");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DLMM -> DAMM V2");
             find_optimal_amount_dlmm_to_damm2_v2(
                 first_instance,
                 second_instance,
@@ -117,7 +121,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Amm, MarketKind::Dlmm) => {
-            eprintln!("PATH: AMM -> DLMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: AMM -> DLMM");
             find_optimal_amount_amm_to_dlmm_v2(
                 first_instance,
                 second_instance,
@@ -127,7 +132,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Amm, MarketKind::Amm) => {
-            eprintln!("PATH: AMM -> AMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: AMM -> AMM");
             find_optimal_amount_amm_to_amm(
                 first_instance,
                 second_instance,
@@ -137,7 +143,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Amm, MarketKind::Damm2) => {
-            eprintln!("PATH: AMM -> DAMM V2");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: AMM -> DAMM V2");
             find_optimal_amount_amm_to_damm2(
                 first_instance,
                 second_instance,
@@ -147,7 +154,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Damm2, MarketKind::Dlmm) => {
-            eprintln!("PATH: DAMM V2 -> DLMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DAMM V2 -> DLMM");
             find_optimal_amount_damm2_to_dlmm_v2(
                 first_instance,
                 second_instance,
@@ -157,7 +165,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Damm2, MarketKind::Amm) => {
-            eprintln!("PATH: DAMM V2 -> AMM");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DAMM V2 -> AMM");
             find_optimal_amount_damm2_to_amm(
                 first_instance,
                 second_instance,
@@ -167,7 +176,8 @@ pub fn find_optimal_amount_in<'info>(
             )?
         }
         (MarketKind::Damm2, MarketKind::Damm2) => {
-            eprintln!("PATH: DAMM V2 -> DAMM V2");
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("PATH: DAMM V2 -> DAMM V2");
             find_optimal_amount_damm2_to_damm2(
                 first_instance,
                 second_instance,
@@ -182,7 +192,8 @@ pub fn find_optimal_amount_in<'info>(
     let token_out =
         first_instance.swap_base_in(accounts, input_mint, optimal_amount_in, clock.clone())?;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         ": {} input -> {} middle",
         optimal_amount_in as f64 / 1_000_000_000.0,
         token_out as f64 / 1_000_000.0
@@ -191,7 +202,8 @@ pub fn find_optimal_amount_in<'info>(
     let amount_out =
         second_instance.swap_base_in(accounts, middle_mint, token_out, clock.clone())?;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "AMM: {} middle -> {} output",
         token_out as f64 / 1_000_000.0,
         amount_out as f64 / 1_000_000_000.0
@@ -200,10 +212,13 @@ pub fn find_optimal_amount_in<'info>(
     let profit: i64 = amount_out as i64 - optimal_amount_in as i64;
 
     if profit > 0 {
-        let _profit = profit as f64 / 1_000_000_000.0;
-        let _optimal_amount_in = optimal_amount_in as f64 / 1_000_000_000.0;
-        let pct: f64 = (_profit as f64 / _optimal_amount_in as f64) * 100.0;
-        eprintln!("✅ PROFIT {_optimal_amount_in} SOL -> {amount_out} SOL => {profit} ({_profit} SOL) {pct:.4}%");
+        #[cfg(any(test, feature = "debug"))]
+        {
+            let _profit = profit as f64 / 1_000_000_000.0;
+            let _optimal_amount_in = optimal_amount_in as f64 / 1_000_000_000.0;
+            let pct: f64 = (_profit as f64 / _optimal_amount_in as f64) * 100.0;
+            debug_eprintln!("✅ PROFIT {_optimal_amount_in} SOL -> {amount_out} SOL => {profit} ({_profit} SOL) {pct:.4}%");
+        }
         let arbitrage_path = ArbitragePath {
             edges: edges.to_vec(),
             profit: profit as i128,
@@ -213,7 +228,8 @@ pub fn find_optimal_amount_in<'info>(
         // #[cfg(test)]
         // write_results_to_file(&[Some(arbitrage_path.clone())]);
     } else {
-        eprintln!("❌ NO PROFIT");
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("❌ NO PROFIT");
     }
 
     Ok(optimal_amount_in)

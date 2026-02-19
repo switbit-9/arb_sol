@@ -5,11 +5,14 @@ package_manager = "yarn"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-solana_arbitrage = "DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT"
+# [programs.localnet]
+# solana_arbitrage = "DeMCgAkmzY9gaedKgGaLkZqcmQ5QJzfcjerRkxBv7JVT"
 
-[programs.devnet]
-solana_arbitrage = "Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF"
+# [programs.devnet]
+# solana_arbitrage = "Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF"
+
+[programs.mainnet]
+solana_arbitrage = "3WyXBdrDoYLVDfzasfFTpzn64PmV9UKwRTFkqXsfKoK8"
 
 [deploy]
 # This is where you specify the length for the buffer
@@ -19,7 +22,7 @@ max_len = 700000
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "https://mainnet.helius-rpc.com/?api-key=542008d2-ab51-431c-8fc9-a35196840c40"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

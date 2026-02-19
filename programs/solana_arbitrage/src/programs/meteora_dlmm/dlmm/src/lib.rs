@@ -1,6 +1,15 @@
 use anchor_lang::prelude::declare_program;
 use anyhow::*;
 
+macro_rules! debug_eprintln {
+    ($($arg:tt)*) => {{
+        #[cfg(any(test, feature = "debug"))]
+        {
+            eprintln!($($arg)*);
+        }
+    }};
+}
+
 declare_program!(dlmm);
 
 use dlmm::accounts::*;

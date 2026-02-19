@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
 
 use crate::arbitrage::algo_2::utils::*;
-use crate::programs::programs::ProgramInstance;
 use crate::programs::programs::ProgramMeta;
 /// Optimal amount for Constant Product AMM → DLMM arbitrage
 ///
@@ -29,8 +28,8 @@ use crate::programs::programs::ProgramMeta;
 /// # Returns
 /// Optimal input amount, or error if no arbitrage opportunity
 pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -38,7 +37,8 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     let pump = extract_pump(program_1)?;
     let dlmm = extract_dlmm(program_2)?;
     // Constant Product AMM - use reserves-based formula
-    eprintln!("AMM Type: Constant Product (PumpAmm)");
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("AMM Type: Constant Product (PumpAmm)");
     // Get DLMM price for input_mint → middle_mint direction
     let (dlmm_price, dlmm_inverse_price) = dlmm.get_prices()?;
 
@@ -55,7 +55,8 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     let dlmm_max_output = dlmm.get_max_amount_out(input_mint)?;
     let dlmm_max_input = dlmm.get_max_amount_in(middle_mint)?;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "DLMM: price={}, fee_factor={}, max_output={}",
         dlmm_price_for_input, dlmm_fee, dlmm_max_output
     );
@@ -68,7 +69,8 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     };
     let cp_fee = 1.0 - pump.fee;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CP AMM reserves: in={}, out={}, fee_factor={}",
         cp_reserve_in, cp_reserve_out, cp_fee
     );
@@ -83,13 +85,19 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     // Arbitrage exists when rate > 1
     let effective_rate = (y / x) * f_cp * p * f_dlmm;
 
-    eprintln!(
-        "CP reserves: x={}, y={}, fee={}, DLMM price={}, fee={}, effective_rate={}",
-        x, y, f_cp, p, f_dlmm, effective_rate
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "CP reserves: x={}, y={}, fee={}, DLMM price={}, fee={}, effective_rate={}",
+            x, y, f_cp, p, f_dlmm, effective_rate
+        );
+
+        if effective_rate <= 1.0 {
+            debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        }
+    }
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
         // return Err(error!(SolarBError::NoProfitFound));
     }
 
@@ -97,13 +105,15 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     let sqrt_term = (y * p * f_dlmm * f_cp * x).sqrt();
     let optimal = (sqrt_term - x) / f_cp;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "Optimal calculation: sqrt_term={}, optimal={}",
         sqrt_term, optimal
     );
 
     if optimal <= 0.0 {
-        eprintln!("No profit: optimal {} <= 0", optimal);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit: optimal {} <= 0", optimal);
         // return Err(error!(SolarBError::NoProfitFound));
     }
 
@@ -111,7 +121,8 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
     // CP output formula: y * input * f_cp / (x + input * f_cp)
     let cp_output_at_optimal = y * optimal * f_cp / (x + optimal * f_cp);
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CP output at optimal: {}, DLMM max input: {}",
         cp_output_at_optimal, dlmm_max_input
     );
@@ -124,11 +135,13 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
         // => input = dlmm_max_input * x / (f_cp * (y - dlmm_max_input))
         let max_mid = dlmm_max_input as f64;
         if y <= max_mid {
-            eprintln!("No profit: y {} <= max_mid {}", y, max_mid);
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!("No profit: y {} <= max_mid {}", y, max_mid);
             // return Err(error!(SolarBError::NoProfitFound));
         }
         let constrained = max_mid * x / (f_cp * (y - max_mid));
-        eprintln!(
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!(
             "Constrained by DLMM capacity: {} -> {}",
             optimal, constrained
         );
@@ -169,8 +182,8 @@ pub fn find_optimal_amount_amm_to_dlmm_v2<'info>(
 /// # Returns
 /// Optimal input amount, or error if no arbitrage opportunity
 pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -194,15 +207,17 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     let dlmm_max_output = dlmm.get_max_amount_out(input_mint)?;
     let dlmm_max_input = dlmm.get_max_amount_in(input_mint)?;
 
-    eprintln!(
-        "DLMM: SOL IN ={}, TOKEN OUT={}",
-        dlmm_max_input as f64 / 1_000_000_000.0, dlmm_max_output as f64 / 1_000_000.0
-    );
-
-    eprintln!(
-        "DLMM: price={}, fee_factor={}, max_output={}",
-        dlmm_price_for_input, dlmm_fee, dlmm_max_output
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "DLMM: SOL IN ={}, TOKEN OUT={}",
+            dlmm_max_input as f64 / 1_000_000_000.0, dlmm_max_output as f64 / 1_000_000.0
+        );
+        debug_eprintln!(
+            "DLMM: price={}, fee_factor={}, max_output={}",
+            dlmm_price_for_input, dlmm_fee, dlmm_max_output
+        );
+    }
 
     let (base_vault_amount, quote_vault_amount) = pump.get_vault_amounts()?;
     let (cp_reserve_in, cp_reserve_out) = if middle_mint == pump.base_token_pk {
@@ -212,7 +227,8 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     };
     let cp_fee = 1.0 - pump.fee;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CP AMM reserves: in={}, out={}, fee_factor={}",
         cp_reserve_in, cp_reserve_out, cp_fee
     );
@@ -230,13 +246,15 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     // Arbitrage exists when rate > 1
     let effective_rate = m * (y / x) * f_cp;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "DLMM price={}, fee={}, CP reserves: x={}, y={}, fee={}, effective_rate={}",
         p, f_dlmm, x, y, f_cp, effective_rate
     );
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
         // return Err(error!(SolarBError::NoProfitFound));
     }
 
@@ -254,20 +272,23 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     let sqrt_term = (y * m * f_cp * x).sqrt();
     let optimal_input = (sqrt_term - x) / (m * f_cp);
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "Optimal calculation: sqrt_term={}, optimal_input={}",
         sqrt_term, optimal_input
     );
 
     if optimal_input <= 0.0 {
-        eprintln!("No profit: optimal_input {} <= 0", optimal_input);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit: optimal_input {} <= 0", optimal_input);
         // return Err(error!(SolarBError::NoProfitFound));
     }
 
     // Check DLMM constraint: DLMM output must not exceed max
     let dlmm_output_at_optimal = optimal_input * m;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "DLMM output at optimal: {}, DLMM max output: {}",
         dlmm_output_at_optimal, dlmm_max_output
     );
@@ -275,7 +296,8 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     let constrained_optimal = if dlmm_output_at_optimal > dlmm_max_output as f64 {
         // Reduce input so DLMM output equals max
         let constrained = dlmm_max_output as f64 / m;
-        eprintln!(
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!(
             "Constrained by DLMM capacity: {} -> {}",
             optimal_input, constrained
         );
@@ -285,7 +307,8 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
     };
 
     let final_amount = (constrained_optimal as u64).min(max_amount_in);
-    eprintln!("Final optimal amount: {}", final_amount);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Final optimal amount: {}", final_amount);
 
     Ok(final_amount)
 }
@@ -325,8 +348,8 @@ pub fn find_optimal_amount_dlmm_to_amm_v2<'info>(
 /// # Returns
 /// Optimal input amount, or error if no arbitrage opportunity
 pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -348,7 +371,8 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     let dlmm_fee = 1.0 - dlmm.fee_rate;
     let dlmm_max_input: u64 = dlmm.get_max_amount_in(middle_mint)?;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "DLMM: price={}, fee_factor={}, max_input={}",
         dlmm_price_for_middle, dlmm_fee, dlmm_max_input
     );
@@ -358,7 +382,8 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     let cl_fee = 0.9975; // MeteoraDammV2 uses 0.25% fee typically
     let input_is_base = input_mint == damm.base_token_pk;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CL AMM: L={}, √P={}, input_is_base={}",
         liquidity, sqrt_price, input_is_base
     );
@@ -376,14 +401,17 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     let x_virtual = l / sqrt_price;
     let y_virtual = l * sqrt_price;
 
-    eprintln!(
-        "CL AMM: L={}, √P={}, virtual_x={}, virtual_y={}, fee={}",
-        l, sqrt_price, x_virtual, y_virtual, f_cl
-    );
-    eprintln!(
-        "DLMM: price={}, fee={}, max_input={}",
-        p, f_dlmm, dlmm_max_input
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "CL AMM: L={}, √P={}, virtual_x={}, virtual_y={}, fee={}",
+            l, sqrt_price, x_virtual, y_virtual, f_cl
+        );
+        debug_eprintln!(
+            "DLMM: price={}, fee={}, max_input={}",
+            p, f_dlmm, dlmm_max_input
+        );
+    }
 
     // Based on input direction, determine which virtual reserve is in/out
     let (cp_reserve_in, cp_reserve_out) = if input_is_base {
@@ -398,32 +426,37 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     // effective_rate = (y/x) * f_cl * P * f_dlmm
     let effective_rate = (cp_reserve_out / cp_reserve_in) * f_cl * p * f_dlmm;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CL virtual reserves: in={}, out={}, effective_rate={}",
         cp_reserve_in, cp_reserve_out, effective_rate
     );
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Optimal input: (sqrt(y · P · f_dlmm · f_cl · x) - x) / f_cl
     let sqrt_term = (cp_reserve_out * p * f_dlmm * f_cl * cp_reserve_in).sqrt();
     let optimal = (sqrt_term - cp_reserve_in) / f_cl;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "Optimal calculation: sqrt_term={}, optimal={}",
         sqrt_term, optimal
     );
 
     if optimal <= 0.0 {
-        eprintln!("No profit: optimal {} <= 0", optimal);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit: optimal {} <= 0", optimal);
     }
 
     // Check DLMM constraint
     let cl_output_at_optimal = cp_reserve_out * optimal * f_cl / (cp_reserve_in + optimal * f_cl);
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CL output at optimal: {}, DLMM max input: {}",
         cl_output_at_optimal, dlmm_max_input
     );
@@ -431,13 +464,15 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     let constrained_optimal = if cl_output_at_optimal > dlmm_max_input as f64 {
         let max_mid = dlmm_max_input as f64;
         if cp_reserve_out <= max_mid {
-            eprintln!(
+            #[cfg(any(test, feature = "debug"))]
+            debug_eprintln!(
                 "No profit: reserve_out {} <= max_mid {}",
                 cp_reserve_out, max_mid
             );
         }
         let constrained = max_mid * cp_reserve_in / (f_cl * (cp_reserve_out - max_mid));
-        eprintln!(
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!(
             "Constrained by DLMM capacity: {} -> {}",
             optimal, constrained
         );
@@ -447,7 +482,8 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
     };
 
     let final_amount = (constrained_optimal as u64).min(max_amount_in);
-    eprintln!("Final optimal amount (CL→DLMM): {}", final_amount);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Final optimal amount (CL→DLMM): {}", final_amount);
 
     Ok(final_amount)
 }
@@ -474,15 +510,16 @@ pub fn find_optimal_amount_damm2_to_dlmm_v2<'info>(
 /// # Returns
 /// Optimal input amount, or error if no arbitrage opportunity
 pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
 ) -> Result<u64> {
     let dlmm = extract_dlmm(program_1)?;
     let damm = extract_damm2(program_2)?;
-    eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
     let liquidity = damm.pool.liquidity;
     let sqrt_price = damm.pool.sqrt_price;
     let cl_fee = 0.9975; // MeteoraDammV2 uses 0.25% fee typically
@@ -516,14 +553,17 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
     let x_virtual = l / sqrt_price;
     let y_virtual = l * sqrt_price;
 
-    eprintln!(
-        "DLMM: price={}, fee={}, max_output={}, multiplier={}",
-        p, f_dlmm, dlmm_max_output, m
-    );
-    eprintln!(
-        "CL AMM: L={}, √P={}, virtual_x={}, virtual_y={}, fee={}",
-        l, sqrt_price, x_virtual, y_virtual, f_cl
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "DLMM: price={}, fee={}, max_output={}, multiplier={}",
+            p, f_dlmm, dlmm_max_output, m
+        );
+        debug_eprintln!(
+            "CL AMM: L={}, √P={}, virtual_x={}, virtual_y={}, fee={}",
+            l, sqrt_price, x_virtual, y_virtual, f_cl
+        );
+    }
 
     // Based on middle token direction in CL AMM
     let (cp_reserve_in, cp_reserve_out) = if middle_is_base {
@@ -537,13 +577,15 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
     // Combined effective rate: M * (y/x) * f_cl
     let effective_rate = m * (cp_reserve_out / cp_reserve_in) * f_cl;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CL virtual reserves: in={}, out={}, effective_rate={}",
         cp_reserve_in, cp_reserve_out, effective_rate
     );
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Optimal input derivation (same as DLMM→CP but with virtual reserves):
@@ -551,26 +593,30 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
     let sqrt_term = (cp_reserve_out * m * f_cl * cp_reserve_in).sqrt();
     let optimal_input = (sqrt_term - cp_reserve_in) / (m * f_cl);
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "Optimal calculation: sqrt_term={}, optimal_input={}",
         sqrt_term, optimal_input
     );
 
     if optimal_input <= 0.0 {
-        eprintln!("No profit: optimal_input {} <= 0", optimal_input);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No profit: optimal_input {} <= 0", optimal_input);
     }
 
     // Check DLMM constraint: DLMM output must not exceed max
     let dlmm_output_at_optimal = optimal_input * m;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "DLMM output at optimal: {}, DLMM max output: {}",
         dlmm_output_at_optimal, dlmm_max_output
     );
 
     let constrained_optimal = if dlmm_output_at_optimal > dlmm_max_output as f64 {
         let constrained = dlmm_max_output as f64 / m;
-        eprintln!(
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!(
             "Constrained by DLMM capacity: {} -> {}",
             optimal_input, constrained
         );
@@ -580,7 +626,8 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
     };
 
     let final_amount = (constrained_optimal as u64).min(max_amount_in);
-    eprintln!("Final optimal amount (DLMM→CL): {}", final_amount);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Final optimal amount (DLMM→CL): {}", final_amount);
 
     Ok(final_amount)
 }
@@ -599,10 +646,10 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     accounts: &[AccountInfo<'info>],
 //     config: &mut BotConfig<'info>,
 // ) -> Result<u64> {
-//     eprintln!("");
-//     eprintln!("");
-//     eprintln!("");
-//     eprintln!("========== SIMULATE NEW AMM -> DLMM ==========");
+//     debug_eprintln!("");
+//     debug_eprintln!("");
+//     debug_eprintln!("");
+//     debug_eprintln!("========== SIMULATE NEW AMM -> DLMM ==========");
 
 //     let middle_mint: Pubkey = {
 //         let edges = &arbitrage_path.edges;
@@ -625,7 +672,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let dlmm_fee = 1.0 - dlmm.fee_rate;
 //     let dlmm_max_input = dlmm.get_max_amount_in(middle_mint)?;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "DLMM: price={}, fee_factor={}, max_input={}",
 //         dlmm_price_for_middle, dlmm_fee, dlmm_max_input
 //     );
@@ -634,7 +681,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let optimal_sol_in = match amm {
 //         ProgramInstance::PumpAmm(pump) => {
 //             // Constant Product AMM - use reserves-based formula
-//             eprintln!("AMM Type: Constant Product (PumpAmm)");
+//             debug_eprintln!("AMM Type: Constant Product (PumpAmm)");
 //             let (base_vault_amount, quote_vault_amount) = pump.get_vault_amounts()?;
 //             let (cp_reserve_in, cp_reserve_out) = if input_mint == pump.base_token_pk {
 //                 (base_vault_amount, quote_vault_amount)
@@ -643,7 +690,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //             };
 //             let cp_fee = 1.0 - pump.fee;
 
-//             eprintln!(
+//             debug_eprintln!(
 //                 "CP AMM reserves: in={}, out={}, fee_factor={}",
 //                 cp_reserve_in, cp_reserve_out, cp_fee
 //             );
@@ -660,13 +707,13 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //         }
 //         ProgramInstance::MeteoraDammV2(damm) => {
 //             // Concentrated Liquidity AMM - use liquidity/sqrt_price formula
-//             eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
+//             debug_eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
 //             let liquidity = damm.pool.liquidity;
 //             let sqrt_price = damm.pool.sqrt_price;
 //             let cl_fee = 0.9975; // MeteoraDammV2 uses 0.25% fee typically
 //             let input_is_base = input_mint == damm.base_token_pk;
 
-//             eprintln!(
+//             debug_eprintln!(
 //                 "CL AMM: L={}, √P={}, input_is_base={}",
 //                 liquidity, sqrt_price, input_is_base
 //             );
@@ -688,7 +735,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     // Simulate the actual swap to get token amounts
 //     let token_out_amm = amm.swap_base_in(accounts, input_mint, optimal_sol_in, clock.clone())?;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "AMM: {} input -> {} middle",
 //         optimal_sol_in as f64 / 1_000_000_000.0,
 //         token_out_amm as f64 / 1_000_000.0
@@ -698,7 +745,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let final_output = dlmm.swap_base_in(accounts, middle_mint, token_out_amm, clock.clone())?;
 //     let profit = final_output as i128 - optimal_sol_in as i128;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "DLMM: {} middle -> {} output",
 //         token_out_amm as f64 / 1_000_000.0,
 //         final_output as f64 / 1_000_000_000.0
@@ -707,11 +754,11 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     if profit > 0 {
 //         let profit_sol = profit as f64 / 1_000_000_000.0;
 //         let pct = (profit as f64 / optimal_sol_in as f64) * 100.0;
-//         eprintln!("✅ PROFIT {profit} ({profit_sol} SOL) {pct:.4}%");
+//         debug_eprintln!("✅ PROFIT {profit} ({profit_sol} SOL) {pct:.4}%");
 //         #[cfg(test)]
 //         write_results_to_file(&[Some(arbitrage_path.clone())]);
 //     } else {
-//         eprintln!("❌ NO PROFIT");
+//         debug_eprintln!("❌ NO PROFIT");
 //     }
 
 //     // Update arbitrage path
@@ -727,7 +774,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //         edges[1].amount_out = 0;
 //     }
 
-//     eprintln!("================================================");
+//     debug_eprintln!("================================================");
 
 //     Ok(optimal_sol_in)
 // }
@@ -746,10 +793,10 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     accounts: &[AccountInfo<'info>],
 //     config: &mut BotConfig<'info>,
 // ) -> Result<u64> {
-//     eprintln!("");
-//     eprintln!("");
-//     eprintln!("");
-//     eprintln!("========== SIMULATE NEW DLMM -> AMM ==========");
+//     debug_eprintln!("");
+//     debug_eprintln!("");
+//     debug_eprintln!("");
+//     debug_eprintln!("========== SIMULATE NEW DLMM -> AMM ==========");
 
 //     let middle_mint: Pubkey = {
 //         let edges = &arbitrage_path.edges;
@@ -772,7 +819,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let dlmm_fee = 1.0 - dlmm.fee_rate;
 //     let dlmm_max_output = dlmm.get_max_amount_out(input_mint)?;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "DLMM: price={}, fee_factor={}, max_output={}",
 //         dlmm_price_for_input, dlmm_fee, dlmm_max_output
 //     );
@@ -781,7 +828,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let optimal_sol_in = match amm {
 //         ProgramInstance::PumpAmm(pump) => {
 //             // Constant Product AMM - use reserves-based formula
-//             eprintln!("AMM Type: Constant Product (PumpAmm)");
+//             debug_eprintln!("AMM Type: Constant Product (PumpAmm)");
 //             let (base_vault_amount, quote_vault_amount) = pump.get_vault_amounts()?;
 //             let (cp_reserve_in, cp_reserve_out) = if middle_mint == pump.base_token_pk {
 //                 (base_vault_amount, quote_vault_amount)
@@ -790,7 +837,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //             };
 //             let cp_fee = 1.0 - pump.fee;
 
-//             eprintln!(
+//             debug_eprintln!(
 //                 "CP AMM reserves: in={}, out={}, fee_factor={}",
 //                 cp_reserve_in, cp_reserve_out, cp_fee
 //             );
@@ -805,13 +852,13 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //         }
 //         ProgramInstance::MeteoraDammV2(damm) => {
 //             // Concentrated Liquidity AMM - use liquidity/sqrt_price formula
-//             eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
+//             debug_eprintln!("AMM Type: Concentrated Liquidity (MeteoraDammV2)");
 //             let liquidity = damm.pool.liquidity;
 //             let sqrt_price = damm.pool.sqrt_price;
 //             let cl_fee = 0.9975; // MeteoraDammV2 uses 0.25% fee typically
 //             let middle_is_base = middle_mint == damm.base_token_pk;
 
-//             eprintln!(
+//             debug_eprintln!(
 //                 "CL AMM: L={}, √P={}, middle_is_base={}",
 //                 liquidity, sqrt_price, middle_is_base
 //             );
@@ -833,7 +880,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     // Simulate the actual swaps
 //     let token_out_dlmm = dlmm.swap_base_in(accounts, input_mint, optimal_sol_in, clock.clone())?;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "DLMM: {} input -> {} middle",
 //         optimal_sol_in as f64 / 1_000_000_000.0,
 //         token_out_dlmm as f64 / 1_000_000.0
@@ -842,7 +889,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     let final_output = amm.swap_base_in(accounts, middle_mint, token_out_dlmm, clock.clone())?;
 //     let profit = final_output as i128 - optimal_sol_in as i128;
 
-//     eprintln!(
+//     debug_eprintln!(
 //         "AMM: {} middle -> {} output",
 //         token_out_dlmm as f64 / 1_000_000.0,
 //         final_output as f64 / 1_000_000_000.0
@@ -851,11 +898,11 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //     if profit > 0 {
 //         let profit_sol = profit as f64 / 1_000_000_000.0;
 //         let pct = (profit as f64 / optimal_sol_in as f64) * 100.0;
-//         eprintln!("✅ PROFIT {profit} ({profit_sol} SOL) {pct:.4}%");
+//         debug_eprintln!("✅ PROFIT {profit} ({profit_sol} SOL) {pct:.4}%");
 //         #[cfg(test)]
 //         write_results_to_file(&[Some(arbitrage_path.clone())]);
 //     } else {
-//         eprintln!("❌ NO PROFIT");
+//         debug_eprintln!("❌ NO PROFIT");
 //     }
 
 //     // Update arbitrage path
@@ -871,7 +918,7 @@ pub fn find_optimal_amount_dlmm_to_damm2_v2<'info>(
 //         edges[1].amount_out = 0;
 //     }
 
-//     eprintln!("================================================");
+//     debug_eprintln!("================================================");
 
 //     Ok(optimal_sol_in)
 // }

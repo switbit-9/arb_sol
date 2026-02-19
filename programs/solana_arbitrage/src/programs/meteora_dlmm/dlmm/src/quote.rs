@@ -114,6 +114,16 @@ pub fn quote_exact_out<'a>(
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
+        // Shift active_id if bitmap jumped over empty bin arrays
+        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(lb_pair.active_id)?;
+        if i64::from(lb_pair_bin_array_index) != bin_array_index {
+            if swap_for_y {
+                lb_pair.active_id = upper_bin_id;
+            } else {
+                lb_pair.active_id = lower_bin_id;
+            }
+        }
+
         // Constants moved outside loop for better performance
         const BIN_ARRAY_HEADER_SIZE: usize = 56;
         const BIN_SIZE: usize = 144;
@@ -267,9 +277,20 @@ pub fn quote_exact_in<'a>(
 
         let bin_array_data = active_bin_array_account.try_borrow_data()?;
         // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
-        let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]); // Cache range calculation once per bin array (doesn't change within inner loop)
+        let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
+        // Cache range calculation once per bin array (doesn't change within inner loop)
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
+
+        // Shift active_id if bitmap jumped over empty bin arrays
+        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(lb_pair.active_id)?;
+        if i64::from(lb_pair_bin_array_index) != bin_array_index {
+            if swap_for_y {
+                lb_pair.active_id = upper_bin_id;
+            } else {
+                lb_pair.active_id = lower_bin_id;
+            }
+        }
 
         loop {
             // Early exit checks
@@ -295,7 +316,7 @@ pub fn quote_exact_in<'a>(
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-            // eprintln!("DLMM active_bin.active_id: {:?}", lb_pair.active_id);
+            // debug_eprintln!("DLMM active_bin.active_id: {:?}", lb_pair.active_id);
 
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
@@ -321,7 +342,8 @@ pub fn quote_exact_in<'a>(
                     lb_pair.advance_active_bin(swap_for_y)?;
                 }
             } else {
-                eprintln!("loop: lb_pair.active_id: {}", lb_pair.active_id);
+                #[cfg(any(test, feature = "debug"))]
+                debug_eprintln!("loop: lb_pair.active_id: {}", lb_pair.active_id);
                 // Bin is empty, advance to next bin immediately
                 let old_active_id = lb_pair.active_id;
                 lb_pair.advance_active_bin(swap_for_y)?;

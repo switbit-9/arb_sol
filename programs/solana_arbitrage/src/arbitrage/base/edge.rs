@@ -16,7 +16,8 @@ pub struct Edge {
     pub pool_id: Pubkey,
     pub side: EdgeSide,
     pub price: f64, // Stored as scaled integer: actual_price * 1_000_000_000
-    pub fee_factor: f64, // 1.0 - fee_rate (e.g., 0.9975 for 0.25% fee)
+    pub fee_factor: f64, // Directional fee factor for this edge's direction (1.0 - fee_rate)
+    pub inverse_fee_factor: f64, // Fee factor for the opposite direction (1.0 - fee_rate_opposite)
     pub left: Pool,
     pub right: Pool,
     pub amount_in: u64,
@@ -24,13 +25,14 @@ pub struct Edge {
 }
 
 impl Edge {
-    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, left: Pool, right: Pool) -> Self {
+    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, inverse_fee_factor: f64, left: Pool, right: Pool) -> Self {
         Edge {
             program,
             pool_id,
             side,
             price,
             fee_factor,
+            inverse_fee_factor,
             left,
             right,
             amount_in: 0, // TODO: Remove this

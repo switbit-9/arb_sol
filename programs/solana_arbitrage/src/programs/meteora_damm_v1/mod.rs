@@ -19,6 +19,16 @@ const TRADE_FEE_DEN_OFFSET: usize = 330;
 const PROTOCOL_FEE_NUM_OFFSET: usize = 338;
 const PROTOCOL_FEE_DEN_OFFSET: usize = 346;
 
+// ── Vault account data byte offsets (after 8-byte Anchor discriminator) ──
+// Vault layout: enabled(1) + bumps(2) + total_amount(8) + token_vault(32) + fee_vault(32)
+//   + token_mint(32) + lp_mint(32) + strategies(30*32=960) + base(32) + admin(32) + operator(32)
+//   + locked_profit_tracker { last_updated_locked_profit(8) + last_report(8) + locked_profit_degradation(8) }
+const VAULT_TOTAL_AMOUNT_OFFSET: usize = 3; // 1 + 2
+const VAULT_LAST_UPDATED_LOCKED_PROFIT_OFFSET: usize = 1195; // 3 + 8 + 32*4 + 960 + 32*3
+const VAULT_LAST_REPORT_OFFSET: usize = 1203;
+const VAULT_LOCKED_PROFIT_DEGRADATION_OFFSET: usize = 1211;
+const LOCKED_PROFIT_DEGRADATION_DENOMINATOR: u128 = 1_000_000_000_000;
+
 /// SPL Token Mint supply offset (after COption<Pubkey> mint_authority = 36 bytes)
 const MINT_SUPPLY_OFFSET: usize = 36;
 
@@ -36,6 +46,33 @@ fn read_mint_supply(account: &AccountInfo) -> Result<u64> {
         return Err(ProgramError::InvalidAccountData.into());
     }
     Ok(read_u64(&data, MINT_SUPPLY_OFFSET))
+}
+
+/// Read the vault's unlocked amount from the Vault state account.
+/// unlocked_amount = total_amount - locked_profit(current_time)
+/// This matches Vault::get_unlocked_amount from the DAMM v1 SDK.
+fn read_vault_unlocked_amount(vault_account: &AccountInfo, current_time: u64) -> Result<u64> {
+    let data = vault_account.try_borrow_data()?;
+    let d = &data[8..]; // skip Anchor discriminator
+    let total_amount = read_u64(d, VAULT_TOTAL_AMOUNT_OFFSET);
+    let last_updated_locked_profit = read_u64(d, VAULT_LAST_UPDATED_LOCKED_PROFIT_OFFSET);
+    let last_report = read_u64(d, VAULT_LAST_REPORT_OFFSET);
+    let locked_profit_degradation = read_u64(d, VAULT_LOCKED_PROFIT_DEGRADATION_OFFSET);
+
+    let duration = current_time.saturating_sub(last_report) as u128;
+    let locked_fund_ratio = duration.saturating_mul(locked_profit_degradation as u128);
+
+    let locked_profit = if locked_fund_ratio >= LOCKED_PROFIT_DEGRADATION_DENOMINATOR {
+        0u64
+    } else {
+        let lp = (last_updated_locked_profit as u128)
+            .checked_mul(LOCKED_PROFIT_DEGRADATION_DENOMINATOR - locked_fund_ratio)
+            .and_then(|v| v.checked_div(LOCKED_PROFIT_DEGRADATION_DENOMINATOR))
+            .unwrap_or(0);
+        lp as u64
+    };
+
+    Ok(total_amount.saturating_sub(locked_profit))
 }
 
 pub struct MeteoraDammV1<'info> {
@@ -69,6 +106,8 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         (&self.base_token_pk, &self.quote_token_pk)
     }
 
+    fn name(&self) -> &'static str { "MeteoraDammV1" }
+
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Ok((self.base_vault_amount, self.quote_vault_amount))
     }
@@ -77,8 +116,10 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         Ok((self.price, self.inverse_price))
     }
 
-    fn get_fee_factor(&self) -> Result<f64> {
-        Ok(1.0 - self.fee_rate)
+    fn get_fee_factor(&self) -> Result<(f64, f64)> {
+        // Symmetric fee: same rate for both A->B and B->A
+        let f = 1.0 - self.fee_rate;
+        Ok((f, f))
     }
 
     fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
@@ -378,15 +419,23 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
-        let pool = &accounts[self.start_index + Self::POOL_IDX];
-        msg!(
-            "Meteora DAMM v1: pool={}, token_a={}, token_b={}, reserve_a={}, reserve_b={}",
-            pool.key,
-            self.base_token_pk,
-            self.quote_token_pk,
-            self.base_vault_amount,
-            self.quote_vault_amount,
-        );
+        msg!("=== Meteora DAMM V1 ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool: {}", accounts[self.start_index + Self::POOL_IDX].key);
+        msg!("2 a_vault: {}", accounts[self.start_index + Self::A_VAULT_IDX].key);
+        msg!("3 b_vault: {}", accounts[self.start_index + Self::B_VAULT_IDX].key);
+        msg!("4 a_token_vault: {}", accounts[self.start_index + Self::A_TOKEN_VAULT_IDX].key);
+        msg!("5 b_token_vault: {}", accounts[self.start_index + Self::B_TOKEN_VAULT_IDX].key);
+        msg!("6 a_vault_lp_mint: {}", accounts[self.start_index + Self::A_VAULT_LP_MINT_IDX].key);
+        msg!("7 b_vault_lp_mint: {}", accounts[self.start_index + Self::B_VAULT_LP_MINT_IDX].key);
+        msg!("8 a_vault_lp: {}", accounts[self.start_index + Self::A_VAULT_LP_IDX].key);
+        msg!("9 b_vault_lp: {}", accounts[self.start_index + Self::B_VAULT_LP_IDX].key);
+        msg!("10 token_a_mint: {}", accounts[self.start_index + Self::TOKEN_A_MINT_IDX].key);
+        msg!("11 token_b_mint: {}", accounts[self.start_index + Self::TOKEN_B_MINT_IDX].key);
+        msg!("12 protocol_token_a_fee: {}", accounts[self.start_index + Self::PROTOCOL_TOKEN_A_FEE_IDX].key);
+        msg!("13 protocol_token_b_fee: {}", accounts[self.start_index + Self::PROTOCOL_TOKEN_B_FEE_IDX].key);
+        msg!("14 vault_program: {}", accounts[self.start_index + Self::VAULT_PROGRAM_IDX].key);
+        msg!("15 token_program: {}", accounts[self.start_index + Self::TOKEN_PROGRAM_IDX].key);
         Ok(())
     }
 }
@@ -419,6 +468,7 @@ impl<'info> MeteoraDammV1<'info> {
         accounts: &[AccountInfo<'info>],
         start_index: usize,
         end_index: usize,
+        clock: &Clock,
     ) -> Result<Self> {
         require!(
             end_index - start_index >= Self::MIN_ACCOUNTS,
@@ -444,24 +494,25 @@ impl<'info> MeteoraDammV1<'info> {
 
         drop(pool_data);
 
-        // Compute effective reserves from vault LP shares:
-        // effective_amount = vault_token_amount * pool_vault_lp_amount / vault_lp_supply
-        let a_token_vault = &accounts[start_index + Self::A_TOKEN_VAULT_IDX];
-        let b_token_vault = &accounts[start_index + Self::B_TOKEN_VAULT_IDX];
+        // Compute effective reserves using vault unlocked amount (total_amount - locked_profit):
+        // effective_amount = vault_unlocked_amount * pool_vault_lp_amount / vault_lp_supply
+        let a_vault = &accounts[start_index + Self::A_VAULT_IDX];
+        let b_vault = &accounts[start_index + Self::B_VAULT_IDX];
         let a_vault_lp_mint = &accounts[start_index + Self::A_VAULT_LP_MINT_IDX];
         let b_vault_lp_mint = &accounts[start_index + Self::B_VAULT_LP_MINT_IDX];
         let a_vault_lp = &accounts[start_index + Self::A_VAULT_LP_IDX];
         let b_vault_lp = &accounts[start_index + Self::B_VAULT_LP_IDX];
 
-        let vault_a_token_amount = parse_token_account(a_token_vault)?.amount;
-        let vault_b_token_amount = parse_token_account(b_token_vault)?.amount;
+        let current_time: u64 = clock.unix_timestamp as u64;
+        let vault_a_unlocked = read_vault_unlocked_amount(a_vault, current_time)?;
+        let vault_b_unlocked = read_vault_unlocked_amount(b_vault, current_time)?;
         let pool_a_lp_amount = parse_token_account(a_vault_lp)?.amount;
         let pool_b_lp_amount = parse_token_account(b_vault_lp)?.amount;
         let vault_a_lp_supply = read_mint_supply(a_vault_lp_mint)?;
         let vault_b_lp_supply = read_mint_supply(b_vault_lp_mint)?;
 
         let base_vault_amount = if vault_a_lp_supply > 0 {
-            ((vault_a_token_amount as u128)
+            ((vault_a_unlocked as u128)
                 .checked_mul(pool_a_lp_amount as u128)
                 .unwrap_or(0))
             .checked_div(vault_a_lp_supply as u128)
@@ -471,7 +522,7 @@ impl<'info> MeteoraDammV1<'info> {
         };
 
         let quote_vault_amount = if vault_b_lp_supply > 0 {
-            ((vault_b_token_amount as u128)
+            ((vault_b_unlocked as u128)
                 .checked_mul(pool_b_lp_amount as u128)
                 .unwrap_or(0))
             .checked_div(vault_b_lp_supply as u128)
@@ -493,7 +544,7 @@ impl<'info> MeteoraDammV1<'info> {
             (0.0, 0.0)
         };
 
-        Ok(MeteoraDammV1 {
+        let instance = MeteoraDammV1 {
             pool_id: *pool_account.key,
             base_token_pk: token_a_mint,
             quote_token_pk: token_b_mint,
@@ -509,7 +560,9 @@ impl<'info> MeteoraDammV1<'info> {
             start_index,
             end_index,
             _phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
 
     /// Calculate trade fee: fee = amount * trade_fee_numerator / trade_fee_denominator

@@ -8,8 +8,10 @@ use anchor_lang::solana_program::{
     pubkey::Pubkey,
 };
 mod constants;
-use crate::utils::utils::parse_token_account;
 use std::marker::PhantomData;
+
+/// SPL Token account amount field offset: mint(32) + owner(32) = 64
+const TOKEN_AMOUNT_OFFSET: usize = 64;
 
 pub fn get_prices(base_vault_amount: u64, quote_vault_amount: u64) -> Result<(f64, f64)> {
     // price : Base -> Quote
@@ -90,6 +92,10 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
         (&self.base_token_pk, &self.quote_token_pk)
     }
+
+    fn name(&self) -> &'static str { "PumpAmm" }
+
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Ok((
@@ -287,6 +293,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         };
 
         let amount_out_value = amount_out.unwrap_or(1);
+        // let amount_out_value = 1 as u64;
         let mut metas = vec![
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*payer.key, true),
@@ -395,7 +402,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
                 mint_2_token_program,
             );
         }
-
+        // msg!("sell");
         let (
             base_token_program,
             quote_token_program,
@@ -420,7 +427,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         };
 
         // Get stored accounts from self.get_accounts() - these are the accounts stored in the struct
-        let program_id = &accounts[self.start_index + 0];
+        let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
         let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
         let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
         let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
@@ -440,29 +447,6 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             &accounts[self.start_index + Self::ASSOCIATED_TOKEN_INSTRUCTION_PROGRAM_IDX];
         let global_vol_accumulator = &accounts[self.start_index + Self::GLOBAL_VOL_ACCUMULATOR_IDX];
 
-        msg!("Program ID: {:?}", program_id.key);
-        msg!("Pool ID: {:?}", pool_id.key);
-        msg!("Base vault: {:?}", base_vault.key);
-        msg!("Quote vault: {:?}", quote_vault.key);
-        msg!("Base token: {:?}", base_token.key);
-        msg!("Quote token: {:?}", quote_token.key);
-        msg!("Protocol fee recipient: {:?}", protocol_fee_recipient.key);
-        msg!(
-            "Protocol fee token account: {:?}",
-            protocol_fee_token_account.key
-        );
-        msg!("Event authority: {:?}", event_authority.key);
-        msg!("Fee config: {:?}", fee_config.key);
-        msg!("Fee program: {:?}", fee_program.key);
-        msg!("User volume accumulator: {:?}", user_volume_accumulator.key);
-        msg!("Pump AMM global: {:?}", pump_amm_global.key);
-        msg!("System program: {:?}", system_program.key);
-        msg!(
-            "Associated token instruction program: {:?}",
-            associated_token_instruction_program.key
-        );
-        msg!("Global vol accumulator: {:?}", global_vol_accumulator.key);
-
         // Extract optional vault_ata and vault_authority if present
         let (vault_ata, vault_authority) = if accounts.len() >= self.start_index + 18 {
             (
@@ -477,6 +461,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         // are function parameters (already available from lines 442-463)
 
         let min_amount_out_value = min_amount_out.unwrap_or(0);
+        // let min_amount_out_value = 1 as u64;
         let mut metas = vec![
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*payer.key, true),
@@ -500,11 +485,11 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             metas.push(AccountMeta::new(*vault_ata_acc.key, false));
             metas.push(AccountMeta::new_readonly(*vault_authority_acc.key, false));
         }
-        metas.push(AccountMeta::new_readonly(
-            *global_vol_accumulator.key,
-            false,
-        ));
-        metas.push(AccountMeta::new(*user_volume_accumulator.key, false));
+        // metas.push(AccountMeta::new_readonly(
+        //     *global_vol_accumulator.key,
+        //     false,
+        // ));
+        // metas.push(AccountMeta::new(*user_volume_accumulator.key, false));
         metas.push(AccountMeta::new_readonly(*fee_config.key, false));
         metas.push(AccountMeta::new_readonly(*fee_program.key, false));
 
@@ -558,53 +543,25 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
     
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
-        let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
-        let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-        let protocol_fee_recipient = &accounts[self.start_index + Self::PROTOCOL_FEE_RECIPIENT_IDX];
-        let protocol_fee_token_account =
-            &accounts[self.start_index + Self::PROTOCOL_FEE_TOKEN_ACCOUNT_IDX];
-        let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
-        let fee_config = &accounts[self.start_index + Self::FEE_CONFIG_IDX];
-        let fee_program = &accounts[self.start_index + Self::FEE_PROGRAM_IDX];
-        let user_volume_accumulator =
-            &accounts[self.start_index + Self::USER_VOLUME_ACCUMULATOR_IDX];
-        let pump_amm_global = &accounts[self.start_index + Self::PUMP_AMM_GLOBAL_IDX];
-        let system_program = &accounts[self.start_index + Self::SYSTEM_PROGRAM_IDX];
-        let associated_token_instruction_program =
-            &accounts[self.start_index + Self::ASSOCIATED_TOKEN_INSTRUCTION_PROGRAM_IDX];
-        let global_vol_accumulator = &accounts[self.start_index + Self::GLOBAL_VOL_ACCUMULATOR_IDX];
-        let vault_ata = &accounts[self.start_index + Self::VAULT_ATA_IDX];
-        let vault_authority = &accounts[self.start_index + Self::VAULT_AUTHORITY_IDX];
-
-        msg!("Pump AMM Accounts:");
-        msg!("  program_id: {}", program_id.key);
-        msg!("  pool_id: {}", pool_id.key);
-        msg!("  base_vault: {}", base_vault.key);
-        msg!("  quote_vault: {}", quote_vault.key);
-        msg!("  base_token: {}", base_token.key);
-        msg!("  quote_token: {}", quote_token.key);
-        msg!("  protocol_fee_recipient: {}", protocol_fee_recipient.key);
-        msg!(
-            "  protocol_fee_token_account: {}",
-            protocol_fee_token_account.key
-        );
-        msg!("  event_authority: {}", event_authority.key);
-        msg!("  fee_config: {}", fee_config.key);
-        msg!("  fee_program: {}", fee_program.key);
-        msg!("  user_volume_accumulator: {}", user_volume_accumulator.key);
-        msg!("  pump_amm_global: {}", pump_amm_global.key);
-        msg!("  system_program: {}", system_program.key);
-        msg!(
-            "  associated_token_instruction_program: {}",
-            associated_token_instruction_program.key
-        );
-        msg!("  global_vol_accumulator: {}", global_vol_accumulator.key);
-        msg!("  vault_ata: {}", vault_ata.key);
-        msg!("  vault_authority: {}", vault_authority.key);
+        msg!("=== Pump AMM ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
+        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
+        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
+        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
+        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
+        msg!("6 protocol_fee_recipient: {}", accounts[self.start_index + Self::PROTOCOL_FEE_RECIPIENT_IDX].key);
+        msg!("7 protocol_fee_token_account: {}", accounts[self.start_index + Self::PROTOCOL_FEE_TOKEN_ACCOUNT_IDX].key);
+        msg!("8 event_authority: {}", accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key);
+        msg!("9 fee_config: {}", accounts[self.start_index + Self::FEE_CONFIG_IDX].key);
+        msg!("10 fee_program: {}", accounts[self.start_index + Self::FEE_PROGRAM_IDX].key);
+        msg!("11 user_volume_accumulator: {}", accounts[self.start_index + Self::USER_VOLUME_ACCUMULATOR_IDX].key);
+        msg!("12 pump_amm_global: {}", accounts[self.start_index + Self::PUMP_AMM_GLOBAL_IDX].key);
+        msg!("13 system_program: {}", accounts[self.start_index + Self::SYSTEM_PROGRAM_IDX].key);
+        msg!("14 associated_token_program: {}", accounts[self.start_index + Self::ASSOCIATED_TOKEN_INSTRUCTION_PROGRAM_IDX].key);
+        msg!("15 global_vol_accumulator: {}", accounts[self.start_index + Self::GLOBAL_VOL_ACCUMULATOR_IDX].key);
+        msg!("16 vault_ata: {}", accounts[self.start_index + Self::VAULT_ATA_IDX].key);
+        msg!("17 vault_authority: {}", accounts[self.start_index + Self::VAULT_AUTHORITY_IDX].key);
         Ok(())
     }
 
@@ -671,8 +628,8 @@ impl<'info> PumpAmm<'info> {
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount / 1_000_000_000);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount / 1_000_000);
-        let base_vault_amount: u64 = 13_846_044_917_071;
-        let quote_vault_amount: u64 = 6_569_195_822_634;
+        // let base_vault_amount: u64 = 13_846_044_917_071;
+        // let quote_vault_amount: u64 = 6_569_195_822_634;
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
@@ -680,7 +637,7 @@ impl<'info> PumpAmm<'info> {
         let (price, inverse_price) = get_prices(base_vault_amount, quote_vault_amount)?;
         let fee_rate = get_fees(price, inverse_price)?;
 
-        Ok(PumpAmm {
+        let instance = PumpAmm {
             // program_id: program_id.clone(),
             // pool_id: pool_id.clone(),
             // base_vault: base_vault.clone(),
@@ -698,7 +655,9 @@ impl<'info> PumpAmm<'info> {
             start_index: start_index,
             end_index: end_index,
             _phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
 
     // fn log_accounts_impl<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {

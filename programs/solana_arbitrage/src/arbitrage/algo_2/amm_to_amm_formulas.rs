@@ -44,8 +44,8 @@ use crate::arbitrage::algo_2::utils::*;
 /// # Returns
 /// Optimal input amount
 pub fn find_optimal_amount_amm_to_amm<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -80,20 +80,23 @@ pub fn find_optimal_amount_amm_to_amm<'info>(
     // Effective rate through both pools
     let effective_rate = (y1 / x1) * f1 * (y2 / x2) * f2;
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CP1: x={}, y={}, fee={}; CP2: x={}, y={}, fee={}; rate={}",
         x1, y1, f1, x2, y2, f2, effective_rate
     );
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Optimal formula (approximation for nested constant product)
     let k_term = x1 * x2 * y1 * y2 * f1 * f2;
     let approx_optimal = (k_term.sqrt() - x1) / f1;
 
-    eprintln!("Approx optimal: {}", approx_optimal);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Approx optimal: {}", approx_optimal);
 
     let max_amount_in = max_amount_in;
     let final_amount = if approx_optimal > 0.0 {
@@ -126,8 +129,8 @@ pub fn find_optimal_amount_amm_to_amm<'info>(
 /// # Returns
 /// Optimal input amount
 pub fn find_optimal_amount_amm_to_damm2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -168,7 +171,8 @@ pub fn find_optimal_amount_amm_to_damm2<'info>(
         (y_virtual, x_virtual)
     };
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CP: x={}, y={}, fee={}; CL: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}",
         x_cp, y_cp, f_cp, l, sqrt_price, cl_reserve_in, cl_reserve_out, f_cl
     );
@@ -176,17 +180,20 @@ pub fn find_optimal_amount_amm_to_damm2<'info>(
     // Effective rate
     let effective_rate = (y_cp / x_cp) * f_cp * (cl_reserve_out / cl_reserve_in) * f_cl;
 
-    eprintln!("Effective rate: {}", effective_rate);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Effective rate: {}", effective_rate);
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Use similar approach to CP → CP with virtual reserves
     let k_term = x_cp * cl_reserve_in * y_cp * cl_reserve_out * f_cp * f_cl;
     let approx_optimal = (k_term.sqrt() - x_cp) / f_cp;
 
-    eprintln!("Approx optimal: {}", approx_optimal);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Approx optimal: {}", approx_optimal);
 
     let final_amount = if approx_optimal > 0.0 {
         (approx_optimal as u64).min(max_amount_in)
@@ -215,8 +222,8 @@ pub fn find_optimal_amount_amm_to_damm2<'info>(
 /// # Returns
 /// Optimal input amount
 pub fn find_optimal_amount_damm2_to_amm<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -257,7 +264,8 @@ pub fn find_optimal_amount_damm2_to_amm<'info>(
         (y_virtual, x_virtual)
     };
 
-    eprintln!(
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!(
         "CL: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}; CP: x={}, y={}, fee={}",
         l, sqrt_price, cl_reserve_in, cl_reserve_out, f_cl, x_cp, y_cp, f_cp
     );
@@ -265,17 +273,20 @@ pub fn find_optimal_amount_damm2_to_amm<'info>(
     // Effective rate
     let effective_rate = (cl_reserve_out / cl_reserve_in) * f_cl * (y_cp / x_cp) * f_cp;
 
-    eprintln!("Effective rate: {}", effective_rate);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Effective rate: {}", effective_rate);
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Approximation using virtual reserves
     let k_term = cl_reserve_in * x_cp * cl_reserve_out * y_cp * f_cl * f_cp;
     let approx_optimal = (k_term.sqrt() - cl_reserve_in) / f_cl;
 
-    eprintln!("Approx optimal: {}", approx_optimal);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Approx optimal: {}", approx_optimal);
 
     let final_amount = if approx_optimal > 0.0 {
         (approx_optimal as u64).min(max_amount_in)
@@ -305,8 +316,8 @@ pub fn find_optimal_amount_damm2_to_amm<'info>(
 /// # Returns
 /// Optimal input amount
 pub fn find_optimal_amount_damm2_to_damm2<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    program_1: &Box<dyn ProgramMeta + 'info>,
+    program_2: &Box<dyn ProgramMeta + 'info>,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
@@ -354,30 +365,36 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
         (y2_virtual, x2_virtual)
     };
 
-    eprintln!(
-        "CL1: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}",
-        l1, sqrt_price1, cl1_reserve_in, cl1_reserve_out, f1
-    );
-    eprintln!(
-        "CL2: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}",
-        l2, sqrt_price2, cl2_reserve_in, cl2_reserve_out, f2
-    );
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "CL1: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}",
+            l1, sqrt_price1, cl1_reserve_in, cl1_reserve_out, f1
+        );
+        debug_eprintln!(
+            "CL2: L={}, √P={}, virtual_in={}, virtual_out={}, fee={}",
+            l2, sqrt_price2, cl2_reserve_in, cl2_reserve_out, f2
+        );
+    }
 
     // Effective rate
     let effective_rate =
         (cl1_reserve_out / cl1_reserve_in) * f1 * (cl2_reserve_out / cl2_reserve_in) * f2;
 
-    eprintln!("Effective rate: {}", effective_rate);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Effective rate: {}", effective_rate);
 
     if effective_rate <= 1.0 {
-        eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("No arbitrage: effective_rate {} <= 1.0", effective_rate);
     }
 
     // Approximation using both virtual reserves
     let k_term = cl1_reserve_in * cl2_reserve_in * cl1_reserve_out * cl2_reserve_out * f1 * f2;
     let approx_optimal = (k_term.sqrt() - cl1_reserve_in) / f1;
 
-    eprintln!("Approx optimal: {}", approx_optimal);
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Approx optimal: {}", approx_optimal);
 
     let final_amount = if approx_optimal > 0.0 {
         (approx_optimal as u64).min(max_amount_in)
@@ -398,9 +415,9 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
 //     accounts: &[AccountInfo<'info>],
 //     config: &mut BotConfig<'info>,
 // ) -> Result<u64> {
-//     eprintln!("");
-//     eprintln!("");
-//     eprintln!("========== ANALYTICAL AMM -> AMM ==========");
+//     debug_eprintln!("");
+//     debug_eprintln!("");
+//     debug_eprintln!("========== ANALYTICAL AMM -> AMM ==========");
 
 //     let middle_mint: Pubkey = {
 //         let edges = &arbitrage_path.edges;
@@ -412,13 +429,13 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
 //     let optimal_amount_in = match (amm1, amm2) {
 //         // CP AMM → CP AMM (PumpAmm → PumpAmm)
 //         (ProgramInstance::PumpAmm(pump1), ProgramInstance::PumpAmm(pump2)) => {
-//             eprintln!("Path: CP AMM → CP AMM (PumpAmm → PumpAmm)");
+//             debug_eprintln!("Path: CP AMM → CP AMM (PumpAmm → PumpAmm)");
 //             optimal_amount_cp_to_cp(arbitrage_path, amm1, amm1, input_mint, middle_mint, accounts, config)?
 //         }
 
 //         // CP AMM → CL AMM (PumpAmm → MeteoraDammV2)
 //         (ProgramInstance::PumpAmm(pump), ProgramInstance::MeteoraDammV2(damm)) => {
-//             eprintln!("Path: CP AMM → CL AMM (PumpAmm → MeteoraDammV2)");
+//             debug_eprintln!("Path: CP AMM → CL AMM (PumpAmm → MeteoraDammV2)");
 
 //             // let (base, quote) = pump.get_vault_amounts()?;
 //             // let (cp_in, cp_out) = if input_mint == pump.base_token_pk {
@@ -438,7 +455,7 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
 
 //         // CL AMM → CP AMM (MeteoraDammV2 → PumpAmm)
 //         (ProgramInstance::MeteoraDammV2(damm), ProgramInstance::PumpAmm(pump)) => {
-//             eprintln!("Path: CL AMM → CP AMM (MeteoraDammV2 → PumpAmm)");
+//             debug_eprintln!("Path: CL AMM → CP AMM (MeteoraDammV2 → PumpAmm)");
 
 //             // let liquidity = damm.pool.liquidity;
 //             // let sqrt_price = damm.pool.sqrt_price;
@@ -460,7 +477,7 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
 
 //         // CL AMM → CL AMM (MeteoraDammV2 → MeteoraDammV2)
 //         (ProgramInstance::MeteoraDammV2(damm1), ProgramInstance::MeteoraDammV2(damm2)) => {
-//             eprintln!("Path: CL AMM → CL AMM (MeteoraDammV2 → MeteoraDammV2)");
+//             debug_eprintln!("Path: CL AMM → CL AMM (MeteoraDammV2 → MeteoraDammV2)");
 
 //             // let l1 = damm1.pool.liquidity;
 //             // let sqrt_price1 = damm1.pool.sqrt_price;
@@ -478,7 +495,7 @@ pub fn find_optimal_amount_damm2_to_damm2<'info>(
 //         }
 
 //         _ => {
-//             eprintln!("Unsupported AMM combination");
+//             debug_eprintln!("Unsupported AMM combination");
 //             return Err(error!(SolarBError::InvalidProgramType));
 //         }
 //     };

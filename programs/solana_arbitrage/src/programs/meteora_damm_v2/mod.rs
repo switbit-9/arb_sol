@@ -1,5 +1,5 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::get_transfer_fee;
+use crate::utils::token::{get_transfer_fee, get_transfer_inverse_fee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -16,6 +16,7 @@ const Q64_SCALE: f64 = 18446744073709551616.0; // Q64_SCALE
 pub use damm_v2::curve::{get_spot_price_a_to_b, get_spot_price_b_to_a};
 pub use crate::utils::utils::parse_token_account;
 pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
+use damm_v2::constants::fee::get_max_fee_numerator;
 use std::marker::PhantomData;
 
 pub fn get_current_point(
@@ -65,7 +66,8 @@ pub struct MeteoraDammV2<'info> {
     pub end_index: usize,
     pub price: f64,
     pub inverse_price: f64,
-    pub fee_rate: f64,
+    pub fee_rate_a_to_b: f64,
+    pub fee_rate_b_to_a: f64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -91,6 +93,14 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         (&self.base_token_pk, &self.quote_token_pk)
     }
 
+    fn name(&self) -> &'static str { "MeteoraDammV2" }
+
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok((1.0 - self.fee_rate_a_to_b, 1.0 - self.fee_rate_b_to_a)) }
+
+    fn get_liquidity(&self) -> Result<u128> { Ok(self.pool.liquidity) }
+
+    fn get_sqrt_price(&self) -> Result<u128> { Ok(self.pool.sqrt_price) }
+
     fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
         if input_mint == self.base_token_pk {
             Ok((self.base_vault_amount, self.quote_vault_amount))
@@ -99,15 +109,21 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    fn log_accounts<'a>(&self, _accounts: &[AccountInfo<'a>]) -> Result<()> {
-        // Note: This method would need accounts parameter to log, but it's only for debugging
-        // For now, just log the stored token keys
-        msg!(
-            "Meteora DAMM v2: base_token={}, quote_token={}",
-            self.base_token_pk,
-            self.quote_token_pk,
-            // self.referral_token_account.key,
-        );
+    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        msg!("=== Meteora DAMM V2 ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
+        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
+        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
+        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
+        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
+        msg!("6 pool_authority: {}", accounts[self.start_index + Self::POOL_AUTHORITY_IDX].key);
+        msg!("7 event_authority: {}", accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key);
+        msg!("8 referral_token_account: {}", accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX].key);
+        msg!("base_fee_mode: {} cliff_fee: {} actual_fee_rate: {}",
+            self.pool.pool_fees.base_fee.base_fee_mode,
+            self.pool.pool_fees.base_fee.cliff_fee_numerator,
+            self.fee_rate_a_to_b);
         Ok(())
     }
 
@@ -124,10 +140,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         } else {
             TradeDirection::BtoA
         };
-        eprintln!("trade_direction: {:?}", trade_direction);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("trade_direction: {:?}", trade_direction);
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
-    
+
         let current_point =
             get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
@@ -176,7 +193,8 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         } else {
             TradeDirection::AtoB // Output is quote, input is base
         };
-        eprintln!("trade_direction: {:?}", trade_direction);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("trade_direction: {:?}", trade_direction);
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
 
@@ -193,7 +211,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             (base_token, quote_token) // Output is quote, input is base
         };
 
-        let transfer_fee = get_transfer_fee(token_out_mint, amount_out)?;
+        let transfer_fee = get_transfer_inverse_fee(token_out_mint, amount_out)?;
         let amount_out_with_fees = amount_out.checked_add(transfer_fee).unwrap();
 
         let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
@@ -220,16 +238,17 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
 
     fn calculate_optimal_amount_in(&self, input_mint: Pubkey, target_price: f64) -> Result<u64> {
-        let liquidity = self.pool.liquidity as f64;
-        let f_amm = 1.0 - self.fee_rate;
+        let liquidity = self.pool.liquidity as f64 / Q64_SCALE;
         let sqrt_price = self.pool.sqrt_price as f64 / Q64_SCALE;
         let target_sqrt_price = target_price.sqrt();
         let current_sqrt_price = sqrt_price;
         let optimal_amount_in = if self.base_token_pk == input_mint {
-            // Input X to DAMMV2
+            // Input A to DAMMV2 (A→B)
+            let f_amm = 1.0 - self.fee_rate_a_to_b;
             (liquidity / f_amm) * (1.0 / target_sqrt_price - 1.0 / current_sqrt_price)
         } else {
-            // Input Y to DAMMV2
+            // Input B to DAMMV2 (B→A)
+            let f_amm = 1.0 - self.fee_rate_b_to_a;
             (liquidity / f_amm) * (target_sqrt_price - current_sqrt_price)
         };
         return Ok(optimal_amount_in as u64);
@@ -299,7 +318,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*referral_token_account.key, false),
+            if referral_token_account.key == program_id.key {
+                AccountMeta::new_readonly(*referral_token_account.key, false)
+            } else {
+                AccountMeta::new(*referral_token_account.key, false)
+            },
             AccountMeta::new_readonly(*event_authority.key, false),
             AccountMeta::new_readonly(*program_id.key, false),
         ];
@@ -392,12 +415,18 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
         let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
 
+        let (input_token_account, output_token_account) = if self.base_token_pk == input_mint {
+            (user_base_token_account, user_quote_token_account)
+        } else {
+            (user_quote_token_account, user_base_token_account)
+        };
+
         let min_amount_out_value = min_amount_out.unwrap_or(0);
         let metas = vec![
             AccountMeta::new_readonly(*pool_authority.key, false), // pool_authority
             AccountMeta::new(*pool_id.key, false),                 // pool_id
-            AccountMeta::new(*user_base_token_account.key, false),
-            AccountMeta::new(*user_quote_token_account.key, false),
+            AccountMeta::new(*input_token_account.key, false),     // input_token_account
+            AccountMeta::new(*output_token_account.key, false),    // output_token_account
             AccountMeta::new(*base_vault.key, false), // base_vault
             AccountMeta::new(*quote_vault.key, false), // quote_vault
             AccountMeta::new_readonly(self.base_token_pk, false),
@@ -405,7 +434,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             AccountMeta::new(*payer.key, true),
             AccountMeta::new_readonly(*base_token_program.key, false),
             AccountMeta::new_readonly(*quote_token_program.key, false),
-            AccountMeta::new_readonly(*referral_token_account.key, false),
+            if referral_token_account.key == program_id.key {
+                AccountMeta::new_readonly(*referral_token_account.key, false)
+            } else {
+                AccountMeta::new(*referral_token_account.key, false)
+            },
             AccountMeta::new_readonly(*event_authority.key, false), // event_authority
             AccountMeta::new_readonly(*program_id.key, false),      // program_id
         ];
@@ -432,9 +465,9 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             accounts[self.start_index + Self::PROGRAM_ID_IDX].clone(),           // program_id
         ];
         accounts_vec
-            .push(unsafe { std::mem::transmute(user_base_token_account.to_account_info()) });
+            .push(unsafe { std::mem::transmute(input_token_account.to_account_info()) });
         accounts_vec
-            .push(unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) });
+            .push(unsafe { std::mem::transmute(output_token_account.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
         accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
@@ -463,6 +496,7 @@ impl<'info> MeteoraDammV2<'info> {
         accounts: &[AccountInfo<'info>],
         start_index: usize,
         end_index: usize,
+        clock: &Clock,
     ) -> Result<Self> {
         // Access accounts by indices (relative to start_index)
         let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone(); // 1
@@ -470,20 +504,49 @@ impl<'info> MeteoraDammV2<'info> {
         let pool: Pool = bytemuck::pod_read_unaligned(&pool_data[8..]);
         let base_token = accounts[start_index + Self::BASE_TOKEN_IDX].clone(); // 4
         let quote_token = accounts[start_index + Self::QUOTE_TOKEN_IDX].clone(); // 5
-        // let referral_token_account =
-        //     accounts[start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX].clone(); // 8
         let (price, inverse_price) = get_prices(pool)?;
         let base_vault = accounts[start_index + Self::BASE_VAULT_IDX].clone(); // 2
         let quote_vault = accounts[start_index + Self::QUOTE_VAULT_IDX].clone(); // 3
         let base_vault_amount = parse_token_account(&base_vault)?.amount;
         let quote_vault_amount = parse_token_account(&quote_vault)?.amount;
-        eprintln!("base_vault_amount: {:?}", base_vault_amount);
-        eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("base_vault_amount: {:?}", base_vault_amount);
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
 
-        // FEE_DENOMINATOR in DAMM v2 is 1_000_000_000
-        let fee_rate = pool.pool_fees.base_fee.cliff_fee_numerator as f64 / 1_000_000_000.0;
+        // Compute actual fee using the full fee pipeline (base fee scheduler + dynamic fee)
+        // cliff_fee_numerator is the initial/max fee, but the actual fee decays over time
+        // via FeeSchedulerLinear/Exponential, and dynamic (volatility) fee is added on top
+        let current_point = get_current_point(
+            pool.activation_type,
+            clock.slot,
+            clock.unix_timestamp as u64,
+        )
+        .unwrap_or(0);
+        let max_fee = get_max_fee_numerator(pool.version).unwrap_or(500_000_000);
+        let fallback_fee = pool.pool_fees.base_fee.cliff_fee_numerator as f64 / 1_000_000_000.0;
+        let fee_rate_a_to_b = pool.pool_fees
+            .get_total_trading_fee_from_excluded_fee_amount(
+                current_point,
+                pool.activation_point,
+                0,
+                TradeDirection::AtoB,
+                max_fee,
+            )
+            .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
+            .unwrap_or(fallback_fee);
+        let fee_rate_b_to_a = pool.pool_fees
+            .get_total_trading_fee_from_excluded_fee_amount(
+                current_point,
+                pool.activation_point,
+                0,
+                TradeDirection::BtoA,
+                max_fee,
+            )
+            .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
+            .unwrap_or(fallback_fee);
 
-        Ok(MeteoraDammV2 {
+        let instance = MeteoraDammV2 {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
             pool: pool.clone(),
@@ -494,9 +557,12 @@ impl<'info> MeteoraDammV2<'info> {
             quote_vault_amount: quote_vault_amount,
             start_index,
             end_index,
-            fee_rate,
+            fee_rate_a_to_b,
+            fee_rate_b_to_a,
             phantom: PhantomData,
-        })
+        };
+        // instance.log_accounts(accounts)?;
+        Ok(instance)
     }
     
 }
@@ -509,6 +575,16 @@ mod tests {
         account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey, system_program,
     };
     use bytemuck;
+
+    fn default_clock() -> Clock {
+        Clock {
+            slot: 350_000_000,
+            epoch_start_timestamp: 0,
+            epoch: 700,
+            leader_schedule_epoch: 0,
+            unix_timestamp: 1739800000, // ~Feb 2025
+        }
+    }
     use damm_v2::state::pool::Pool;
 
     // Helper to convert solana_sdk::account::Account to AccountInfo
@@ -715,7 +791,7 @@ mod tests {
     #[test]
     fn test_meteora_damm_v2_new_insufficient_accounts() {
         let accounts = vec![];
-        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len());
+        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock());
         assert!(result.is_err());
     }
 
@@ -743,7 +819,7 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len());
+        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock());
         assert!(result.is_ok());
 
         let meteora = result.unwrap();
@@ -788,19 +864,19 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
         let data = accounts[1].try_borrow_data().unwrap();
         let pool: Pool = bytemuck::pod_read_unaligned(&data[8..]);
 
-        eprintln!("pool: {:?}", pool.token_a_mint);
-        eprintln!("pool: {:?}", pool.token_b_mint);
-        eprintln!("pool: {:?}", pool.token_a_vault);
-        eprintln!("pool: {:?}", pool.token_b_vault);
-        eprintln!("pool activation_point: {}", pool.activation_point);
-        eprintln!("pool activation_type: {}", pool.activation_type);
-        eprintln!("pool liquidity: {}", pool.liquidity);
-        eprintln!("pool pool_status: {}", pool.pool_status);
-        eprintln!("pool sqrt_price: {}", pool.sqrt_price);
+        debug_eprintln!("pool: {:?}", pool.token_a_mint);
+        debug_eprintln!("pool: {:?}", pool.token_b_mint);
+        debug_eprintln!("pool: {:?}", pool.token_a_vault);
+        debug_eprintln!("pool: {:?}", pool.token_b_vault);
+        debug_eprintln!("pool activation_point: {}", pool.activation_point);
+        debug_eprintln!("pool activation_type: {}", pool.activation_type);
+        debug_eprintln!("pool liquidity: {}", pool.liquidity);
+        debug_eprintln!("pool pool_status: {}", pool.pool_status);
+        debug_eprintln!("pool sqrt_price: {}", pool.sqrt_price);
 
         // Use actual addresses from pool data for important accounts
         let program_id = MeteoraDammV2::PROGRAM_ID;
@@ -825,7 +901,7 @@ mod tests {
         ];
 
         let meteora_correct =
-            MeteoraDammV2::new(correct_accounts.as_slice(), 0, correct_accounts.len()).unwrap();
+            MeteoraDammV2::new(correct_accounts.as_slice(), 0, correct_accounts.len(), &default_clock()).unwrap();
 
         let clock = Clock {
             slot: 200000000, // High slot number to ensure activation
@@ -840,15 +916,15 @@ mod tests {
         let input_mint = base_token; // Swap base token in
         let result =
             meteora_correct.swap_base_in(correct_accounts.as_slice(), input_mint, amount_in, clock);
-        eprintln!("result: {:?}", result);
+        debug_eprintln!("result: {:?}", result);
         if let Err(ref e) = result {
-            eprintln!("Error: {:?}", e);
+            debug_eprintln!("Error: {:?}", e);
         }
         // Should succeed and return some output amount
         assert!(result.is_ok());
         let output_amount = result.unwrap();
         assert!(output_amount > 0);
-        eprintln!("Result {:?}", output_amount);
+        debug_eprintln!("Result {:?}", output_amount);
     }
 
     #[test]
@@ -883,12 +959,12 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
         let data = accounts[1].try_borrow_data().unwrap();
         let pool: Pool = bytemuck::pod_read_unaligned(&data[8..]);
 
-        eprintln!("pool: {:?}", pool.token_a_mint);
-        eprintln!("pool: {:?}", pool.token_b_mint);
+        debug_eprintln!("pool: {:?}", pool.token_a_mint);
+        debug_eprintln!("pool: {:?}", pool.token_b_mint);
 
         let clock = Clock {
             slot: 1000,
@@ -907,7 +983,7 @@ mod tests {
         assert!(result.is_ok());
         let output_amount = result.unwrap();
         assert!(output_amount > 0);
-        eprintln!("Result {:?}", output_amount);
+        debug_eprintln!("Result {:?}", output_amount);
     }
 
     #[test]
@@ -943,7 +1019,7 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
 
         let clock = Clock {
             slot: 1000,
@@ -994,7 +1070,7 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
 
         let clock = Clock {
             slot: 1000,
@@ -1036,7 +1112,7 @@ mod tests {
             create_mock_account_info(referral_token_account, system_program::id(), None),
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
 
         // Test ProgramMeta trait implementation
         let id = meteora.get_id();
@@ -1059,15 +1135,15 @@ mod tests {
                 pool_account_info.try_borrow_data().unwrap();
             let pool: Pool = bytemuck::pod_read_unaligned(&pool_data[8..]);
 
-            eprintln!("Mint A: {:?}", pool.token_a_mint);
-            eprintln!("Mint B: {:?}", pool.token_b_mint);
-            eprintln!("Pool A Vault: {:?}", pool.token_a_vault);
-            eprintln!("Pool B Vault: {:?}", pool.token_b_vault);
-            eprintln!("pool activation_point: {}", pool.activation_point);
-            eprintln!("pool activation_type: {}", pool.activation_type);
-            eprintln!("pool liquidity: {}", pool.liquidity);
-            eprintln!("pool pool_status: {}", pool.pool_status);
-            eprintln!("pool sqrt_price: {}", pool.sqrt_price);
+            debug_eprintln!("Mint A: {:?}", pool.token_a_mint);
+            debug_eprintln!("Mint B: {:?}", pool.token_b_mint);
+            debug_eprintln!("Pool A Vault: {:?}", pool.token_a_vault);
+            debug_eprintln!("Pool B Vault: {:?}", pool.token_b_vault);
+            debug_eprintln!("pool activation_point: {}", pool.activation_point);
+            debug_eprintln!("pool activation_type: {}", pool.activation_type);
+            debug_eprintln!("pool liquidity: {}", pool.liquidity);
+            debug_eprintln!("pool pool_status: {}", pool.pool_status);
+            debug_eprintln!("pool sqrt_price: {}", pool.sqrt_price);
 
             (
                 pool.token_a_mint,
@@ -1118,14 +1194,14 @@ mod tests {
         ];
 
         let clock1 = get_clock(&rpc_client).await.unwrap();
-        let meteora_damm_v2 = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len()).unwrap();
+        let meteora_damm_v2 = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &clock1).unwrap();
 
         let prices = meteora_damm_v2.get_prices().unwrap();
         let price = prices.0;
         let inverse_price = prices.1;
-        eprintln!("price: {:?}", price);
-        eprintln!("inverse_price: {:?}", inverse_price);
-        eprintln!("================================================");
+        debug_eprintln!("price: {:?}", price);
+        debug_eprintln!("inverse_price: {:?}", inverse_price);
+        debug_eprintln!("================================================");
 
         let in_sol_amount = 1_000_000_000;
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
@@ -1142,10 +1218,10 @@ mod tests {
         };
 
         let (max_sol_in, max_token_out) = meteora_damm_v2.get_max_amounts_in_out(sol_mint).unwrap();
-        eprintln!("Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}", max_sol_in as f64 / 1_000_000_000.0, max_token_out as f64 / 1_000_000.0);
+        debug_eprintln!("Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}", max_sol_in as f64 / 1_000_000_000.0, max_token_out as f64 / 1_000_000.0);
 
-        eprintln!("Sol price: {:?}", sol_price);
-        eprintln!("Token price: {:?}", token_price);
+        debug_eprintln!("Sol price: {:?}", sol_price);
+        debug_eprintln!("Token price: {:?}", token_price);
         let token_out: u64 = meteora_damm_v2
             .swap_base_in(accounts.as_slice(), sol_mint, in_sol_amount, clock1.clone())
             .unwrap();
@@ -1153,7 +1229,7 @@ mod tests {
         // Expected using oracle price (for debug only)
         let expected_token_out = (in_sol_amount as f64 * sol_price) as u64;
 
-        eprintln!(
+        debug_eprintln!(
             "Step 1 (swap_base_in): {} SOL -> {} TOKEN / {}",
             in_sol_amount as f64 / 1_000_000_000.0,
             token_out as f64 / 1_000_000.0,
@@ -1163,19 +1239,19 @@ mod tests {
         let max_sol_in = meteora_damm_v2
             .swap_base_out(accounts.as_slice(), token_mint, token_out, clock1.clone())
             .unwrap();
-        eprintln!(
+        debug_eprintln!(
             "Step 1 (swap_base_out): {} MAX SOL IN -> {} TOKEN OUT",
             max_sol_in as f64 / 1_000_000_000.0,
             token_out as f64 / 1_000_000.0
         );
-        eprintln!("================================================");
+        debug_eprintln!("================================================");
 
         let sol_out = meteora_damm_v2
             .swap_base_in(accounts.as_slice(), token_mint, token_out, clock1.clone())
             .unwrap();
         let expected_sol_out = (token_out as f64 * token_price) as u64;
 
-        eprintln!(
+        debug_eprintln!(
             "Step 2 (swap_base_in): {} TOKEN -> {} SOL / {}",
             token_out as f64 / 1_000_000.0,
             sol_out as f64 / 1_000_000_000.0,
@@ -1184,11 +1260,11 @@ mod tests {
         let max_token_in = meteora_damm_v2
             .swap_base_out(accounts.as_slice(), sol_mint, sol_out, clock1.clone())
             .unwrap();
-        eprintln!(
+        debug_eprintln!(
             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",
             max_token_in as f64 / 1_000_000.0,
             sol_out as f64 / 1_000_000_000.0,
         );
-        eprintln!("================================================");
+        debug_eprintln!("================================================");
     }
 }

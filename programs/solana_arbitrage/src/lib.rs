@@ -1,5 +1,14 @@
 use anchor_lang::prelude::*;
 
+macro_rules! debug_eprintln {
+    ($($arg:tt)*) => {{
+        #[cfg(any(test, feature = "debug"))]
+        {
+            eprintln!($($arg)*);
+        }
+    }};
+}
+
 pub mod arbitrage;
 pub mod math;
 pub mod programs;
@@ -10,6 +19,10 @@ pub mod utils;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
+// #[cfg(test)]
+// #[path = "tests/pubkey_test.rs"]
+// mod pubkey_test;
+
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
 use arbitrage::algo_2::{
@@ -17,10 +30,11 @@ use arbitrage::algo_2::{
     get_edges, ArbitragePath,
 };
 use programs::{
-    MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm,
-    RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
+    MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, RaydiumAmm,
+    RaydiumCLMM, RaydiumCPMM, SolarBError,
 };
 use utils::bot_config::BotConfig;
+use utils::utils::parse_token_account;
 
 // #[cfg(test)]
 // use crate::utils::test_utils::write_results_to_file;
@@ -38,8 +52,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF");
-
+declare_id!("3WyXBdrDoYLVDfzasfFTpzn64PmV9UKwRTFkqXsfKoK8");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -58,6 +71,8 @@ pub struct InstructionData {
     pub accounts_length: [u32; 5],
     /// Arbitrage mode: 0=single pair multi-market, 1=multi-hop chain, 2=multiple trades
     pub mode: u8,
+    /// Test mode: if true, skip profit checks and execute with tiny amount (100 lamports)
+    pub test: bool,
 }
 
 #[derive(Accounts)]
@@ -68,70 +83,87 @@ pub mod solar_b {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
-
-        let first_accounts = &ctx.remaining_accounts[..7];
-        let rest = &ctx.remaining_accounts[7..];
+        // let first_accounts = &ctx.remaining_accounts[..7];
+        // msg!("first_accounts: {:?}", first_accounts.len());
+        // let rest = &ctx.remaining_accounts[7..];
+        // msg!("rest: {:?}", rest.len());
+        // msg!("clock: {:?}", clock);
         let clock: Clock = Clock::get()?;
-        msg!("start");
-        start_bot(&first_accounts, &rest, data, clock)?;
-
+        start_bot(&ctx.remaining_accounts, data, clock)?;
         Ok(())
     }
 }
 
+#[inline(never)]
 fn start_bot<'info>(
-    first_accounts: &[AccountInfo<'info>],
-    rest: &[AccountInfo<'info>],
+    accounts: &[AccountInfo<'info>],
     data: InstructionData,
     clock: Clock,
 ) -> Result<Option<ArbitragePath>> {
-    let payer = &first_accounts[0];
+    let payer = &accounts[0];
 
-    let max_amount_in = payer.lamports();
+    let num_mints = data.mints as usize;
+    let pool_start = 1 + num_mints * 3;
+
+    // Start token is always mint index 0, user token account at offset 3
+    let user_token_account = &accounts[3];
+    let max_amount_in = parse_token_account(user_token_account)?.amount;
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
-    msg!("start parsing");
-    let mut instances = parse_accounts(rest, &data)?;
-    msg!("Finished parsing accounts");
-    #[cfg(feature = "debug")]
-    msg!("INSTANCES: {}", instances.len());
+
+    #[cfg(test)]
+    debug_eprintln!("max_amount_in: {:?}", max_amount_in);
+    let mut instances = parse_accounts(&accounts[pool_start..], &data, &clock)?;
 
     // let max_amount_in = 100_000_000_000_u64;
-    let mut bot_config = BotConfig::new(Some(WSOL), max_amount_in, 0, data.mints, data.mode, clock);
-    msg!("config");
-    let Some(arbitrage_path) = run_arbitrage(rest, &instances, &mut bot_config)? else {
+    let test_mode = data.test;
+    let mut bot_config = BotConfig::new(
+        Some(WSOL),
+        max_amount_in,
+        0,
+        data.mints,
+        data.mode,
+        clock,
+        test_mode,
+    );
+    let pool_accounts = &accounts[pool_start..];
+    let Some(mut arbitrage_path) = run_arbitrage(pool_accounts, &instances, &mut bot_config)?
+    else {
+        msg!("Not found");
         return Ok(None);
     };
 
-    run_simulation(rest, &arbitrage_path, &mut instances, &mut bot_config)?;
+    #[cfg(any(test, feature = "debug"))]
+    run_simulation(
+        pool_accounts,
+        &arbitrage_path,
+        &mut instances,
+        &mut bot_config,
+    )?;
 
-    if arbitrage_path.profit <= 0 {
+    if !test_mode && arbitrage_path.profit <= 0 {
+        msg!("Not found");
         return Ok(None);
     }
 
-    #[cfg(feature = "debug")]
-    msg!("Arbitrage found. Profit: {}", arbitrage_path.profit);
+    if test_mode {
+        // Override with tiny amount: 100 lamports (0.0000001 SOL)
+        arbitrage_path.start_amount = 100;
+        msg!("Executing with 100 lamports");
+        // debug_eprintln!("arbitrage_path: {:?}", arbitrage_path);
+    }
 
-    // execute_arbitrage_path(
-    //     rest,
-    //     &arbitrage_path,
-    //     &mut instances,
-    //     payer,
-    //     &first_accounts[1], // mint_1
-    //     &first_accounts[2], // mint_1_token_program
-    //     &first_accounts[3], // user_mint_1_token_account
-    //     &first_accounts[4], // mint_2
-    //     &first_accounts[5], // mint_2_token_program
-    //     &first_accounts[6], // user_mint_2_token_account
-    // )?;
-
+    execute_arbitrage_path(accounts, &arbitrage_path, &mut instances, payer, data.mints)?;
+    debug_eprintln!("ended");
     Ok(Some(arbitrage_path))
 }
 
+#[inline(never)]
 fn parse_accounts<'info>(
     accounts: &[AccountInfo<'info>],
     data: &InstructionData,
+    clock: &Clock,
 ) -> Result<Vec<ProgramInstance<'info>>> {
     let mut index: usize = 0;
     let accounts_len = accounts.len();
@@ -157,10 +189,10 @@ fn parse_accounts<'info>(
         if accounts_len < end_index {
             return Err(error!(SolarBError::InsufficientAccounts));
         }
-
         // Direct key access without creating a slice first
         let program_key = accounts[index].key;
-        let instance = find_program_instance(program_key, accounts, index, end_index)?;
+        let instance = find_program_instance(program_key, accounts, index, end_index, clock)?;
+        // instance.log_accounts(accounts)?;
         instances.push(instance);
         index = end_index;
     }
@@ -173,90 +205,130 @@ fn parse_accounts<'info>(
 }
 /// Fast program instance lookup using pre-computed byte arrays.
 /// Order programs by expected frequency for fastest average lookup.
-#[inline]
+/// Each constructor is in its own #[inline(never)] fn to get a separate stack frame,
+/// avoiding the compiler reserving stack for all program structs in one frame.
+#[inline(never)]
 pub fn find_program_instance<'info>(
     program_id: &Pubkey,
     accounts: &[AccountInfo<'info>],
     start_index: usize,
     end_index: usize,
+    clock: &Clock,
 ) -> Result<ProgramInstance<'info>> {
     let id_bytes = program_id.to_bytes();
 
     // Order by expected frequency (most common first)
     if id_bytes == PUMP_AMM_ID_BYTES {
-        msg!("PumpAmm");
-        return Ok(ProgramInstance::PumpAmm(PumpAmm::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_pump_amm(accounts, start_index, end_index);
     }
     if id_bytes == METEORA_DAMM_V1_ID_BYTES {
-        msg!("MeteoraDammV1");
-        return Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_meteora_damm_v1(accounts, start_index, end_index, clock);
     }
     if id_bytes == METEORA_DAMM_V2_ID_BYTES {
-        msg!("MeteoraDammV2");
-        return Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_meteora_damm_v2(accounts, start_index, end_index, clock);
     }
     if id_bytes == METEORA_DLMM_ID_BYTES {
-        msg!("MeteoraDlmm");
-        return Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_meteora_dlmm(accounts, start_index, end_index);
     }
     if id_bytes == ORCA_WHIRLPOOL_ID_BYTES {
-        msg!("OrcaWhirlpool");
-        return Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_orca_whirlpool(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_AMM_ID_BYTES {
-        msg!("RaydiumAmm");
-        return Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_raydium_amm(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_CLMM_ID_BYTES {
-        msg!("RaydiumCLMM");
-        return Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_raydium_clmm(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_CPMM_ID_BYTES {
-        msg!("RaydiumCPMM");
-        return Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(
-            accounts,
-            start_index,
-            end_index,
-        )?));
+        return create_raydium_cpmm(accounts, start_index, end_index);
     }
     Err(error!(SolarBError::UnknownProgram))
 }
 
+#[inline(never)]
+fn create_pump_amm<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(PumpAmm::new(accounts, start, end)?))
+}
+
+#[inline(never)]
+fn create_meteora_damm_v1<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+    clock: &Clock,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(MeteoraDammV1::new(accounts, start, end, clock)?))
+}
+
+#[inline(never)]
+fn create_meteora_damm_v2<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+    clock: &Clock,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(MeteoraDammV2::new(accounts, start, end, clock)?))
+}
+
+#[inline(never)]
+fn create_meteora_dlmm<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(MeteoraDlmm::new(accounts, start, end)?))
+}
+
+#[inline(never)]
+fn create_orca_whirlpool<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(OrcaWhirlpool::new(accounts, start, end)?))
+}
+
+#[inline(never)]
+fn create_raydium_amm<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(RaydiumAmm::new(accounts, start, end)?))
+}
+
+#[inline(never)]
+fn create_raydium_clmm<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(RaydiumCLMM::new(accounts, start, end)?))
+}
+
+#[inline(never)]
+fn create_raydium_cpmm<'info>(
+    accounts: &[AccountInfo<'info>],
+    start: usize,
+    end: usize,
+) -> Result<ProgramInstance<'info>> {
+    Ok(Box::new(RaydiumCPMM::new(accounts, start, end)?))
+}
+
+#[inline(never)]
 pub fn run_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     match config.mode {
-        arb_mode::SINGLE_PAIR_MULTI_MARKET => run_single_pair_arbitrage(accounts, instances, config),
+        arb_mode::SINGLE_PAIR_MULTI_MARKET => {
+            run_single_pair_arbitrage(accounts, instances, config)
+        }
         arb_mode::MULTI_HOP_CHAIN => run_multi_hop_arbitrage(accounts, instances, config),
         arb_mode::MULTIPLE_TRADES => run_multiple_trades_arbitrage(accounts, instances, config),
         _ => Err(error!(SolarBError::InvalidMode)),
@@ -266,22 +338,22 @@ pub fn run_arbitrage<'info>(
 /// CASE 1: Single token pair, multiple markets
 /// All markets share the same two mints (e.g., SOL <-> TOKEN1)
 /// Finds the best path through available markets
+#[inline(never)]
 fn run_single_pair_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
-    msg!("single");
     let (edges, profit, _) = check_arbitrage(instances, config)?;
-    msg!("edges: {:?}", edges.len());
-    if profit <= 0 {
+    if !config.test && profit <= 0 {
+        debug_eprintln!("Not found 1");
         return Ok(None);
     }
 
     let (optimal_amount_in, profit) =
         find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
 
-    if profit <= 0 || optimal_amount_in == 0 {
+    if !config.test && (profit <= 0 || optimal_amount_in == 0) {
         return Ok(None);
     }
 
@@ -299,12 +371,9 @@ fn run_single_pair_arbitrage<'info>(
     #[cfg(any(test, feature = "debug"))]
     {
         let profit_pct = (profit as f64 / optimal_amount_in as f64) * 100.0;
-        msg!(
+        debug_eprintln!(
             "PROFIT: in={} out={} profit={} ({:.2}%)",
-            optimal_amount_in,
-            final_amount,
-            profit,
-            profit_pct
+            optimal_amount_in, final_amount, profit, profit_pct
         );
     }
 
@@ -317,14 +386,14 @@ fn run_single_pair_arbitrage<'info>(
 /// CASE 2: Multi-hop chain arbitrage
 /// Edges form a sequential chain through different mints
 /// Example: SOL -> TOKEN1 -> USDC -> SOL (3-hop)
+#[inline(never)]
 fn run_multi_hop_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
-    #[cfg(feature = "debug")]
-    msg!("Multi-hop chain: {} mints", config.mints);
 
+    debug_eprintln!("Multi-hop chain: {} mints", config.mints);
     // Generate edges from all instances
     let edges = get_edges(instances)?;
     let edge_refs: Vec<&_> = edges.iter().collect();
@@ -332,7 +401,12 @@ fn run_multi_hop_arbitrage<'info>(
     // Use triangular arbitrage finder for 3+ hop chains
     let (path_edges, profit, _) = find_triangular_arbitrage_iterative(&edge_refs, config)?;
 
-    if profit <= 0 || path_edges.is_empty() {
+    if !config.test && (profit <= 0 || path_edges.is_empty()) {
+        msg!("No profit 2");
+        return Ok(None);
+    }
+
+    if path_edges.is_empty() {
         return Ok(None);
     }
 
@@ -341,7 +415,8 @@ fn run_multi_hop_arbitrage<'info>(
     let (optimal_amount_in, profit) =
         find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
-    if profit <= 0 {
+    if !config.test && profit <= 0 {
+        msg!("No profit 3");
         return Ok(None);
     }
 
@@ -357,13 +432,13 @@ fn run_multi_hop_arbitrage<'info>(
     #[cfg(any(test, feature = "debug"))]
     {
         let profit_pct = (profit as f64 / optimal_amount_in as f64) * 100.0;
-        msg!(
-            "MULTI-HOP PROFIT: in={} out={} profit={} ({:.2}%)",
-            optimal_amount_in,
-            final_amount,
-            profit,
-            profit_pct
-        );
+        #[cfg(any(test, feature = "debug"))]
+        {
+            debug_eprintln!(
+                "MULTI-HOP PROFIT: in={} out={} profit={} ({:.2}%)",
+                optimal_amount_in, final_amount, profit, profit_pct
+            );
+        }
     }
 
     // #[cfg(test)]
@@ -376,13 +451,14 @@ fn run_multi_hop_arbitrage<'info>(
 /// Disconnected subgraphs, each a separate arbitrage opportunity
 /// Example: (SOL -> TOKEN1 -> SOL) vs (SOL -> TOKEN2 -> SOL)
 /// Groups edges by their non-start mint and evaluates each group
+#[inline(never)]
 fn run_multiple_trades_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
-    #[cfg(feature = "debug")]
-    msg!("Multiple trades mode: {} instances", instances.len());
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Multiple trades mode: {} instances", instances.len());
 
     let start_token = config.start_token.unwrap_or(WSOL);
 
@@ -417,8 +493,10 @@ fn run_multiple_trades_arbitrage<'info>(
         }
     }
 
-    #[cfg(feature = "debug")]
-    msg!("Found {} trade groups", edge_groups.len());
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!("Found {} trade groups", edge_groups.len());
+    }
 
     let mut best_path: Option<ArbitragePath> = None;
     let mut best_profit: i128 = 0;
@@ -436,7 +514,11 @@ fn run_multiple_trades_arbitrage<'info>(
         // Run cross arbitrage on this edge group
         let (path_edges, profit, _) = find_cross_arbitrage_iterative(&group_edge_refs, config)?;
 
-        if profit <= 0 || path_edges.is_empty() {
+        if !config.test && (profit <= 0 || path_edges.is_empty()) {
+            continue;
+        }
+
+        if path_edges.is_empty() {
             continue;
         }
 
@@ -444,7 +526,7 @@ fn run_multiple_trades_arbitrage<'info>(
         let (optimal_amount_in, refined_profit) =
             find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
-        if refined_profit > best_profit {
+        if !config.test && refined_profit > best_profit || config.test && best_path.is_none() {
             best_profit = refined_profit;
             let final_amount = (optimal_amount_in as i128).wrapping_add(refined_profit) as u128;
             best_path = Some(ArbitragePath {
@@ -460,90 +542,111 @@ fn run_multiple_trades_arbitrage<'info>(
         #[cfg(any(test, feature = "debug"))]
         {
             let profit_pct = (path.profit as f64 / path.start_amount as f64) * 100.0;
-            msg!(
-                "MULTI-TRADE BEST: in={} out={} profit={} ({:.2}%)",
-                path.start_amount,
-                path.final_amount,
-                path.profit,
-                profit_pct
-            );
+            #[cfg(any(test, feature = "debug"))]
+            {
+                debug_eprintln!(
+                    "MULTI-TRADE BEST: in={} out={} profit={} ({:.2}%)",
+                    path.start_amount, path.final_amount, path.profit, profit_pct
+                );
+            }
         }
 
         // #[cfg(test)]
         // write_results_to_file(&[best_path.clone()]);
-    }
+    };
 
     Ok(best_path)
 }
 
 /// Execute arbitrage path with CU-optimized operations.
 /// Key optimizations:
-/// - No msg! calls in hot path (use #[cfg(feature = "debug")])
+/// - No debug_eprintln! calls in hot path (gated with #[cfg(any(test, feature = "debug"))])
 /// - Direct byte reads instead of try_deserialize
-/// - Pre-cache mint_2 key to avoid repeated .key() calls
+/// - Dynamic mint lookup table supports N mints (not just 2)
 /// - Index-based instance lookup instead of .find()
+///
+/// Account layout:
+///   accounts[0]             = payer
+///   accounts[1 + i*3 + 0]  = mint_i
+///   accounts[1 + i*3 + 1]  = mint_i_token_program
+///   accounts[1 + i*3 + 2]  = user_mint_i_token_account
+///   accounts[1 + N*3 ..]   = pool accounts
+#[inline(never)]
 pub fn execute_arbitrage_path<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
     instances: &mut Vec<ProgramInstance<'info>>,
     payer: &AccountInfo<'info>,
-    mint_1: &AccountInfo<'info>,
-    mint_1_token_program: &AccountInfo<'info>,
-    user_mint_1_token_account: &AccountInfo<'info>,
-    mint_2: &AccountInfo<'info>,
-    mint_2_token_program: &AccountInfo<'info>,
-    user_mint_2_token_account: &AccountInfo<'info>,
+    num_mints: u16,
 ) -> Result<()> {
-    #[cfg(feature = "debug")]
-    msg!("Executing {} edges", arbitrage_path.edges.len());
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("Executing {} edges", arbitrage_path.edges.len());
 
-    let mut current_amount = arbitrage_path.start_amount;
+    let num_mints = num_mints as usize;
+    let pool_start = 1 + num_mints * 3;
+    let remaining_accounts = &accounts[pool_start..];
 
-    // Cache mint_2 key bytes for fast comparison (avoid repeated .key() calls)
-    let mint_2_key = *mint_2.key;
+    let start_amount = arbitrage_path.start_amount;
+    let mut current_amount = start_amount;
 
     for edge in arbitrage_path.edges.iter() {
         // Find program instance by pool_id using linear scan
-        // TODO: Consider adding instance_index to Edge struct for O(1) lookup
         let pool_id = &edge.pool_id;
         let program_instance = instances
             .iter()
             .find(|inst| inst.get_pool_id() == pool_id)
             .ok_or(SolarBError::UnknownProgram)?;
 
-        let input_mint = edge.left.mint_account;
+        let input_mint_key = &edge.left.mint_account;
+        let output_mint_key = &edge.right.mint_account;
 
-        #[cfg(feature = "debug")]
-        msg!(
+        // Resolve input/output mint base indices inline — no heap alloc,
+        // no Pubkey copies. N is 2-4 so this is cheaper than any table.
+        let mut input_base = 0usize;
+        let mut output_base = 0usize;
+        let mut found = 0u8;
+        for i in 0..num_mints {
+            let base = 1 + i * 3;
+            let key = accounts[base].key; // &Pubkey, no copy
+            if key == input_mint_key {
+                input_base = base;
+                found |= 1;
+            } else if key == output_mint_key {
+                output_base = base;
+                found |= 2;
+            }
+            if found == 3 {
+                break;
+            }
+        }
+        if found != 3 {
+            return Err(error!(SolarBError::InvalidAccountData));
+        }
+
+        #[cfg(any(test, feature = "debug"))]
+        debug_eprintln!(
             "Swap {} {} -> {}",
-            current_amount,
-            input_mint,
-            edge.right.mint_account
+            current_amount, input_mint_key, output_mint_key
         );
 
         // Execute swap - AccountInfo clone is unavoidable for CPI
         program_instance.invoke_swap_base_in(
-            accounts,
-            input_mint,
+            remaining_accounts,
+            *input_mint_key,
             current_amount,
             None,
             payer.clone(),
-            user_mint_1_token_account.clone(),
-            user_mint_2_token_account.clone(),
-            mint_1.clone(),
-            mint_2.clone(),
-            mint_1_token_program.clone(),
-            mint_2_token_program.clone(),
+            accounts[input_base + 2].clone(), // user source token account
+            accounts[output_base + 2].clone(), // user destination token account
+            accounts[input_base].clone(),     // input mint
+            accounts[output_base].clone(),    // output mint
+            accounts[input_base + 1].clone(), // input token program
+            accounts[output_base + 1].clone(), // output token program
         )?;
 
         // Direct byte read of amount field - much cheaper than try_deserialize
         // SPL Token account layout: mint (32) + owner (32) + amount (8) + ...
-        let output_token_account = if edge.right.mint_account == mint_2_key {
-            user_mint_2_token_account
-        } else {
-            user_mint_1_token_account
-        };
-
+        let output_token_account = &accounts[output_base + 2];
         let data = output_token_account.try_borrow_data()?;
         current_amount = u64::from_le_bytes(
             data[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
@@ -552,14 +655,12 @@ pub fn execute_arbitrage_path<'info>(
         );
     }
 
-    #[cfg(feature = "debug")]
+    #[cfg(any(test, feature = "debug"))]
     {
         let final_profit = current_amount as i128 - arbitrage_path.start_amount as i128;
-        msg!(
+        debug_eprintln!(
             "Done: {} -> {} (profit: {})",
-            arbitrage_path.start_amount,
-            current_amount,
-            final_profit
+            arbitrage_path.start_amount, current_amount, final_profit
         );
     }
 
@@ -568,6 +669,7 @@ pub fn execute_arbitrage_path<'info>(
 
 /// Read mint decimals from SPL Token mint account data (offset 44).
 /// Returns 9 if the account is not found or data is too short.
+#[cfg(any(test, feature = "debug"))]
 fn get_mint_decimals(accounts: &[AccountInfo], mint_key: &Pubkey) -> u8 {
     for acc in accounts {
         if acc.key == mint_key {
@@ -582,6 +684,7 @@ fn get_mint_decimals(accounts: &[AccountInfo], mint_key: &Pubkey) -> u8 {
     9
 }
 
+#[cfg(any(test, feature = "debug"))]
 fn format_amount(amount: u64, decimals: u8) -> String {
     let divisor = 10u64.pow(decimals as u32) as f64;
     format!(
@@ -592,6 +695,7 @@ fn format_amount(amount: u64, decimals: u8) -> String {
     )
 }
 
+#[cfg(any(test, feature = "debug"))]
 fn format_amount_i128(amount: i128, decimals: u8) -> String {
     let divisor = 10u64.pow(decimals as u32) as f64;
     format!(
@@ -602,6 +706,7 @@ fn format_amount_i128(amount: i128, decimals: u8) -> String {
     )
 }
 
+#[cfg(any(test, feature = "debug"))]
 fn run_simulation<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
@@ -610,13 +715,6 @@ fn run_simulation<'info>(
 ) -> Result<()> {
     let start_amount = arbitrage_path.start_amount;
     let start_decimals = get_mint_decimals(accounts, &arbitrage_path.edges[0].left.mint_account);
-    eprintln!("\n=== SIMULATION ===");
-    eprintln!(
-        "Optimal amount in: {}",
-        format_amount(start_amount, start_decimals)
-    );
-    eprintln!("Edges: {}", arbitrage_path.edges.len());
-    eprintln!("---");
 
     let mut current_amount = start_amount;
 
@@ -625,21 +723,6 @@ fn run_simulation<'info>(
         let output_mint = edge.right.mint_account;
         let in_decimals = get_mint_decimals(accounts, &input_mint);
         let out_decimals = get_mint_decimals(accounts, &output_mint);
-
-        let program_name = match instances
-            .iter()
-            .find(|inst| inst.get_pool_id() == &edge.pool_id)
-        {
-            Some(&ProgramInstance::MeteoraDlmm(_)) => "MeteoraDLMM",
-            Some(&ProgramInstance::MeteoraDammV1(_)) => "MeteoraDammV1",
-            Some(&ProgramInstance::MeteoraDammV2(_)) => "MeteoraDammV2",
-            Some(&ProgramInstance::OrcaWhirlpool(_)) => "OrcaWhirlpool",
-            Some(&ProgramInstance::PumpAmm(_)) => "PumpAmm",
-            Some(&ProgramInstance::RaydiumAmm(_)) => "RaydiumAmm",
-            Some(&ProgramInstance::RaydiumCPMM(_)) => "RaydiumCPMM",
-            Some(&ProgramInstance::RaydiumCLMM(_)) => "RaydiumCLMM",
-            None => "Unknown",
-        };
 
         let program_instance = instances
             .iter()
@@ -665,10 +748,12 @@ fn run_simulation<'info>(
         let input_short = &input_mint.to_string()[..8];
         let output_short = &output_mint.to_string()[..8];
 
-        eprintln!(
+        #[cfg(any(test, feature = "debug"))]
+        {
+            debug_eprintln!(
             "Edge {}: [{}] {}..-> {}..  |  in={} -> out={}  |  swap_base_out max_in={}  |  diff={}",
             i + 1,
-            program_name,
+            program_instance.name(),
             input_short,
             output_short,
             format_amount(current_amount, in_decimals),
@@ -676,11 +761,12 @@ fn run_simulation<'info>(
             format_amount(required_in, in_decimals),
             current_amount as i128 - required_in as i128,
         );
-
+        }
         current_amount = amount_out;
     }
 
-    eprintln!("---");
+    #[cfg(any(test, feature = "debug"))]
+    debug_eprintln!("---");
     let end_decimals = get_mint_decimals(
         accounts,
         &arbitrage_path.edges.last().unwrap().right.mint_account,
@@ -688,20 +774,28 @@ fn run_simulation<'info>(
     let profit = current_amount as i128 - start_amount as i128;
     if profit > 0 {
         let profit_pct = (profit as f64 / start_amount as f64) * 100.0;
-        eprintln!(
-            "PROFIT: {} ({:.4}%)",
-            format_amount_i128(profit, end_decimals),
-            profit_pct,
-        );
+        #[cfg(any(test, feature = "debug"))]
+        {
+            debug_eprintln!(
+                "PROFIT: {} ({:.4}%)",
+                format_amount_i128(profit, end_decimals),
+                profit_pct,
+            );
+        }
     } else {
-        eprintln!("NO PROFIT: {}", format_amount_i128(profit, end_decimals),);
+        #[cfg(any(test, feature = "debug"))]
+        {
+            debug_eprintln!("NO PROFIT: {}", format_amount_i128(profit, end_decimals),);
+        }
     }
-    eprintln!(
-        "Final: in={} -> out={}",
-        format_amount(start_amount, start_decimals),
-        format_amount(current_amount, end_decimals)
-    );
-    eprintln!("=== END SIMULATION ===\n");
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!(
+            "Final: in={} -> out={}",
+            format_amount(start_amount, start_decimals),
+            format_amount(current_amount, end_decimals)
+        );
+    }
 
     Ok(())
 }
@@ -710,6 +804,16 @@ fn run_simulation<'info>(
 mod tests {
     use super::*;
     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+
+    fn default_clock() -> Clock {
+        Clock {
+            slot: 350_000_000,
+            epoch_start_timestamp: 0,
+            epoch: 700,
+            leader_schedule_epoch: 0,
+            unix_timestamp: 1739800000,
+        }
+    }
 
     // Helper function to create a mock AccountInfo
     fn create_mock_account_info(
@@ -771,9 +875,10 @@ mod tests {
             accounts_length: [9, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -813,9 +918,10 @@ mod tests {
             accounts_length: [9, 13, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 2);
@@ -845,9 +951,10 @@ mod tests {
             accounts_length: [9, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -874,9 +981,10 @@ mod tests {
             accounts_length: [9, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -910,9 +1018,10 @@ mod tests {
             accounts_length: [9, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -938,9 +1047,10 @@ mod tests {
             accounts_length: [9, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -955,9 +1065,10 @@ mod tests {
             accounts_length: [u32::MAX, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         // This should either error on conversion or on insufficient accounts
         assert!(result.is_err());
     }
@@ -970,9 +1081,10 @@ mod tests {
             accounts_length: [0, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 0);
@@ -1002,9 +1114,10 @@ mod tests {
             max_amount_in: 1_000,
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -1032,9 +1145,10 @@ mod tests {
             accounts_length: [13, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -1062,9 +1176,10 @@ mod tests {
             accounts_length: [10, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -1103,9 +1218,10 @@ mod tests {
             accounts_length: [9, 0, 13, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            test: false,
         };
 
-        let result = parse_accounts(&accounts, &data);
+        let result = parse_accounts(&accounts, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 2);

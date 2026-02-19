@@ -56,7 +56,8 @@ pub struct BotConfig {
     pub min_profit: i128,
     pub mints: u16,
     pub mode: u8,
-    pub clock: Clock
+    pub clock: Clock,
+    pub test: bool,
 }
 
 impl BotConfig {
@@ -67,8 +68,7 @@ impl BotConfig {
         mints: u16,
         mode: u8,
         clock: Clock,
-        // mint_1: MintInfo<'info>,
-        // mint_2: MintInfo<'info>,
+        test: bool,
     ) -> Self {
         Self {
             start_token,
@@ -77,8 +77,7 @@ impl BotConfig {
             mints,
             mode,
             clock,
-            // mint_1,
-            // mint_2,
+            test,
         }
     }
 }
