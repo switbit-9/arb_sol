@@ -298,7 +298,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
             data,
         };
 
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             mint_1_token_program.clone(),
             pool_id.clone(),
             authority.clone(),
@@ -310,7 +310,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         ];
 
         unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
             invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())
@@ -376,7 +376,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
             data,
         };
 
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             mint_1_token_program.clone(),
             pool_id.clone(),
             authority.clone(),
@@ -388,7 +388,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         ];
 
         unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
             invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())

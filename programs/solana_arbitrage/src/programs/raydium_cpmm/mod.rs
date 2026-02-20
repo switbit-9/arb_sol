@@ -310,23 +310,26 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         let amm_config_account = &accounts[self.start_index + Self::AMM_CONFIG_IDX];
         let observation_account = &accounts[self.start_index + Self::OBSERVATION_KEY_IDX];
 
-        let (
-            input_token_program,
-            output_token_program,
-            user_input_token_account,
-            user_output_token_account,
-            input_vault,
-            output_vault,
-            input_mint,
-            output_mint,
-        ) = if input_mint == self.base_token_pk {
+        // Determine input/output token programs and mints
+        let (input_vault, output_vault) = if input_mint == self.base_token_pk {
+            (
+
+                base_vault,
+                quote_vault,
+            )
+        } else {
+            (
+                quote_vault,
+                base_vault,
+            )
+        };
+
+        let (input_token_program, output_token_program, user_input_token_account, user_output_token_account, input_mint, output_mint) = if input_mint == *mint_1_account.key {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
-                base_vault,
-                quote_vault,
                 mint_1_account,
                 mint_2_account,
             )
@@ -336,8 +339,6 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
                 mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
-                quote_vault,
-                base_vault,
                 mint_2_account,
                 mint_1_account,
             )
@@ -360,7 +361,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         ];
         let mut data = vec![143, 190, 90, 218, 196, 30, 51, 222];
         data.extend_from_slice(&amount_in.to_le_bytes());
-        data.extend_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes());
+        data.extend_from_slice(&min_amount_out.unwrap_or(1).to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -370,7 +371,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
         // Collect all required accounts for invoke
         // Order must match metas exactly!
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             payer.clone(),
             authority_account.clone(),
             amm_config_account.clone(),
@@ -386,9 +387,9 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             observation_account.clone(),
         ];
 
-        // Cast entire vector to AccountInfo<'a> for invoke
+        // Cast to AccountInfo<'a> for invoke
         unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
             invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())
@@ -416,23 +417,31 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         let amm_config_account = &accounts[self.start_index + Self::AMM_CONFIG_IDX];
         let observation_account = &accounts[self.start_index + Self::OBSERVATION_KEY_IDX];
 
+        let (input_vault, output_vault) = if input_mint == self.base_token_pk {
+            (
+                base_vault,
+                quote_vault,
+            )
+        } else {
+            (
+                quote_vault,
+                base_vault,
+            )
+        };
+
         let (
             input_token_program,
             output_token_program,
             user_input_token_account,
             user_output_token_account,
-            input_vault,
-            output_vault,
             input_mint,
             output_mint,
-        ) = if input_mint == self.base_token_pk {
+        ) = if input_mint == *mint_1_account.key {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
-                base_vault,
-                quote_vault,
                 mint_1_account,
                 mint_2_account,
             )
@@ -442,8 +451,6 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
                 mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
-                quote_vault,
-                base_vault,
                 mint_2_account,
                 mint_1_account,
             )
@@ -466,7 +473,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         ];
         let mut data = vec![55, 217, 98, 86, 163, 74, 180, 173];
         data.extend_from_slice(&max_amount_in.to_le_bytes());
-        data.extend_from_slice(&amount_out.unwrap_or(0).to_le_bytes());
+        data.extend_from_slice(&amount_out.unwrap_or(1).to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
@@ -474,26 +481,25 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
             data,
         };
 
-        // Collect all required accounts for invoke
-        // Order must match metas exactly!
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
-        payer.clone(), 
-        authority_account.clone(),
-        amm_config_account.clone(),
-        pool_id.clone(),
-        user_input_token_account.clone(),
-        user_output_token_account.clone(),
-        input_vault.clone(),
-        output_vault.clone(),
-        input_token_program.clone(),
-        output_token_program.clone(),
-        input_mint.clone(),
-        output_mint.clone(),
-        observation_account.clone(),
+        // Stack-allocated accounts for invoke
+        let accounts_arr = [
+            payer.clone(),
+            authority_account.clone(),
+            amm_config_account.clone(),
+            pool_id.clone(),
+            user_input_token_account.clone(),
+            user_output_token_account.clone(),
+            input_vault.clone(),
+            output_vault.clone(),
+            input_token_program.clone(),
+            output_token_program.clone(),
+            input_mint.clone(),
+            output_mint.clone(),
+            observation_account.clone(),
         ];
-        // Cast entire vector to AccountInfo<'a> for invoke
+        // Cast to AccountInfo<'a> for invoke
         unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
             invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())

@@ -191,14 +191,14 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         let vault_0 = &accounts[self.start_index + Self::VAULT_0_IDX];
         let vault_1 = &accounts[self.start_index + Self::VAULT_1_IDX];
         let observation = &accounts[self.start_index + Self::OBSERVATION_IDX];
-        let memo = &accounts[self.start_index + Self::MEMO_IDX];
         let bitmap_extension = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
+        let token_program_spl = &accounts[1];
+        let token_program_2022: &AccountInfo<'a> = &accounts[2];
+        let memo: &AccountInfo<'a> = &accounts[3];
 
         let zero_for_one = input_mint == self.base_token_pk;
 
         let (
-            input_token_program,
-            output_token_program,
             user_input_account,
             user_output_account,
             input_vault,
@@ -207,8 +207,6 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             output_mint_acc,
         ) = if zero_for_one {
             (
-                mint_1_token_program,
-                mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
                 vault_0,
@@ -218,8 +216,6 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             )
         } else {
             (
-                mint_2_token_program,
-                mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
                 vault_1,
@@ -230,27 +226,25 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         };
 
         // Build swap instruction
-        let mut metas = vec![
-            AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(self.amm_config_key, false),
-            AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*user_input_account.key, false),
-            AccountMeta::new(*user_output_account.key, false),
-            AccountMeta::new(*input_vault.key, false),
-            AccountMeta::new(*output_vault.key, false),
-            AccountMeta::new(*observation.key, false),
-            AccountMeta::new_readonly(*input_token_program.key, false),
-            AccountMeta::new_readonly(*output_token_program.key, false),
-            AccountMeta::new_readonly(*memo.key, false),
-            AccountMeta::new_readonly(*input_mint_acc.key, false),
-            AccountMeta::new_readonly(*output_mint_acc.key, false),
-        ];
+        let mut metas = Vec::with_capacity(20);
+        metas.push(AccountMeta::new(*payer.key, true));
+        metas.push(AccountMeta::new_readonly(self.amm_config_key, false));
+        metas.push(AccountMeta::new(*pool_id.key, false));
+        metas.push(AccountMeta::new(*user_input_account.key, false));
+        metas.push(AccountMeta::new(*user_output_account.key, false));
+        metas.push(AccountMeta::new(*input_vault.key, false));
+        metas.push(AccountMeta::new(*output_vault.key, false));
+        metas.push(AccountMeta::new(*observation.key, false));
+        metas.push(AccountMeta::new_readonly(*token_program_spl.key, false));
+        metas.push(AccountMeta::new_readonly(*token_program_2022.key, false));
+        metas.push(AccountMeta::new_readonly(*memo.key, false));
+        metas.push(AccountMeta::new_readonly(*input_mint_acc.key, false));
+        metas.push(AccountMeta::new_readonly(*output_mint_acc.key, false));
 
         if *bitmap_extension.key != Self::PROGRAM_ID {
             metas.push(AccountMeta::new(*bitmap_extension.key, false));
         }
 
-        // Add tick array accounts as remaining accounts
         for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
             let tick_array = &accounts[i];
             metas.push(AccountMeta::new(*tick_array.key, false));
@@ -268,27 +262,25 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             data,
         };
 
-        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-            payer.clone(),
-            amm_config.clone(),
-            pool_id.clone(),
-            user_input_account.clone(),
-            user_output_account.clone(),
-            input_vault.clone(),
-            output_vault.clone(),
-            observation.clone(),
-            input_token_program.clone(),
-            output_token_program.clone(),
-            memo.clone(),
-            input_mint_acc.clone(),
-            output_mint_acc.clone(),
-        ];
+        let mut accounts_vec: Vec<AccountInfo<'a>> = Vec::with_capacity(20);
+        accounts_vec.push(payer.clone());
+        accounts_vec.push(amm_config.clone());
+        accounts_vec.push(pool_id.clone());
+        accounts_vec.push(user_input_account.clone());
+        accounts_vec.push(user_output_account.clone());
+        accounts_vec.push(input_vault.clone());
+        accounts_vec.push(output_vault.clone());
+        accounts_vec.push(observation.clone());
+        accounts_vec.push(token_program_spl.clone());
+        accounts_vec.push(token_program_2022.clone());
+        accounts_vec.push(memo.clone());
+        accounts_vec.push(input_mint_acc.clone());
+        accounts_vec.push(output_mint_acc.clone());
 
         if *bitmap_extension.key != Self::PROGRAM_ID {
             accounts_vec.push(bitmap_extension.clone());
         }
 
-        // Add tick array accounts
         for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
             accounts_vec.push(accounts[i].clone());
         }
@@ -320,14 +312,14 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         let vault_0 = &accounts[self.start_index + Self::VAULT_0_IDX];
         let vault_1 = &accounts[self.start_index + Self::VAULT_1_IDX];
         let observation = &accounts[self.start_index + Self::OBSERVATION_IDX];
-        let memo = &accounts[self.start_index + Self::MEMO_IDX];
         let bitmap_extension = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
+        let token_program_spl = &accounts[1];
+        let token_program_2022 = &accounts[2];
+        let memo: &AccountInfo<'a> = &accounts[3];
 
         let zero_for_one = input_mint == self.base_token_pk;
 
         let (
-            input_token_program,
-            output_token_program,
             user_input_account,
             user_output_account,
             input_vault,
@@ -336,8 +328,6 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             output_mint_acc,
         ) = if zero_for_one {
             (
-                mint_1_token_program,
-                mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
                 vault_0,
@@ -347,8 +337,6 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             )
         } else {
             (
-                mint_2_token_program,
-                mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
                 vault_1,
@@ -367,8 +355,8 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             AccountMeta::new(*input_vault.key, false),
             AccountMeta::new(*output_vault.key, false),
             AccountMeta::new(*observation.key, false),
-            AccountMeta::new_readonly(*input_token_program.key, false),
-            AccountMeta::new_readonly(*output_token_program.key, false),
+            AccountMeta::new_readonly(*token_program_spl.key, false),
+            AccountMeta::new_readonly(*token_program_2022.key, false),
             AccountMeta::new_readonly(*memo.key, false),
             AccountMeta::new_readonly(*input_mint_acc.key, false),
             AccountMeta::new_readonly(*output_mint_acc.key, false),
@@ -396,27 +384,25 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             data,
         };
 
-        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-            payer.clone(),
-            amm_config.clone(),
-            pool_id.clone(),
-            user_input_account.clone(),
-            user_output_account.clone(),
-            input_vault.clone(),
-            output_vault.clone(),
-            observation.clone(),
-            input_token_program.clone(),
-            output_token_program.clone(),
-            memo.clone(),
-            input_mint_acc.clone(),
-            output_mint_acc.clone(),
-        ];
+        let mut accounts_vec: Vec<AccountInfo<'a>> = Vec::with_capacity(20);
+        accounts_vec.push(payer.clone());
+        accounts_vec.push(amm_config.clone());
+        accounts_vec.push(pool_id.clone());
+        accounts_vec.push(user_input_account.clone());
+        accounts_vec.push(user_output_account.clone());
+        accounts_vec.push(input_vault.clone());
+        accounts_vec.push(output_vault.clone());
+        accounts_vec.push(observation.clone());
+        accounts_vec.push(token_program_spl.clone());
+        accounts_vec.push(token_program_2022.clone());
+        accounts_vec.push(memo.clone());
+        accounts_vec.push(input_mint_acc.clone());
+        accounts_vec.push(output_mint_acc.clone());
 
         if *bitmap_extension.key != Self::PROGRAM_ID {
             accounts_vec.push(bitmap_extension.clone());
         }
 
-        // Add tick array accounts
         for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
             accounts_vec.push(accounts[i].clone());
         }
@@ -451,7 +437,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         msg!("5 token_1: {}", accounts[self.start_index + Self::TOKEN_1_IDX].key);
         msg!("6 amm_config: {}", accounts[self.start_index + Self::AMM_CONFIG_IDX].key);
         msg!("7 observation: {}", accounts[self.start_index + Self::OBSERVATION_IDX].key);
-        msg!("8 memo: {}", accounts[self.start_index + Self::MEMO_IDX].key);
+        msg!("8 memo: {}", accounts[3].key);
         msg!("9 bitmap_extension: {}", accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key);
         for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
             msg!("{} tick_array: {}", i - self.start_index, accounts[i].key);
@@ -474,10 +460,9 @@ impl<'info> RaydiumCLMM<'info> {
     pub const TOKEN_1_IDX: usize = 5;
     pub const AMM_CONFIG_IDX: usize = 6;
     pub const OBSERVATION_IDX: usize = 7;
-    pub const MEMO_IDX: usize = 8;
-    pub const BITMAP_EXTENSION_IDX: usize = 9;
+    pub const BITMAP_EXTENSION_IDX: usize = 8;
     // Tick arrays start at index 10
-    pub const TICK_ARRAYS_START_IDX: usize = 10;
+    pub const TICK_ARRAYS_START_IDX: usize = 9;
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
@@ -557,15 +542,12 @@ impl<'info> RaydiumCLMM<'info> {
     const TS_LIQ_NET: usize = 4;
     const TS_LIQ_GROSS: usize = 20;
 
-    /// Scan one account's raw data for an initialized tick.
-    /// `current_tick` controls the search bound:
-    ///   zero_for_one  → highest initialized tick where tick <= current_tick
-    ///   !zero_for_one → lowest  initialized tick where tick >  current_tick
-    /// Pass i32::MAX / i32::MIN as sentinel to match any tick (first_initialized_tick).
+    /// Scan one account's raw data starting from computed offset.
+    /// Uses tick_spacing to jump directly to the right slot instead of scanning all 60.
     fn scan_tick_in_data(
         data: &[u8],
         pool_id_bytes: &[u8; 32],
-        target_start: i32,
+        tick_spacing: i32,
         current_tick: i32,
         zero_for_one: bool,
     ) -> Option<(i32, i128)> {
@@ -578,12 +560,14 @@ impl<'info> RaydiumCLMM<'info> {
         let start = i32::from_le_bytes(
             data[Self::TA_START_OFF..Self::TA_START_OFF + 4].try_into().ok()?,
         );
-        if start != target_start {
-            return None;
-        }
+
+        // Compute offset of current_tick within this array
+        // Use saturating_sub to avoid overflow when sentinel values (i32::MIN/MAX) are passed
+        let raw_offset = (current_tick.saturating_sub(start)) / tick_spacing;
 
         if zero_for_one {
-            for i in (0..Self::TA_TICK_CNT).rev() {
+            let from = raw_offset.min(Self::TA_TICK_CNT as i32 - 1).max(0) as usize;
+            for i in (0..=from).rev() {
                 let b = Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE;
                 let lg = u128::from_le_bytes(
                     data[b + Self::TS_LIQ_GROSS..b + Self::TS_LIQ_GROSS + 16].try_into().ok()?,
@@ -599,7 +583,8 @@ impl<'info> RaydiumCLMM<'info> {
                 }
             }
         } else {
-            for i in 0..Self::TA_TICK_CNT {
+            let from = (raw_offset + 1).max(0).min(Self::TA_TICK_CNT as i32 - 1) as usize;
+            for i in from..Self::TA_TICK_CNT {
                 let b = Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE;
                 let lg = u128::from_le_bytes(
                     data[b + Self::TS_LIQ_GROSS..b + Self::TS_LIQ_GROSS + 16].try_into().ok()?,
@@ -618,53 +603,69 @@ impl<'info> RaydiumCLMM<'info> {
         None
     }
 
-    /// Scan tick array accounts for a matching initialized tick.
-    /// Borrows account data on-the-fly and drops immediately — zero heap allocation.
-    fn scan_accounts_for_tick(
+    /// Find the account index holding a given start_tick_index.
+    /// Reads only 4 bytes per account header.
+    fn find_tick_array_account(
         &self,
         accounts: &[AccountInfo],
         target_start: i32,
-        current_tick: i32,
-        zero_for_one: bool,
-    ) -> Option<(i32, i128)> {
+    ) -> Option<usize> {
         let pool_id_bytes = self.pool_id.to_bytes();
         for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
             if let Ok(data) = accounts[i].try_borrow_data() {
-                if let Some(result) =
-                    Self::scan_tick_in_data(&data, &pool_id_bytes, target_start, current_tick, zero_for_one)
+                if data.len() >= Self::TA_TICKS_OFF
+                    && data[Self::TA_POOL_OFF..Self::TA_POOL_OFF + 32] == pool_id_bytes
                 {
-                    return Some(result);
+                    let start = i32::from_le_bytes(
+                        data[Self::TA_START_OFF..Self::TA_START_OFF + 4].try_into().ok()?,
+                    );
+                    if start == target_start {
+                        return Some(i);
+                    }
                 }
             }
         }
         None
     }
 
-    /// Find the next initialized tick by scanning account data on-the-fly.
-    /// Zero heap allocation — borrows are dropped after each account.
+    /// Find the next initialized tick using offset-based scan.
+    /// Reads one tick array at a time, scans from computed offset (not all 60).
     fn find_next_initialized_tick(
         &self,
         accounts: &[AccountInfo],
         current_tick: i32,
         zero_for_one: bool,
     ) -> Option<(i32, i128)> {
+        let pool_id_bytes = self.pool_id.to_bytes();
+        let tick_spacing = self.tick_spacing as i32;
         let current_start =
             TickArrayState::get_array_start_index(current_tick, self.tick_spacing);
 
-        // Try current tick array
-        if let Some(result) = self.scan_accounts_for_tick(accounts, current_start, current_tick, zero_for_one) {
-            return Some(result);
+        // Try current tick array — find the right account, scan from offset
+        if let Some(idx) = self.find_tick_array_account(accounts, current_start) {
+            if let Ok(data) = accounts[idx].try_borrow_data() {
+                if let Some(result) =
+                    Self::scan_tick_in_data(&data, &pool_id_bytes, tick_spacing, current_tick, zero_for_one)
+                {
+                    return Some(result);
+                }
+            }
         }
 
-        // Try adjacent tick array (use sentinel to accept any initialized tick)
-        let ticks_in_array = TICK_ARRAY_SIZE * i32::from(self.tick_spacing);
+        // Try adjacent tick array — scan from boundary
+        let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing;
         let next_start = if zero_for_one {
             current_start - ticks_in_array
         } else {
             current_start + ticks_in_array
         };
         let sentinel = if zero_for_one { i32::MAX } else { i32::MIN };
-        self.scan_accounts_for_tick(accounts, next_start, sentinel, zero_for_one)
+        if let Some(idx) = self.find_tick_array_account(accounts, next_start) {
+            if let Ok(data) = accounts[idx].try_borrow_data() {
+                return Self::scan_tick_in_data(&data, &pool_id_bytes, tick_spacing, sentinel, zero_for_one);
+            }
+        }
+        None
     }
 
     /// Calculate swap using tick arrays scanned on-the-fly from account data.

@@ -42,8 +42,8 @@ mod tests {
     /// All pubkeys are fetched from RPC; accounts not found on-chain get a mock fallback.
     async fn run_from_pubkeys(
         pubkey_list: &[&str],
-        accounts_length: [u32; 5],
-        mints: u16,
+        accounts_length: [u8; 5],
+        mints: u8,
         mode: u8,
         test_mode: bool,
     ) {
@@ -106,83 +106,100 @@ mod tests {
 
     const PUBKEYS_LIST: &[&str] = &[
     "FYnaLRpfVbAi5CnupX1JuxqokiR773WiZPiCz3dzp7BP",
-        "So11111111111111111111111111111111111111112",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+
+    "So11111111111111111111111111111111111111112",
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     "Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk",
-    "6P985Tsjw9n4JnJdeJhTPmXLUsWzXScscmA2BcUgpump",
-    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-    "Gefw2y2tcGw2fjwa7dgcWrWiGJtDgoc94vJ8tuWBUVL",
-    "3sAFdH2ANF8rWoW2NGLLdgnqHUmUdRLcAC9Vd5REpump",
-    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-    "Gefw2y2tcGw2fjwa7dgcWrWiGJtDgoc94vJ8tuWBUVL",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "H3Lw811Y1iG1LtXhLACrEKW6mCAWTnpjHeNaoYBR9Mfj",
 
-// // # --- Raydium CPMM (Pool 1: 8aQWnm...) ---
-    "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
-    "8aQWnmHrtFXuyBT4XaxxkNT2NnMSjC51asumXS7EsirX",
-    "7ZVpFipQYRqZ5Lsn7MBBtZYeUspSJfQ1zCyrHMaYxqsp",
-    "HZ7jm8WtcnMotkfnpRKWcSt5BwdXiAo7EmssY2jfYEZB",
+    // # --- Section 2: Meteora DAMM V4 ---
+    // # Count: 8
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+    "3bC2e2RxcfvF9oP22LvbaNsVwoS2T98q6ErCRoayQYdq",
+    "D1GHCUZCEjraHeGaooBYbvtBhe3t4186EUmKwMjoRWoe",
+    "AWqyxgarzsDrADVmcv9r3vzeL2s5WWPmZhLgnYKjyndF",
     "So11111111111111111111111111111111111111112",
-    "EojSqgayhMTaH6wn5bJpFQAo8cr65iyjR4STWvWPE1pU",
-    "BgxH5ifebqHDuiADWKhLjXGP5hWZeZLoCdmeWJLkRqLP",
-    "Hi5FYEYunSD2fE91QYkdPKtf9WDzXPw1KGDB3L22hGYf",
-    "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    "D16qTJVZx9j17uvGVVX5WWJMcYgWKdAxr4SSPDwp1tmP",
 
-    // # --- Raydium CPMM (Pool 2: J5x39q...) ---
-    "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
-    "J5x39qNfUCHS6bC9LPbamjgGWjgckBa12UKMSDHWJJzm",
-    "F6wapbNSYXhWLHeU37446wJ4wuNDQjZ6fsFqMvZSfg32",
-    "755aCsZM6or1uSLYhXuikGWe4sNQHFBTrgdZMcm9qb7F",
-    "So11111111111111111111111111111111111111112",
-    "EojSqgayhMTaH6wn5bJpFQAo8cr65iyjR4STWvWPE1pU",
-    "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2",
-    "DUfqjoHBZ9cza7GcCo3vwMk971pxJ1ZvkX4miERYMHW5",
-    "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",
-
-// # --- PUMP.FUN AMM ---
-    // # Count: 18
-    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
-    "FMLkMu3z3mzUi61VwZqCdcFsmrcYq3oTEL3k3KiTMQHr",
-    "Ed5Q5i8UqWAHsj6B6VCAwsXDgXHAgmSuZGVse82KqiZ4",
-    "7aQVeouoBj14ZEgjKdSv5SX8d2vnUz1TnHWgS882GGw6",
-    "3sAFdH2ANF8rWoW2NGLLdgnqHUmUdRLcAC9Vd5REpump",
-    "So11111111111111111111111111111111111111112",
-    "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
-    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",
-    "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",
-    "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
-    "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
-    "VxQVMifqhpcoCLGC959GjUb8gwfoyjJb97yV1F1Uf2b",
-    "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",
-    "11111111111111111111111111111111",
-    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",
-    "FjYRd67pXeMMA4V3yN6oCPVavMD9bmdnhyRE6LRDMwiu",
-    "3eVLYcqTtv5KstU6HYXrxJaisRFo8hBmWyaAsVRBt4rj",
-
-    // # --- METEORA DLMM ---
-    // # Count: 17
+    // # --- Section 3: Meteora DLMM (Pool HrNE8C) ---
+    // # Count: 16
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-    "GrmRbawGYqH3dm521q9Kk1GD1YCxusyQ7GtmG4vmWLVt",
-    "gPDKDUWogb6ExFbPh4b688DiP2Sb36gK2zTDJXv29vP",
-    "CTzmzRvKcJXzFd7DPUkTv2ncC87uB7yjAGEEvnLXefDb",
-    "3sAFdH2ANF8rWoW2NGLLdgnqHUmUdRLcAC9Vd5REpump",
+    "HrNE8CpBBPyawPR8PvMDz7XWrbAsiDGSGA23iKAeFqg",
+    "EQyk87YXjtmV4nAFERtwAk2kSQT8DhpQR8tQNTU7QpPX",
+    "88G2DvkPHz5FAtQsQXwY7vJTAFNZZPvnaNv7VU9B9vff",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
     "So11111111111111111111111111111111111111112",
-    "Af3uPqaGT4iXPJ1xUNdrJGYiAeW3VKNhbPb51w7EaP3x",
+    "GKamevH94PFSy8dEfgfWPT4GX4qHmTjL9gyT4FdjJmeF",
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
     "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-    "HoX7GirweqiRXfPCEftL5d8fHeCXFaubUH9rVetU8ua9",
-    "FQbCJSSLDsN18Y3Fa4DVg8RCnzakGPk3ZkntwXjnKd3x",
-    "5uWF6m2tRbhkWqn9Thng4hDoX3t5hQ4fZhNYbtPEGAhX",
+    "6HJEQj73REULye76nYuAUBun5HFvrro7uvWkKv6oGxkX",
+    "8Ap2CGYGozb2phXg9Fg1UBsrfUddCUFTinZ63hJ2LG4U",
+    "6HJEQj73REULye76nYuAUBun5HFvrro7uvWkKv6oGxkX",
+    "5HtkgL2aFAZrknfuz5NybqkfHaRDj8rf5PTR6tTVH59J",
+
+    // # --- Section 4: Meteora DLMM (Pool Hr3byz) ---
+    // # Count: 17
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "Hr3byzHKDa7U9MgnfNr9tvRxzvX7fz3sZLgfDgPHGQ15",
+    "3ycrVXfmvfPuYx2QGecgUDTCc9gpvtutE5ZMkSmaV78K",
+    "D3AfXff1BMQdmsxnfCuTDm8degSNb6a2xbTeaYhUPyED",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
     "So11111111111111111111111111111111111111112",
-    "HoX7GirweqiRXfPCEftL5d8fHeCXFaubUH9rVetU8ua9",
-    "26QRTNHuESWtNTXRmsvUh19y6nrm3BSTr1a8kJbXzPxC",
-    "34Ug7cCSVknBBPGUp3eWEsM14VdUnbQUpHd5ugswqGWN"
+    "CzkAKBSK8ZonaoCm8athRBnXfZejV57UW532PtiBiHdD",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "2vz7oJj9HDNYpZUYknWoUqEeVtT386PfAhvKGHmBDKHX",
+    "4PX4ofpHzy32wtrQxhNA2gaZELkHiXfmfKaAWvZVQLph",
+    "2vz7oJj9HDNYpZUYknWoUqEeVtT386PfAhvKGHmBDKHX",
+    "HFhe2G3Z3RnpHtKpjKoUuB8nT258QBU7y4dERbo3zXRo",
+
+    // # --- Section 5: Meteora DLMM (Pool 94GevK) ---
+    // # Count: 17
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "94GevKgX3yofzQgRrNfdyVwJUBWLBbxgAxpT5SRfw7nB",
+    "3viwHWCENmeFfKPDzzHimUfwsGS8Xu4QyzJUAbsxqchK",
+    "hUUHesUUpdLWPNe8r5CJgbGVUa3rj9sYPipXYnFDVCG",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
+    "So11111111111111111111111111111111111111112",
+    "26QNuPHJi9ZYZ5rqnp8snGAnEaimpqm74KT9CWum9EVa",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "A4CaDaHQ6KvKRYpXzt9zddrvRxPiSr7CfNjDVgYsJ1JX",
+    "8t9Uk7AmycTNdbWBF4sQV4tNRRXiaKiUQWrMqLuGowj1",
+    "A4CaDaHQ6KvKRYpXzt9zddrvRxPiSr7CfNjDVgYsJ1JX",
+    "HohHKrXBotEs7GZuhvmb1SY13831ZhbjTAFo5My3ukTy",
+
+    // # --- Section 6: Meteora DLMM (Pool Cuytim) ---
+    // # Count: 15
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "CuytimJCi9bETqRZc8CXSsrez7i5sjyi8L9GQtm4GRkT",
+    "C2DZwio2a5HHoi2YQtD1vSTvDw929aAqps65KzDnLEv2",
+    "2fwgwLiN1NnLn4HaTmAfjroiamjnwJyRXzWFbM4TFCV3",
+    "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
+    "So11111111111111111111111111111111111111112",
+    "AU8nRRxNA3foxh6FcZrGmqTdUoqLUM17dfrxdoj2JdaM",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "CX8LzRGkSLFkpqdE369CBJD8wNN56vp9DUcKyQEoxw64",
+    "24T1AhTs2vcpj1xf7xXC5WKBDdwRXvcfgibPS3uCQ4qp",
+    "CX8LzRGkSLFkpqdE369CBJD8wNN56vp9DUcKyQEoxw64",
+    "CX8LzRGkSLFkpqdE369CBJD8wNN56vp9DUcKyQEoxw64"
+
 ];
 
-    const ACCOUNTS_LENGTH: [u32; 5] = [9, 9, 18, 18, 0];
-    const MODE: u8 = crate::arb_mode::MULTIPLE_TRADES;
+    const ACCOUNTS_LENGTH: [u8; 5] = [8, 14, 14, 14, 14];
+    const MODE: u8 = crate::arb_mode::SINGLE_PAIR_MULTI_MARKET;
 
     // =========================================================================
     //  TESTS
@@ -193,7 +210,7 @@ mod tests {
         run_from_pubkeys(
             PUBKEYS_LIST,
             ACCOUNTS_LENGTH,
-            3,
+            2,
             MODE,
             true,
         )

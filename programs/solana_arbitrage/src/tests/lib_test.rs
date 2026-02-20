@@ -2823,7 +2823,6 @@ mod tests {
             quote_token_account,
             oracle_account,
             host_fee_in_account,
-            memo_account,
             event_authority_account,
             bitmap_extension_account,
         ];
@@ -3069,7 +3068,6 @@ mod tests {
             quote_token_account,      // 5: quote_token
             oracle_account,           // 6: oracle
             host_fee_in_account,      // 7: host_fee_in
-            memo_account,             // 8: memo
             event_authority_account,  // 9: event_authority
             bitmap_extension_account, // 10: bitmap_extension
         ];
@@ -3472,7 +3470,6 @@ mod tests {
             token_a_info,               // 4: TOKEN_A_IDX
             token_b_info,               // 5: TOKEN_B_IDX
             oracle_account,             // 6: ORACLE_IDX
-            memo_account,               // 7: MEMO_IDX
             tick_array_0_account,       // 8: TICK_ARRAY_0_IDX
             tick_array_1_account,       // 9: TICK_ARRAY_1_IDX
             tick_array_2_account,       // 10: TICK_ARRAY_2_IDX

@@ -52,7 +52,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("3WyXBdrDoYLVDfzasfFTpzn64PmV9UKwRTFkqXsfKoK8");
+declare_id!("BEBdJkfY93ypr7r794mgHA2NiqMVe7ZYQHzQDAo6DYaA");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -67,8 +67,8 @@ pub mod arb_mode {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InstructionData {
     // pub auth_key: [u8; 32],
-    pub mints: u16,
-    pub accounts_length: [u32; 5],
+    pub mints: u8,
+    pub accounts_length: [u8; 5],
     /// Arbitrage mode: 0=single pair multi-market, 1=multi-hop chain, 2=multiple trades
     pub mode: u8,
     /// Test mode: if true, skip profit checks and execute with tiny amount (100 lamports)
@@ -103,10 +103,10 @@ fn start_bot<'info>(
     let payer = &accounts[0];
 
     let num_mints = data.mints as usize;
-    let pool_start = 1 + num_mints * 3;
+    let pool_start = 4 + num_mints * 3;
 
-    // Start token is always mint index 0, user token account at offset 3
-    let user_token_account = &accounts[3];
+    // Start token is always mint index 0, user token account at base + 2
+    let user_token_account = &accounts[6];
     let max_amount_in = parse_token_account(user_token_account)?.amount;
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
@@ -114,7 +114,7 @@ fn start_bot<'info>(
 
     #[cfg(test)]
     debug_eprintln!("max_amount_in: {:?}", max_amount_in);
-    let mut instances = parse_accounts(&accounts[pool_start..], &data, &clock)?;
+    let mut instances = parse_accounts(accounts, pool_start, &data, &clock)?;
 
     // let max_amount_in = 100_000_000_000_u64;
     let test_mode = data.test;
@@ -127,8 +127,7 @@ fn start_bot<'info>(
         clock,
         test_mode,
     );
-    let pool_accounts = &accounts[pool_start..];
-    let Some(mut arbitrage_path) = run_arbitrage(pool_accounts, &instances, &mut bot_config)?
+    let Some(mut arbitrage_path) = run_arbitrage(accounts, &instances, &mut bot_config)?
     else {
         msg!("Not found");
         return Ok(None);
@@ -136,7 +135,7 @@ fn start_bot<'info>(
 
     #[cfg(any(test, feature = "debug"))]
     run_simulation(
-        pool_accounts,
+        accounts,
         &arbitrage_path,
         &mut instances,
         &mut bot_config,
@@ -149,8 +148,8 @@ fn start_bot<'info>(
 
     if test_mode {
         // Override with tiny amount: 100 lamports (0.0000001 SOL)
-        arbitrage_path.start_amount = 100;
-        msg!("Executing with 100 lamports");
+        arbitrage_path.start_amount = 1_000_000;
+        // msg!("Executing with 100 lamports");
         // debug_eprintln!("arbitrage_path: {:?}", arbitrage_path);
     }
 
@@ -162,10 +161,11 @@ fn start_bot<'info>(
 #[inline(never)]
 fn parse_accounts<'info>(
     accounts: &[AccountInfo<'info>],
+    start_index: usize,
     data: &InstructionData,
     clock: &Clock,
 ) -> Result<Vec<ProgramInstance<'info>>> {
-    let mut index: usize = 0;
+    let mut index: usize = start_index;
     let accounts_len = accounts.len();
 
     // Pre-allocate: count non-zero spans (unrolled for fixed-size array)
@@ -192,7 +192,11 @@ fn parse_accounts<'info>(
         // Direct key access without creating a slice first
         let program_key = accounts[index].key;
         let instance = find_program_instance(program_key, accounts, index, end_index, clock)?;
-        // instance.log_accounts(accounts)?;
+
+        #[cfg(any(test, feature = "debug"))]{
+            instance.log_accounts(accounts)?;
+        }
+
         instances.push(instance);
         index = end_index;
     }
@@ -219,27 +223,35 @@ pub fn find_program_instance<'info>(
 
     // Order by expected frequency (most common first)
     if id_bytes == PUMP_AMM_ID_BYTES {
+        debug_eprintln!("PumpAmm");
         return create_pump_amm(accounts, start_index, end_index);
     }
     if id_bytes == METEORA_DAMM_V1_ID_BYTES {
+        debug_eprintln!("MeteoraDammV1");
         return create_meteora_damm_v1(accounts, start_index, end_index, clock);
     }
     if id_bytes == METEORA_DAMM_V2_ID_BYTES {
+        debug_eprintln!("MeteoraDammV2");
         return create_meteora_damm_v2(accounts, start_index, end_index, clock);
     }
     if id_bytes == METEORA_DLMM_ID_BYTES {
+        debug_eprintln!("MeteoraDlmm");
         return create_meteora_dlmm(accounts, start_index, end_index);
     }
     if id_bytes == ORCA_WHIRLPOOL_ID_BYTES {
+        debug_eprintln!("OrcaWhirlpool");
         return create_orca_whirlpool(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_AMM_ID_BYTES {
+        debug_eprintln!("RaydiumAmm");
         return create_raydium_amm(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_CLMM_ID_BYTES {
+        debug_eprintln!("RaydiumCLMM");
         return create_raydium_clmm(accounts, start_index, end_index);
     }
     if id_bytes == RAYDIUM_CPMM_ID_BYTES {
+        debug_eprintln!("RaydiumCPMM");
         return create_raydium_cpmm(accounts, start_index, end_index);
     }
     Err(error!(SolarBError::UnknownProgram))
@@ -567,24 +579,25 @@ fn run_multiple_trades_arbitrage<'info>(
 ///
 /// Account layout:
 ///   accounts[0]             = payer
-///   accounts[1 + i*3 + 0]  = mint_i
-///   accounts[1 + i*3 + 1]  = mint_i_token_program
-///   accounts[1 + i*3 + 2]  = user_mint_i_token_account
-///   accounts[1 + N*3 ..]   = pool accounts
+///   accounts[1]             = spl token program
+///   accounts[2]             = token-2022 program
+///   accounts[3]             = memo program
+///   accounts[4 + i*3 + 0]  = mint_i
+///   accounts[4 + i*3 + 1]  = mint_i_token_program
+///   accounts[4 + i*3 + 2]  = user_mint_i_token_account
+///   accounts[4 + N*3 ..]   = pool accounts
 #[inline(never)]
 pub fn execute_arbitrage_path<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
     instances: &mut Vec<ProgramInstance<'info>>,
     payer: &AccountInfo<'info>,
-    num_mints: u16,
+    num_mints: u8,
 ) -> Result<()> {
     #[cfg(any(test, feature = "debug"))]
     debug_eprintln!("Executing {} edges", arbitrage_path.edges.len());
 
     let num_mints = num_mints as usize;
-    let pool_start = 1 + num_mints * 3;
-    let remaining_accounts = &accounts[pool_start..];
 
     let start_amount = arbitrage_path.start_amount;
     let mut current_amount = start_amount;
@@ -606,7 +619,7 @@ pub fn execute_arbitrage_path<'info>(
         let mut output_base = 0usize;
         let mut found = 0u8;
         for i in 0..num_mints {
-            let base = 1 + i * 3;
+            let base = 4 + i * 3;
             let key = accounts[base].key; // &Pubkey, no copy
             if key == input_mint_key {
                 input_base = base;
@@ -631,7 +644,7 @@ pub fn execute_arbitrage_path<'info>(
 
         // Execute swap - AccountInfo clone is unavoidable for CPI
         program_instance.invoke_swap_base_in(
-            remaining_accounts,
+            accounts,
             *input_mint_key,
             current_amount,
             None,
@@ -878,7 +891,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -921,7 +934,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 2);
@@ -954,7 +967,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -984,7 +997,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -1021,7 +1034,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -1050,7 +1063,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -1062,13 +1075,13 @@ mod tests {
         // Use a span that's too large to convert from u32 to usize
         // On most platforms this won't happen, but we test the error path
         let data = InstructionData {
-            accounts_length: [u32::MAX, 0, 0, 0, 0],
+            accounts_length: [u8::MAX, 0, 0, 0, 0],
             mints: 2,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         // This should either error on conversion or on insufficient accounts
         assert!(result.is_err());
     }
@@ -1084,7 +1097,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 0);
@@ -1117,7 +1130,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -1148,7 +1161,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 1);
@@ -1179,7 +1192,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_err());
         // Just verify it's an error - Anchor error types are complex to match
     }
@@ -1221,7 +1234,7 @@ mod tests {
             test: false,
         };
 
-        let result = parse_accounts(&accounts, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, &data, &default_clock());
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert!(instances.len() == 2);

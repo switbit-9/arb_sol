@@ -212,7 +212,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         let token_a = &accounts[self.start_index + Self::TOKEN_A_IDX];
         let token_b = &accounts[self.start_index + Self::TOKEN_B_IDX];
         let oracle = &accounts[self.start_index + Self::ORACLE_IDX];
-        let memo = &accounts[self.start_index + Self::MEMO_IDX];
+        let memo = &accounts[3];
         let tick_array_0 = &accounts[self.start_index + Self::TICK_ARRAY_0_IDX];
         let tick_array_1 = &accounts[self.start_index + Self::TICK_ARRAY_1_IDX];
         let tick_array_2 = &accounts[self.start_index + Self::TICK_ARRAY_2_IDX];
@@ -276,7 +276,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             data,
         };
 
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             token_program_a.clone(),
             token_program_b.clone(),
             memo.clone(),
@@ -294,7 +294,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             oracle.clone(),
         ];
 
-        invoke(&swap_ix, &accounts_vec)?;
+        invoke(&swap_ix, &accounts_arr)?;
         Ok(())
     }
 
@@ -318,7 +318,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         let token_a = &accounts[self.start_index + Self::TOKEN_A_IDX];
         let token_b = &accounts[self.start_index + Self::TOKEN_B_IDX];
         let oracle = &accounts[self.start_index + Self::ORACLE_IDX];
-        let memo = &accounts[self.start_index + Self::MEMO_IDX];
+        let memo = &accounts[3];
         let tick_array_0 = &accounts[self.start_index + Self::TICK_ARRAY_0_IDX];
         let tick_array_1 = &accounts[self.start_index + Self::TICK_ARRAY_1_IDX];
         let tick_array_2 = &accounts[self.start_index + Self::TICK_ARRAY_2_IDX];
@@ -378,7 +378,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             data,
         };
 
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             token_program_a.clone(),
             token_program_b.clone(),
             memo.clone(),
@@ -396,7 +396,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
             oracle.clone(),
         ];
 
-        invoke(&swap_ix, &accounts_vec)?;
+        invoke(&swap_ix, &accounts_arr)?;
         Ok(())
     }
 
@@ -432,7 +432,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         );
         msg!(
             "7 memo: {}",
-            accounts[self.start_index + Self::MEMO_IDX].key
+            accounts[4].key
         );
         msg!(
             "8 tick_array_0: {}",
@@ -528,10 +528,9 @@ impl<'info> OrcaWhirlpool<'info> {
     pub const TOKEN_A_IDX: usize = 4;
     pub const TOKEN_B_IDX: usize = 5;
     pub const ORACLE_IDX: usize = 6;
-    pub const MEMO_IDX: usize = 7;
-    pub const TICK_ARRAY_0_IDX: usize = 8;
-    pub const TICK_ARRAY_1_IDX: usize = 9;
-    pub const TICK_ARRAY_2_IDX: usize = 10;
+    pub const TICK_ARRAY_0_IDX: usize = 7;
+    pub const TICK_ARRAY_1_IDX: usize = 8;
+    pub const TICK_ARRAY_2_IDX: usize = 9;
 
     pub fn new(
         accounts: &[AccountInfo<'info>],

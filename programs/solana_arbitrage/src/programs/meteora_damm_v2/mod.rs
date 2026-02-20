@@ -306,7 +306,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
 
         let amount_out_value = amount_out.unwrap_or(0);
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*pool_authority.key, false),
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*input_token_account.key, false),
@@ -333,36 +333,31 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         let swap_ix = Instruction {
             program_id: *program_id.key,
-            accounts: metas,
+            accounts: metas.to_vec(),
             data,
         };
 
-        // Collect AccountInfo into a vector and use unsafe to cast lifetimes
-        // This is safe because 'a outlives 'info in practice when called from execute_arbitrage_path
-        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-            pool_authority.clone(),                              // pool_authority
-            pool_id.clone(),                                     // pool_id
-            base_vault.clone(),                                  // base_vault
-            quote_vault.clone(),                                 // quote_vault
-            unsafe { std::mem::transmute(base_token.clone()) },  // base_token
-            unsafe { std::mem::transmute(quote_token.clone()) }, // quote_token
-            unsafe { std::mem::transmute(referral_token_account.clone()) }, // referral_token_accountclea
-            event_authority.clone(),                                             // event_authority
-            program_id.clone(),                                                  // program_id
+        // Stack-allocated accounts - avoids heap allocation
+        let accounts_arr = [
+            pool_authority.clone(),
+            pool_id.clone(),
+            base_vault.clone(),
+            quote_vault.clone(),
+            unsafe { std::mem::transmute(base_token.clone()) },
+            unsafe { std::mem::transmute(quote_token.clone()) },
+            unsafe { std::mem::transmute(referral_token_account.clone()) },
+            event_authority.clone(),
+            program_id.clone(),
+            unsafe { std::mem::transmute(input_token_account.to_account_info()) },
+            unsafe { std::mem::transmute(output_token_account.to_account_info()) },
+            unsafe { std::mem::transmute(payer.to_account_info()) },
+            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
+            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
         ];
-        // Cast parameter AccountInfo<'a> to AccountInfo<'info> to add to vector
-        accounts_vec
-            .push(unsafe { std::mem::transmute(input_token_account.to_account_info()) });
-        accounts_vec
-            .push(unsafe { std::mem::transmute(output_token_account.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
 
-        // Cast entire vector to AccountInfo<'a> for invoke
         unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-            invoke(&swap_ix, accounts)?;
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
+            invoke(&swap_ix, accounts_slice)?;
         }
 
         Ok(())
@@ -422,7 +417,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         };
 
         let min_amount_out_value = min_amount_out.unwrap_or(0);
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*pool_authority.key, false), // pool_authority
             AccountMeta::new(*pool_id.key, false),                 // pool_id
             AccountMeta::new(*input_token_account.key, false),     // input_token_account
@@ -448,33 +443,31 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         let swap_ix = Instruction {
             program_id: *accounts[self.start_index + 0].key, // program_id
-            accounts: metas,
+            accounts: metas.to_vec(),
             data,
         };
 
-        // Collect AccountInfo into a vector
-        let mut accounts_vec: Vec<AccountInfo<'a>> = vec![
-            accounts[self.start_index + Self::POOL_AUTHORITY_IDX].clone(), // pool_authority
-            accounts[self.start_index + Self::POOL_ID_IDX].clone(),        // pool_id
-            accounts[self.start_index + Self::BASE_VAULT_IDX].clone(),     // base_vault
-            accounts[self.start_index + Self::QUOTE_VAULT_IDX].clone(),    // quote_vault
-            unsafe { std::mem::transmute(base_token.clone()) },            // base_token
-            unsafe { std::mem::transmute(quote_token.clone()) },           // quote_token
-            unsafe { std::mem::transmute(referral_token_account.to_account_info()) }, // referral_token_account
-            accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].clone(),      // event_authority
-            accounts[self.start_index + Self::PROGRAM_ID_IDX].clone(),           // program_id
+        // Stack-allocated accounts - avoids heap allocation
+        let accounts_arr = [
+            accounts[self.start_index + Self::POOL_AUTHORITY_IDX].clone(),
+            accounts[self.start_index + Self::POOL_ID_IDX].clone(),
+            accounts[self.start_index + Self::BASE_VAULT_IDX].clone(),
+            accounts[self.start_index + Self::QUOTE_VAULT_IDX].clone(),
+            unsafe { std::mem::transmute(base_token.clone()) },
+            unsafe { std::mem::transmute(quote_token.clone()) },
+            unsafe { std::mem::transmute(referral_token_account.to_account_info()) },
+            accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].clone(),
+            accounts[self.start_index + Self::PROGRAM_ID_IDX].clone(),
+            unsafe { std::mem::transmute(input_token_account.to_account_info()) },
+            unsafe { std::mem::transmute(output_token_account.to_account_info()) },
+            unsafe { std::mem::transmute(payer.to_account_info()) },
+            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
+            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
         ];
-        accounts_vec
-            .push(unsafe { std::mem::transmute(input_token_account.to_account_info()) });
-        accounts_vec
-            .push(unsafe { std::mem::transmute(output_token_account.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(payer.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(base_token_program.to_account_info()) });
-        accounts_vec.push(unsafe { std::mem::transmute(quote_token_program.to_account_info()) });
 
         unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-            invoke(&swap_ix, accounts)?;
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
+            invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())
     }

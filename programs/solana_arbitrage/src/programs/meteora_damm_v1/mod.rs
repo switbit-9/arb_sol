@@ -334,7 +334,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         let minimum_out = amount_out.unwrap_or(0);
 
         // Swap instruction account layout (from SDK swap.rs)
-        let metas = vec![
+        let metas = [
             AccountMeta::new(*pool.key, false),                  // pool
             AccountMeta::new(*user_source_token.key, false),     // user_source_token
             AccountMeta::new(*user_destination_token.key, false),// user_destination_token
@@ -359,11 +359,11 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
-            accounts: metas,
+            accounts: metas.to_vec(),
             data,
         };
 
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        let accounts_arr = [
             pool.clone(),
             unsafe { std::mem::transmute(user_source_token.to_account_info()) },
             unsafe { std::mem::transmute(user_destination_token.to_account_info()) },
@@ -382,7 +382,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         ];
 
         unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
+            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
             invoke(&swap_ix, accounts_slice)?;
         }
         Ok(())
