@@ -38,17 +38,18 @@ struct SwapState {
     fund_fee: u64,
 }
 
-/// Step computations during swap
-#[derive(Debug, Clone, Default)]
-struct StepComputations {
-    sqrt_price_start_x64: u128,
-    tick_next: i32,
-    initialized: bool,
-    sqrt_price_next_x64: u128,
-    amount_in: u64,
-    amount_out: u64,
-    fee_amount: u64,
+/// Pre-loaded tick array: header + raw data pointer (valid for entire instruction)
+#[derive(Clone, Copy)]
+struct TickArrayRef {
+    start_tick_index: i32,
+    data: *const u8,
 }
+
+impl TickArrayRef {
+    const EMPTY: Self = Self { start_tick_index: 0, data: std::ptr::null() };
+}
+
+const MAX_TA: usize = 8;
 
 #[derive(Clone)]
 pub struct RaydiumCLMM<'info> {
@@ -245,9 +246,9 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             metas.push(AccountMeta::new(*bitmap_extension.key, false));
         }
 
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
-            let tick_array = &accounts[i];
-            metas.push(AccountMeta::new(*tick_array.key, false));
+        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        for i in ta_from..ta_to {
+            metas.push(AccountMeta::new(*accounts[i].key, false));
         }
 
         let mut data: Vec<u8> = vec![43, 4, 237, 11, 26, 201, 30, 98]; // swap_v2 discriminator
@@ -281,7 +282,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             accounts_vec.push(bitmap_extension.clone());
         }
 
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
+        for i in ta_from..ta_to {
             accounts_vec.push(accounts[i].clone());
         }
 
@@ -366,10 +367,10 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             metas.push(AccountMeta::new(*bitmap_extension.key, false));
         }
 
-        // Add tick array accounts as remaining accounts
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
-            let tick_array = &accounts[i];
-            metas.push(AccountMeta::new(*tick_array.key, false));
+        // Add tick array accounts for this swap direction
+        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        for i in ta_from..ta_to {
+            metas.push(AccountMeta::new(*accounts[i].key, false));
         }
 
         let mut data = vec![43, 4, 237, 11, 26, 201, 30, 98]; // swap_v2 discriminator
@@ -403,7 +404,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             accounts_vec.push(bitmap_extension.clone());
         }
 
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
+        for i in ta_from..ta_to {
             accounts_vec.push(accounts[i].clone());
         }
 
@@ -415,15 +416,15 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         Ok(())
     }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         RaydiumCLMM::get_max_amounts_in_out(self, input_mint)
     }
 
-    fn get_max_amount_in(&self, mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         self.get_max_amount_in_current_tick(&mint)
     }
 
-    fn get_max_amount_out(&self, mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         self.get_max_amount_out_current_tick(&mint)
     }
 
@@ -438,10 +439,11 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         msg!("6 amm_config: {}", accounts[self.start_index + Self::AMM_CONFIG_IDX].key);
         msg!("7 observation: {}", accounts[self.start_index + Self::OBSERVATION_IDX].key);
         msg!("8 memo: {}", accounts[3].key);
-        msg!("9 bitmap_extension: {}", accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key);
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
-            msg!("{} tick_array: {}", i - self.start_index, accounts[i].key);
-        }
+        msg!("8 bitmap_extension: {}", accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key);
+        msg!("9 tick_buy_1: {}", accounts[self.start_index + Self::TICK_BUY_1_IDX].key);
+        msg!("10 tick_buy_2: {}", accounts[self.start_index + Self::TICK_BUY_2_IDX].key);
+        msg!("11 tick_sell_1: {}", accounts[self.start_index + Self::TICK_SELL_1_IDX].key);
+        msg!("12 tick_sell_2: {}", accounts[self.start_index + Self::TICK_SELL_2_IDX].key);
         Ok(())
     }
 }
@@ -461,8 +463,23 @@ impl<'info> RaydiumCLMM<'info> {
     pub const AMM_CONFIG_IDX: usize = 6;
     pub const OBSERVATION_IDX: usize = 7;
     pub const BITMAP_EXTENSION_IDX: usize = 8;
-    // Tick arrays start at index 10
-    pub const TICK_ARRAYS_START_IDX: usize = 9;
+    // Buy direction tick arrays (zero_for_one: token_0 -> token_1)
+    pub const TICK_BUY_1_IDX: usize = 9;
+    pub const TICK_BUY_2_IDX: usize = 10;
+    // Sell direction tick arrays (one_for_zero: token_1 -> token_0)
+    pub const TICK_SELL_1_IDX: usize = 11;
+    pub const TICK_SELL_2_IDX: usize = 12;
+    pub const ACCOUNT_COUNT: usize = 13;
+
+    /// Returns (from, to) absolute account indices for the tick arrays of a given swap direction.
+    #[inline(always)]
+    fn tick_array_range(start_index: usize, zero_for_one: bool) -> (usize, usize) {
+        if zero_for_one {
+            (start_index + Self::TICK_BUY_1_IDX, start_index + Self::TICK_BUY_2_IDX + 1)
+        } else {
+            (start_index + Self::TICK_SELL_1_IDX, start_index + Self::TICK_SELL_2_IDX + 1)
+        }
+    }
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
@@ -542,133 +559,80 @@ impl<'info> RaydiumCLMM<'info> {
     const TS_LIQ_NET: usize = 4;
     const TS_LIQ_GROSS: usize = 20;
 
-    /// Scan one account's raw data starting from computed offset.
-    /// Uses tick_spacing to jump directly to the right slot instead of scanning all 60.
-    fn scan_tick_in_data(
-        data: &[u8],
+    /// Pre-load all tick array accounts: validate once, store raw data pointers.
+    /// Pointers remain valid for the entire Solana instruction lifetime.
+    fn preload_tick_arrays(
+        accounts: &[AccountInfo],
         pool_id_bytes: &[u8; 32],
+        from: usize,
+        to: usize,
+    ) -> ([TickArrayRef; MAX_TA], usize) {
+        let mut arr = [TickArrayRef::EMPTY; MAX_TA];
+        let mut count = 0;
+        for i in from..to {
+            if count >= MAX_TA { break; }
+            if let Ok(data) = accounts[i].try_borrow_data() {
+                if data.len() >= Self::TA_MIN_LEN
+                    && data[Self::TA_POOL_OFF..Self::TA_POOL_OFF + 32] == *pool_id_bytes
+                {
+                    let start = i32::from_le_bytes(
+                        unsafe { *(data.as_ptr().add(Self::TA_START_OFF) as *const [u8; 4]) }
+                    );
+                    arr[count] = TickArrayRef { start_tick_index: start, data: data.as_ptr() };
+                    count += 1;
+                }
+            }
+            // Ref dropped here — pointer stays valid (account data is pinned for the instruction)
+        }
+        (arr, count)
+    }
+
+    /// Scan a tick array's raw data for the next initialized tick.
+    /// All validation was done at preload time — pure pointer arithmetic here.
+    #[inline(always)]
+    unsafe fn scan_tick_raw(
+        data: *const u8,
+        start: i32,
         tick_spacing: i32,
         current_tick: i32,
         zero_for_one: bool,
     ) -> Option<(i32, i128)> {
-        if data.len() < Self::TA_MIN_LEN {
-            return None;
-        }
-        if &data[Self::TA_POOL_OFF..Self::TA_POOL_OFF + 32] != pool_id_bytes {
-            return None;
-        }
-        let start = i32::from_le_bytes(
-            data[Self::TA_START_OFF..Self::TA_START_OFF + 4].try_into().ok()?,
-        );
-
-        // Compute offset of current_tick within this array
-        // Use saturating_sub to avoid overflow when sentinel values (i32::MIN/MAX) are passed
-        let raw_offset = (current_tick.saturating_sub(start)) / tick_spacing;
+        let raw_offset = current_tick.saturating_sub(start) / tick_spacing;
 
         if zero_for_one {
-            let from = raw_offset.min(Self::TA_TICK_CNT as i32 - 1).max(0) as usize;
-            for i in (0..=from).rev() {
-                let b = Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE;
-                let lg = u128::from_le_bytes(
-                    data[b + Self::TS_LIQ_GROSS..b + Self::TS_LIQ_GROSS + 16].try_into().ok()?,
-                );
-                if lg != 0 {
-                    let t = i32::from_le_bytes(data[b..b + 4].try_into().ok()?);
+            let mut i = raw_offset.min(Self::TA_TICK_CNT as i32 - 1).max(0) as usize;
+            loop {
+                let b = data.add(Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE);
+                if u128::from_le_bytes(*(b.add(Self::TS_LIQ_GROSS) as *const [u8; 16])) != 0 {
+                    let t = i32::from_le_bytes(*(b as *const [u8; 4]));
                     if t <= current_tick {
-                        let ln = i128::from_le_bytes(
-                            data[b + Self::TS_LIQ_NET..b + Self::TS_LIQ_NET + 16].try_into().ok()?,
-                        );
+                        let ln = i128::from_le_bytes(*(b.add(Self::TS_LIQ_NET) as *const [u8; 16]));
                         return Some((t, ln));
                     }
                 }
+                if i == 0 { break; }
+                i -= 1;
             }
         } else {
             let from = (raw_offset + 1).max(0).min(Self::TA_TICK_CNT as i32 - 1) as usize;
-            for i in from..Self::TA_TICK_CNT {
-                let b = Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE;
-                let lg = u128::from_le_bytes(
-                    data[b + Self::TS_LIQ_GROSS..b + Self::TS_LIQ_GROSS + 16].try_into().ok()?,
-                );
-                if lg != 0 {
-                    let t = i32::from_le_bytes(data[b..b + 4].try_into().ok()?);
+            let mut i = from;
+            while i < Self::TA_TICK_CNT {
+                let b = data.add(Self::TA_TICKS_OFF + i * Self::TA_TICK_SIZE);
+                if u128::from_le_bytes(*(b.add(Self::TS_LIQ_GROSS) as *const [u8; 16])) != 0 {
+                    let t = i32::from_le_bytes(*(b as *const [u8; 4]));
                     if t > current_tick {
-                        let ln = i128::from_le_bytes(
-                            data[b + Self::TS_LIQ_NET..b + Self::TS_LIQ_NET + 16].try_into().ok()?,
-                        );
+                        let ln = i128::from_le_bytes(*(b.add(Self::TS_LIQ_NET) as *const [u8; 16]));
                         return Some((t, ln));
                     }
                 }
+                i += 1;
             }
         }
         None
     }
 
-    /// Find the account index holding a given start_tick_index.
-    /// Reads only 4 bytes per account header.
-    fn find_tick_array_account(
-        &self,
-        accounts: &[AccountInfo],
-        target_start: i32,
-    ) -> Option<usize> {
-        let pool_id_bytes = self.pool_id.to_bytes();
-        for i in (self.start_index + Self::TICK_ARRAYS_START_IDX)..self.end_index {
-            if let Ok(data) = accounts[i].try_borrow_data() {
-                if data.len() >= Self::TA_TICKS_OFF
-                    && data[Self::TA_POOL_OFF..Self::TA_POOL_OFF + 32] == pool_id_bytes
-                {
-                    let start = i32::from_le_bytes(
-                        data[Self::TA_START_OFF..Self::TA_START_OFF + 4].try_into().ok()?,
-                    );
-                    if start == target_start {
-                        return Some(i);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Find the next initialized tick using offset-based scan.
-    /// Reads one tick array at a time, scans from computed offset (not all 60).
-    fn find_next_initialized_tick(
-        &self,
-        accounts: &[AccountInfo],
-        current_tick: i32,
-        zero_for_one: bool,
-    ) -> Option<(i32, i128)> {
-        let pool_id_bytes = self.pool_id.to_bytes();
-        let tick_spacing = self.tick_spacing as i32;
-        let current_start =
-            TickArrayState::get_array_start_index(current_tick, self.tick_spacing);
-
-        // Try current tick array — find the right account, scan from offset
-        if let Some(idx) = self.find_tick_array_account(accounts, current_start) {
-            if let Ok(data) = accounts[idx].try_borrow_data() {
-                if let Some(result) =
-                    Self::scan_tick_in_data(&data, &pool_id_bytes, tick_spacing, current_tick, zero_for_one)
-                {
-                    return Some(result);
-                }
-            }
-        }
-
-        // Try adjacent tick array — scan from boundary
-        let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing;
-        let next_start = if zero_for_one {
-            current_start - ticks_in_array
-        } else {
-            current_start + ticks_in_array
-        };
-        let sentinel = if zero_for_one { i32::MAX } else { i32::MIN };
-        if let Some(idx) = self.find_tick_array_account(accounts, next_start) {
-            if let Ok(data) = accounts[idx].try_borrow_data() {
-                return Self::scan_tick_in_data(&data, &pool_id_bytes, tick_spacing, sentinel, zero_for_one);
-            }
-        }
-        None
-    }
-
-    /// Calculate swap using tick arrays scanned on-the-fly from account data.
+    /// Calculate swap with pre-loaded tick arrays and tracked current array.
+    /// Zero try_borrow_data() calls in the hot loop.
     fn calculate_swap_with_tick_arrays(
         &self,
         accounts: &[AccountInfo],
@@ -676,9 +640,36 @@ impl<'info> RaydiumCLMM<'info> {
         zero_for_one: bool,
         is_base_input: bool,
     ) -> Result<u64> {
-        let has_tick_arrays = self.end_index > self.start_index + Self::TICK_ARRAYS_START_IDX;
-        if self.liquidity == 0 && !has_tick_arrays {
+        let pool_id_bytes = self.pool_id.to_bytes();
+        let ts = self.tick_spacing as i32;
+        let ticks_in_array = TICK_ARRAY_SIZE * ts;
+
+        // Select tick arrays for the swap direction
+        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+
+        // Pre-load direction-specific tick arrays ONCE — store raw data pointers
+        let (ta, ta_count) = Self::preload_tick_arrays(
+            accounts, &pool_id_bytes, ta_from, ta_to,
+        );
+
+        if self.liquidity == 0 && ta_count == 0 {
             return Err(ErrorCode::InsufficientLiquidityForDirection.into());
+        }
+
+        // Find initial current tick array
+        let initial_start = TickArrayState::get_array_start_index(self.tick_current, self.tick_spacing);
+        let mut cur: usize = 0;
+        let mut cur_valid = false;
+        {
+            let mut j = 0;
+            while j < ta_count {
+                if ta[j].start_tick_index == initial_start {
+                    cur = j;
+                    cur_valid = true;
+                    break;
+                }
+                j += 1;
+            }
         }
 
         let sqrt_price_limit_x64 = if zero_for_one {
@@ -698,60 +689,83 @@ impl<'info> RaydiumCLMM<'info> {
             fund_fee: 0,
         };
 
-        let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 100;
+        let mut iterations = 0u32;
 
         while state.amount_specified_remaining != 0
             && state.sqrt_price_x64 != sqrt_price_limit_x64
-            && iterations < MAX_ITERATIONS
+            && iterations < 100
         {
             iterations += 1;
-            let mut step = StepComputations::default();
-            step.sqrt_price_start_x64 = state.sqrt_price_x64;
+            let step_sqrt_price_start = state.sqrt_price_x64;
 
-            // Find the next initialized tick (scanned on-the-fly from account data)
-            let (tick_next, liquidity_net) =
-                match self.find_next_initialized_tick(accounts, state.tick, zero_for_one) {
-                    Some((t, ln)) => (t, ln),
-                    None => {
-                        // No more initialized ticks - use tick boundary based on current tick spacing
-                        let tick_next = if zero_for_one {
-                            self.get_lower_tick_boundary(state.tick)
-                        } else {
-                            self.get_upper_tick_boundary(state.tick)
-                        };
-                        (tick_next, 0i128)
+            // ── Find next initialized tick (zero borrows, pure pointer reads) ──
+            let (tick_next, liquidity_net) = unsafe { 'find: {
+                if cur_valid {
+                    // Scan current array
+                    if let Some(r) = Self::scan_tick_raw(
+                        ta[cur].data, ta[cur].start_tick_index, ts, state.tick, zero_for_one,
+                    ) {
+                        break 'find r;
                     }
+                    // Current array exhausted — try adjacent
+                    let next_start = if zero_for_one {
+                        ta[cur].start_tick_index - ticks_in_array
+                    } else {
+                        ta[cur].start_tick_index + ticks_in_array
+                    };
+                    let mut k = 0;
+                    while k < ta_count {
+                        if ta[k].start_tick_index == next_start {
+                            cur = k;
+                            let sentinel = if zero_for_one { i32::MAX } else { i32::MIN };
+                            if let Some(r) = Self::scan_tick_raw(
+                                ta[cur].data, next_start, ts, sentinel, zero_for_one,
+                            ) {
+                                break 'find r;
+                            }
+                            break;
+                        }
+                        k += 1;
+                    }
+                    if k == ta_count { cur_valid = false; }
+                }
+                // No tick found — use boundary
+                let t = if zero_for_one {
+                    self.get_lower_tick_boundary(state.tick)
+                } else {
+                    self.get_upper_tick_boundary(state.tick)
                 };
+                (t, 0i128)
+            }};
 
-            step.tick_next = tick_next.max(tick_math::MIN_TICK).min(tick_math::MAX_TICK);
-            step.initialized = liquidity_net != 0;
+            let tick_next = tick_next.max(tick_math::MIN_TICK).min(tick_math::MAX_TICK);
+            let initialized = liquidity_net != 0;
 
-            step.sqrt_price_next_x64 =
-                tick_math::get_sqrt_price_at_tick(step.tick_next).unwrap_or(if zero_for_one {
+            let sqrt_price_next_x64 =
+                tick_math::get_sqrt_price_at_tick(tick_next).unwrap_or(if zero_for_one {
                     tick_math::MIN_SQRT_PRICE_X64
                 } else {
                     tick_math::MAX_SQRT_PRICE_X64
                 });
 
-            let target_price = if (zero_for_one && step.sqrt_price_next_x64 < sqrt_price_limit_x64)
-                || (!zero_for_one && step.sqrt_price_next_x64 > sqrt_price_limit_x64)
+            let target_price = if (zero_for_one && sqrt_price_next_x64 < sqrt_price_limit_x64)
+                || (!zero_for_one && sqrt_price_next_x64 > sqrt_price_limit_x64)
             {
                 sqrt_price_limit_x64
             } else {
-                step.sqrt_price_next_x64
+                sqrt_price_next_x64
             };
 
             // Skip if no liquidity
             if state.liquidity == 0 {
-                state.tick = step.tick_next;
-                state.sqrt_price_x64 = step.sqrt_price_next_x64;
+                state.tick = tick_next;
+                state.sqrt_price_x64 = sqrt_price_next_x64;
                 continue;
             }
 
             // Compute swap step
             let swap_step = swap_math::compute_swap_step(
-                step.sqrt_price_start_x64,
+                step_sqrt_price_start,
                 target_price,
                 state.liquidity,
                 state.amount_specified_remaining,
@@ -761,69 +775,59 @@ impl<'info> RaydiumCLMM<'info> {
             );
 
             state.sqrt_price_x64 = swap_step.sqrt_price_next_x64;
-            step.amount_in = swap_step.amount_in;
-            step.amount_out = swap_step.amount_out;
-            step.fee_amount = swap_step.fee_amount;
+            let amount_in = swap_step.amount_in;
+            let amount_out = swap_step.amount_out;
+            let mut fee_amount = swap_step.fee_amount;
 
             // Update amounts
             if is_base_input {
                 state.amount_specified_remaining = state
                     .amount_specified_remaining
-                    .saturating_sub(step.amount_in + step.fee_amount);
-                state.amount_calculated = state.amount_calculated.saturating_add(step.amount_out);
+                    .saturating_sub(amount_in + fee_amount);
+                state.amount_calculated = state.amount_calculated.saturating_add(amount_out);
             } else {
                 state.amount_specified_remaining = state
                     .amount_specified_remaining
-                    .saturating_sub(step.amount_out);
+                    .saturating_sub(amount_out);
                 state.amount_calculated = state
                     .amount_calculated
-                    .saturating_add(step.amount_in)
-                    .saturating_add(step.fee_amount);
+                    .saturating_add(amount_in)
+                    .saturating_add(fee_amount);
             }
 
             // Calculate protocol and fund fees (deducted from LP fee)
-            let step_fee_amount = step.fee_amount;
             if self.protocol_fee_rate > 0 {
-                let delta = (step_fee_amount as u128)
+                let delta = (fee_amount as u128)
                     .mul_div_floor(
                         self.protocol_fee_rate as u128,
                         FEE_RATE_DENOMINATOR_VALUE as u128,
                     )
                     .unwrap_or(0) as u64;
-                step.fee_amount = step.fee_amount.saturating_sub(delta);
-                state.protocol_fee = state.protocol_fee.saturating_add(delta);
+                fee_amount -= delta;
+                state.protocol_fee += delta;
             }
             if self.fund_fee_rate > 0 {
-                let delta = (step_fee_amount as u128)
+                let delta = (fee_amount as u128)
                     .mul_div_floor(
                         self.fund_fee_rate as u128,
                         FEE_RATE_DENOMINATOR_VALUE as u128,
                     )
                     .unwrap_or(0) as u64;
-                step.fee_amount = step.fee_amount.saturating_sub(delta);
-                state.fund_fee = state.fund_fee.saturating_add(delta);
+                fee_amount -= delta;
+                state.fund_fee += delta;
             }
 
-            state.fee_amount = state.fee_amount.saturating_add(step.fee_amount);
+            state.fee_amount += fee_amount;
 
             // Shift tick if we reached the next price
-            if state.sqrt_price_x64 == step.sqrt_price_next_x64 {
-                if step.initialized {
-                    // Cross the tick - update liquidity
-                    let net = if zero_for_one {
-                        -liquidity_net
-                    } else {
-                        liquidity_net
-                    };
+            if state.sqrt_price_x64 == sqrt_price_next_x64 {
+                if initialized {
+                    let net = if zero_for_one { -liquidity_net } else { liquidity_net };
                     state.liquidity =
                         liquidity_math::add_delta(state.liquidity, net).unwrap_or(state.liquidity);
                 }
-                state.tick = if zero_for_one {
-                    step.tick_next - 1
-                } else {
-                    step.tick_next
-                };
-            } else if state.sqrt_price_x64 != step.sqrt_price_start_x64 {
+                state.tick = if zero_for_one { tick_next - 1 } else { tick_next };
+            } else if state.sqrt_price_x64 != step_sqrt_price_start {
                 state.tick =
                     tick_math::get_tick_at_sqrt_price(state.sqrt_price_x64).unwrap_or(state.tick);
             }
@@ -1165,12 +1169,19 @@ mod tests {
             .await
             .unwrap();
 
-        // Derive tick array PDAs dynamically from pool state
+        // Derive tick array PDAs for buy (zero_for_one) and sell (one_for_zero) directions
         let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
         let current_start_index =
             TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
 
-        let tick_array_start_indices = [current_start_index, current_start_index - ticks_in_array];
+        // Buy direction: current + below (price goes down)
+        // Sell direction: current + above (price goes up)
+        let tick_array_start_indices = [
+            current_start_index,                        // buy_1
+            current_start_index - ticks_in_array,       // buy_2
+            current_start_index,                        // sell_1
+            current_start_index + ticks_in_array,       // sell_2
+        ];
 
         let mut tick_array_keys_and_accounts = Vec::new();
         for &start_index in &tick_array_start_indices {
@@ -1193,11 +1204,15 @@ mod tests {
             tick_array_keys_and_accounts.push((tick_array_pda, tick_array_account));
         }
 
-        let (tick_array_1_key, tick_array_1_account) = tick_array_keys_and_accounts.remove(0);
-        let (tick_array_2_key, tick_array_2_account) = tick_array_keys_and_accounts.remove(0);
+        let (buy_1_key, buy_1_account) = tick_array_keys_and_accounts.remove(0);
+        let (buy_2_key, buy_2_account) = tick_array_keys_and_accounts.remove(0);
+        let (sell_1_key, sell_1_account) = tick_array_keys_and_accounts.remove(0);
+        let (sell_2_key, sell_2_account) = tick_array_keys_and_accounts.remove(0);
 
-        eprintln!("Tick Array 1 Pubkey: {}", tick_array_1_key);
-        eprintln!("Tick Array 2 Pubkey: {}", tick_array_2_key);
+//         eprintln!("Buy Tick Array 1: {}", buy_1_key);
+//         eprintln!("Buy Tick Array 2: {}", buy_2_key);
+//         eprintln!("Sell Tick Array 1: {}", sell_1_key);
+//         eprintln!("Sell Tick Array 2: {}", sell_2_key);
 
         let clock = get_clock(&rpc_client).await.unwrap();
 
@@ -1208,13 +1223,20 @@ mod tests {
         let token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
         let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
         let observation = account_to_account_info(pool.observation_key, observation_account);
-        let tick_array_1 = account_to_account_info(tick_array_1_key, tick_array_1_account);
-        let tick_array_2 = account_to_account_info(tick_array_2_key, tick_array_2_account);
+        let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
+        let tick_buy_2 = account_to_account_info(buy_2_key, buy_2_account);
+        let tick_sell_1 = account_to_account_info(sell_1_key, sell_1_account);
+        let tick_sell_2 = account_to_account_info(sell_2_key, sell_2_account);
 
         let program_id_key = RaydiumCLMM::PROGRAM_ID;
         let program_id_account =
             create_mock_account_info_with_data(program_id_key, system_program::id(), None);
 
+        // Account layout: [program_id, pool_id, vault_0, vault_1, token_0, token_1,
+        //                   amm_config, observation, bitmap_ext, buy_1, buy_2, sell_1, sell_2]
+        let bitmap_ext = create_mock_account_info_with_data(
+            RaydiumCLMM::PROGRAM_ID, system_program::id(), None,
+        );
         let accounts = vec![
             program_id_account,
             pool_id_account_info,
@@ -1224,8 +1246,11 @@ mod tests {
             token_1.clone(),
             amm_config,
             observation,
-            tick_array_1,
-            tick_array_2,
+            bitmap_ext,
+            tick_buy_1,
+            tick_buy_2,
+            tick_sell_1,
+            tick_sell_2,
         ];
 
         let raydium_clmm = match RaydiumCLMM::new(&accounts, 0, accounts.len()) {
@@ -1247,7 +1272,7 @@ mod tests {
             raydium_clmm.trade_fee_rate,
             raydium_clmm.trade_fee_rate as f64 / 10000.0
         );
-        eprintln!("Tick array accounts: {}", accounts.len() - RaydiumCLMM::TICK_ARRAYS_START_IDX);
+        eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::ACCOUNT_COUNT - RaydiumCLMM::TICK_BUY_1_IDX);
         let (max_in, max_out) = raydium_clmm
             .get_max_amounts_in_out(raydium_clmm.base_token_pk)
             .unwrap();

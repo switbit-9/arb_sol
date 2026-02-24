@@ -12,7 +12,7 @@ skip-lint = false
 # solana_arbitrage = "Ckgi61iKuKeVLfCgAuqaURw18e52D7SvqVj9TUw6NftF"
 
 [programs.mainnet]
-solana_arbitrage = "BEBdJkfY93ypr7r794mgHA2NiqMVe7ZYQHzQDAo6DYaA"
+solana_arbitrage = "5wmhmvknwJTe2zcyNGsH1sP8essvN6tRgFuAEyEVPYbX"
 
 [deploy]
 # This is where you specify the length for the buffer

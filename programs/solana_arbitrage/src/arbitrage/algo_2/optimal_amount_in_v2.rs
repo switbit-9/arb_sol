@@ -381,16 +381,16 @@ pub fn find_optimal_amount<'info>(
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     let (program_1_max_in, program_1_max_out) = program_1
-        .get_max_amounts_in_out(input_mint)
+        .get_max_amounts_in_out(accounts, input_mint)
         .unwrap_or((0, 0));
     let (program_2_max_in, program_2_max_out) = program_2
-        .get_max_amounts_in_out(middle_mint)
+        .get_max_amounts_in_out(accounts, middle_mint)
         .unwrap_or((0, 0));
     
-    debug_eprintln!("program_1_max_in: {:?}", program_1_max_in);
-    debug_eprintln!("program_1_max_out: {:?}", program_1_max_out);
-    debug_eprintln!("program_2_max_in: {:?}", program_2_max_in);
-    debug_eprintln!("program_2_max_out: {:?}", program_2_max_out);
+    debug_eprintln!("{}: program_1_max_in: {:?}", program_1.name(), program_1_max_in);
+    debug_eprintln!("{}: program_1_max_out: {:?}", program_1.name(), program_1_max_out);
+    debug_eprintln!("{}: program_2_max_in: {:?}", program_2.name(), program_2_max_in);
+    debug_eprintln!("{}: program_2_max_out: {:?}", program_2.name(), program_2_max_out);
 
     // Cap program_1 input so its output does not exceed program_2's capacity.
     let max_in = if program_1_max_out > program_2_max_in && program_2_max_in > 0 {
@@ -411,7 +411,7 @@ pub fn find_optimal_amount<'info>(
 
     let max_amount = config.max_amount_in.min(max_in);
     let min_amount = MIN_SEARCH_AMOUNT;
-    // let max_amount = 1323;
+    // let max_amount = program_2_max_out;
     #[cfg(test)]
     {
         debug_eprintln!(
@@ -655,7 +655,7 @@ fn find_optimal_amount_n_hop<'info>(
     let first_instance = find_instance_by_pool_id(instances, &edges[0].pool_id)?;
     let input_mint = edges[0].left.mint_account;
     let (first_max_in, _) = first_instance
-        .get_max_amounts_in_out(input_mint)
+        .get_max_amounts_in_out(accounts, input_mint)
         .unwrap_or((0, 0));
 
     let max_amount = config.max_amount_in.min(first_max_in);

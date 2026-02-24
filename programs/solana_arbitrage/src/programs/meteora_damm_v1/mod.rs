@@ -122,7 +122,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         Ok((f, f))
     }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         let fee_factor = 1.0 - self.fee_rate;
         let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {
             (self.base_vault_amount as f64, self.quote_vault_amount as f64)

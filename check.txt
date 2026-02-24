@@ -1,0 +1,95 @@
+solana_accounts = [
+    "FYnaLRpfVbAi5CnupX1JuxqokiR773WiZPiCz3dzp7BP", # #1
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", # #2 (Token Program)
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", # #3 (Token 2022 Program)
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", # #4 (Memo Program v2)
+    "So11111111111111111111111111111111111111112", # #5 (WSOL)
+    "Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk", # #6
+    "8B44ouU62FXkjdChWZWLbuH4g57KSavgYMq9Vpd5pump",                           # #7 (RRCH Placeholder)
+    "Bxweb2NpC8BMcdPc7Dcv1NmGuE662FMZEaPEuT5ZYAMs", # #8
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                       # #9 (ORANMAMA Placeholder)
+    "Et9upRAuxmfWRYkbx1HWiAAYvmXCsGL5rSMNQjrxymms", # #10
+
+    "6EF8rrecthR5DkwiZdpWj7auR3AfVcuM75SkAE6Bh2jD", # #11 (Pump.fun AMM)
+    "5hXNkmknTaUwVjGFEdigpHwATD8Qvf9DUoVdqYg5RMzy",                       # #12
+    "8RQqXzDoRh5o1EaEg7dWuZqAz4MZcshDWUVAafp514ts",                            # #13
+    "A3hTopjXxmkLXWjt5r3K1pWMBidAsaDRsW9s6ARJRdGp",                            # #14
+    "8B44ouU62FXkjdChWZWLbuH4g57KSavgYMq9Vpd5pump",                           # #15
+    "So11111111111111111111111111111111111111112", # #16 (WSOL)
+    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",                        # #17
+    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb", # #18
+    "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR", # #19
+    "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx", # #20
+    "Fee667688N6mBk7EHeCDf7SAnK57yJbLzYjS36n6vH57", # #21 (Pump Fees Program)
+    "WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i", # #22
+    "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw", # #23
+    "11111111111111111111111111111111",             # #24 (System Program)
+    "ATokenGPvbdAFu22YWCA5yxSvzVp897x2V3L884LSW",  # #25 (Associated Token Program)
+    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw", # #26
+    "ED14bmSDHmp6QwAV87rmr1d4cTgVG1XeZtVsPCuvvxU6", # #27
+    "AWZYWx956Uaj3TYEcDvtjYgeYjNcYt6DNCJ6K2pStr6t", # #28
+
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #29 (Meteora DLMM Program)
+    "7muhJoXEcADVjvEkG2tgnUZq2DCq3Az4byZv1dFSaqxm",                    # #30
+    "DXVgZfGuWS3uC8QcerwAj8jde5F52auvea5kgWKrhZV3",                         # #31
+    "Fcyw1GA5Ew568dhoSHsrBTvNTMwN5MKpMEvF6nbtjfQN",                         # #32
+    "8B44ouU62FXkjdChWZWLbuH4g57KSavgYMq9Vpd5pump",                           # #33
+    "So11111111111111111111111111111111111111112", # #34 (WSOL)
+    "FDK95kFacZAUyT9PBGcMKdHTFg47mXYfUnVszY1s59W6", # #35
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #36 (Meteora DLMM Program)
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", # #37
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #38 (Meteora DLMM Program)
+    "78grbcrN3tUg7RTrbBr4aM3sxT8Vrf6sMc6LW4V9rzoH", # #39
+    "78grbcrN3tUg7RTrbBr4aM3sxT8Vrf6sMc6LW4V9rzoH", # #40
+    "78grbcrN3tUg7RTrbBr4aM3sxT8Vrf6sMc6LW4V9rzoH", # #41
+    "CA7g5cWeF8EPvkdPiKNLspaM9VYDVduQ16ZLoge1qmL", # #42
+
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #43 (Meteora DLMM Program)
+    "Fcyw1GA5Ew568dhoSHsrBTvNTMwN5MKpMEvF6nbtjfQN",                # #44
+    "Fcyw1GA5Ew568dhoSHsrBTvNTMwN5MKpMEvF6nbtjfQN",                     # #45
+    "Fcyw1GA5Ew568dhoSHsrBTvNTMwN5MKpMEvF6nbtjfQN",                         # #46
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                       # #47
+    "So11111111111111111111111111111111111111112", # #48 (WSOL)
+    "22pTtLa8fhYenbze7TcJv4UshXwA5MPEWTqtp1x6Q5YA", # #49
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #50 (Meteora DLMM Program)
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", # #51
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #52 (Meteora DLMM Program)
+    "6qmHUPN2Tormw9ubgCegQHLJKKAVeK3bJrDfW11y2ZVq", # #53
+    "EpJ1peTtSQBoHab3Timrt5y2qPChNRYnPzFnseCAjAEw", # #54
+    "6qmHUPN2Tormw9ubgCegQHLJKKAVeK3bJrDfW11y2ZVq", # #55
+    "A1G9fp6Xqmo1mSMxHiCxqudbUoHHaa4777dTGjEfUPiD", # #56
+
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #57 (Meteora DLMM Program)
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",              # #58
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                         # #59
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                         # #60
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                       # #61
+    "So11111111111111111111111111111111111111112", # #62 (WSOL)
+    "ErXpTSTfU2EDvq6o6BRrEmcEbknyq3rXHufFFk3RjVFW", # #63
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #64 (Meteora DLMM Program)
+    "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", # #65
+    "LBUZKhLz79uFhyHdXRebC2Wn7vYFmD3wT8SdmTND8vD",  # #66 (Meteora DLMM Program)
+    "CLssU6a5ywSBUgoXaATs82JLCC9JANvxaG1JYFR7W8K3", # #67
+    "PdhqwhS3bBoTJkn1cB27txieU9LgjRrrvGnznmLa8ak", # #68
+    "CLssU6a5ywSBUgoXaATs82JLCC9JANvxaG1JYFR7W8K3", # #69
+    "D7Ps4Zpc78ioyJeTtZSURSUCz9wN8ArbXEfjXUigFcgD", # #70
+
+    "6EF8rrecthR5DkwiZdpWj7auR3AfVcuM75SkAE6Bh2jD", # #71 (Pump.fun AMM)
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                            # #72
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                            # #73
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                            # #74
+    "29JU4mA9A66F6GLkdGUwL3rKdBpL8Mw6VZZHb8t8pump",                       # #75
+    "So11111111111111111111111111111111111111112", # #76 (WSOL)
+    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",                        # #77
+    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb", # #78
+    "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR", # #79
+    "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx", # #80
+    "Fee667688N6mBk7EHeCDf7SAnK57yJbLzYjS36n6vH57", # #81 (Pump Fees Program)
+    "WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i", # #82
+    "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw", # #83
+    "11111111111111111111111111111111",             # #84 (System Program)
+    "ATokenGPvbdAFu22YWCA5yxSvzVp897x2V3L884LSW",  # #85 (Associated Token Program)
+    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw", # #86
+    "7cAkizMhWrs17D19RjLTFYErLVxGGc6r4ecEMxDcAntR", # #87
+    "DxDdLiCR3wabWBa5iyQR5Sm7GsuE9Lvt7niyyobLdc4r"  # #88
+]

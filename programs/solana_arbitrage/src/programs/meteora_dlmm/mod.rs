@@ -8,11 +8,10 @@ use anchor_lang::solana_program::{
     pubkey::Pubkey,
 };
 use dlmm::constants::FEE_PRECISION;
-use dlmm::dlmm::accounts::{BinArray, BinArrayBitmapExtension, LbPair};
+use dlmm::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
 use dlmm::dlmm::types::Bin;
-use dlmm::extensions::{BinArrayExtension, BinExtension, LbPairExtension};
+use dlmm::extensions::{BinExtension, LbPairExtension};
 use dlmm::math::price_math::get_price_from_id;
-use dlmm::pda::derive_bin_array_pda;
 use dlmm::quote::{get_active_bin_array, quote_exact_in, quote_exact_out};
 
 pub const SCALE_OFFSET: u8 = 64;
@@ -33,10 +32,8 @@ fn get_prices(lb_price: u128) -> Result<(f64, f64)> {
     Ok((price, inverse_price))
 }
 
-use std::marker::PhantomData;
-
 #[derive(Clone)]
-pub struct MeteoraDlmm<'info> {
+pub struct MeteoraDlmm {
     pub pool_id: Pubkey,
     pub base_token_pk: Pubkey,
     pub quote_token_pk: Pubkey,
@@ -48,14 +45,9 @@ pub struct MeteoraDlmm<'info> {
     pub start_index: usize,
     pub end_index: usize,
     pub fee_rate: f64,
-    /// Total token X in the active bin array (sum of all 70 bins)
-    pub bin_array_total_x: u64,
-    /// Total token Y in the active bin array (sum of all 70 bins)
-    pub bin_array_total_y: u64,
-    pub phantom: PhantomData<&'info ()>,
 }
 
-impl<'info> ProgramMeta for MeteoraDlmm<'info> {
+impl ProgramMeta for MeteoraDlmm {
     fn get_id(&self) -> &Pubkey {
         &Self::PROGRAM_ID
     }
@@ -191,12 +183,12 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
     fn name(&self) -> &'static str { "MeteoraDLMM" }
 
-    fn get_max_amount_in(&self, mint: Pubkey) -> Result<u64> {
-        MeteoraDlmm::get_max_amount_in(self, mint)
+    fn get_max_amount_in<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        MeteoraDlmm::get_max_amount_in(self, accounts, mint)
     }
 
-    fn get_max_amount_out(&self, mint: Pubkey) -> Result<u64> {
-        MeteoraDlmm::get_max_amount_out(self, mint)
+    fn get_max_amount_out<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        MeteoraDlmm::get_max_amount_out(self, accounts, mint)
     }
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
@@ -224,10 +216,8 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
         Ok((f, f))
     }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
-        let max_amount_in = self.get_max_amount_in_active_bin(input_mint)?;
-        let max_amount_out = self.get_max_amount_out_active_bin(input_mint)?;
-        Ok((max_amount_in, max_amount_out))
+    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
+        self.compute_max_amounts_in_out(accounts, input_mint)
     }
 
 
@@ -513,7 +503,7 @@ impl<'info> ProgramMeta for MeteoraDlmm<'info> {
 
 }
 
-impl<'info> MeteoraDlmm<'info> {
+impl MeteoraDlmm {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
     pub const PROGRAM_ID_IDX: usize = 0;
@@ -534,7 +524,7 @@ impl<'info> MeteoraDlmm<'info> {
 
     #[inline(never)]
     pub fn new(
-        accounts: &[AccountInfo<'info>],
+        accounts: &[AccountInfo],
         start_index: usize,
         end_index: usize,
     ) -> Result<Self> {
@@ -580,39 +570,13 @@ impl<'info> MeteoraDlmm<'info> {
             true,
             all_bin_arrays,
         )
-        .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+        .map_err(|_| {
+            msg!("pool_id: {}", pool_id.key);
+            error!(SolarBError::InsufficientBinArray)
+        })?;
         let (price, inverse_price) = get_prices(lb_price)?;
 
-        // Sum liquidity across all 70 bins in the active bin's bin array
-        let (bin_array_total_x, bin_array_total_y) = {
-            const BIN_ARRAY_HEADER_SIZE: usize = 56;
-            const BIN_SIZE: usize = 144;
-            const MAX_BIN_PER_ARRAY: usize = 70;
-
-            let active_bin_array_idx = BinArray::bin_id_to_bin_array_index(lb_pair.active_id)
-                .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
-            let active_bin_array_pda = derive_bin_array_pda(*pool_id.key, active_bin_array_idx as i64).0;
-
-            let remaining = &accounts[start_index + Self::BUY_BIN_1_IDX..start_index + Self::SELL_BIN_2_IDX + 1];
-            let mut total_x: u64 = 0;
-            let mut total_y: u64 = 0;
-
-            if let Some(bin_array_account) = remaining.iter().find(|acc| *acc.key == active_bin_array_pda) {
-                let data = bin_array_account.try_borrow_data()?;
-                for i in 0..MAX_BIN_PER_ARRAY {
-                    let offset = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE;
-                    if offset + 16 > data.len() { break; }
-                    let amount_x = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                    let amount_y = u64::from_le_bytes(data[offset + 8..offset + 16].try_into().unwrap());
-                    total_x = total_x.saturating_add(amount_x);
-                    total_y = total_y.saturating_add(amount_y);
-                }
-            }
-
-            (total_x, total_y)
-        };
-
-        let fee_rate = compute_fee_rate(&lb_pair).map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+        let fee_rate = compute_fee_rate(&lb_pair).map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
         let instance = MeteoraDlmm {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
@@ -625,34 +589,66 @@ impl<'info> MeteoraDlmm<'info> {
             fee_rate,
             start_index,
             end_index,
-            bin_array_total_x,
-            bin_array_total_y,
-            phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
     }
 
-    // Max input amount across the active bin array (approximate, uses active bin price)
-    pub fn get_max_amount_in(&self, input_mint: Pubkey) -> Result<u64> {
-        let swap_for_y = self.base_token_pk == input_mint;
-        if swap_for_y {
-            // Input X, output Y. Max X in ≈ total_y / price
-            Ok((self.bin_array_total_y as f64 * self.inverse_price) as u64)
-        } else {
-            // Input Y, output X. Max Y in ≈ total_x * price
-            Ok((self.bin_array_total_x as f64 * self.price) as u64)
+    /// Sum a single token amount from bin array account data, skipping duplicate pubkeys.
+    /// If `sum_y` is true, sums amount_y (offset +8); otherwise sums amount_x (offset +0).
+    fn sum_bin_array_token(accounts: &[&AccountInfo], sum_y: bool) -> Result<u64> {
+        const BIN_ARRAY_HEADER_SIZE: usize = 56;
+        const BIN_SIZE: usize = 144;
+        const MAX_BIN_PER_ARRAY: usize = 70;
+        let field_offset = if sum_y { 8 } else { 0 };
+        let mut total: u64 = 0;
+        let mut seen = Pubkey::default();
+        for acc in accounts {
+            if *acc.key == seen { continue; }
+            seen = *acc.key;
+            let data = acc.try_borrow_data()?;
+            if data.len() < BIN_ARRAY_HEADER_SIZE { continue; }
+            for i in 0..MAX_BIN_PER_ARRAY {
+                let offset = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE + field_offset;
+                if offset + 8 > data.len() { break; }
+                let amount = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                total = total.saturating_add(amount);
+            }
         }
+        Ok(total)
     }
 
-    // Max output amount across the active bin array
-    pub fn get_max_amount_out(&self, input_mint: Pubkey) -> Result<u64> {
+    /// Compute (max_amount_in, max_amount_out) across all bin arrays for a given input mint.
+    /// Only called when needed — saves CU in the constructor.
+    pub fn compute_max_amounts_in_out(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<(u64, u64)> {
         let swap_for_y = self.base_token_pk == input_mint;
-        if swap_for_y {
-            Ok(self.bin_array_total_y)
+        let max_amount_out = if swap_for_y {
+            // X→Y: sum Y from buy arrays
+            Self::sum_bin_array_token(&[
+                &accounts[self.start_index + Self::BUY_BIN_1_IDX],
+                &accounts[self.start_index + Self::BUY_BIN_2_IDX],
+            ], true)?
         } else {
-            Ok(self.bin_array_total_x)
-        }
+            // Y→X: sum X from sell arrays
+            Self::sum_bin_array_token(&[
+                &accounts[self.start_index + Self::SELL_BIN_1_IDX],
+                &accounts[self.start_index + Self::SELL_BIN_2_IDX],
+            ], false)?
+        };
+        let max_amount_in = if swap_for_y {
+            (max_amount_out as f64 * self.inverse_price) as u64
+        } else {
+            (max_amount_out as f64 * self.price) as u64
+        };
+        Ok((max_amount_in, max_amount_out))
+    }
+
+    pub fn get_max_amount_in(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<u64> {
+        Ok(self.compute_max_amounts_in_out(accounts, input_mint)?.0)
+    }
+
+    pub fn get_max_amount_out(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<u64> {
+        Ok(self.compute_max_amounts_in_out(accounts, input_mint)?.1)
     }
 
     // Max input amount in the current active bin only (no price movement)
@@ -837,7 +833,7 @@ mod tests {
         InterfaceAccount::<Mint>::try_from(account_info).expect("Failed to create InterfaceAccount")
     }
 
-    async fn build_test_scenario() -> (MeteoraDlmm<'static>, Vec<AccountInfo<'static>>) {
+    async fn build_test_scenario() -> (MeteoraDlmm, Vec<AccountInfo<'static>>) {
         use anchor_client::Cluster;
         use dlmm::pda;
         use solana_client::nonblocking::rpc_client::RpcClient;

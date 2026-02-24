@@ -101,7 +101,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         let fee_factor = 1.0 - self.fee_rate;
 
         let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {

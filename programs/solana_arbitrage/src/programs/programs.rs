@@ -118,7 +118,7 @@ pub trait ProgramMeta {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
-    fn get_max_amounts_in_out(&self, _input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], _input_mint: Pubkey) -> Result<(u64, u64)> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
@@ -133,12 +133,12 @@ pub trait ProgramMeta {
     }
 
     /// Get max amount that can be input for a given mint direction
-    fn get_max_amount_in(&self, _mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Get max amount that can be output for a given input mint direction
-    fn get_max_amount_out(&self, _mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 }

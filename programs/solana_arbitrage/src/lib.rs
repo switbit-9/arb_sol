@@ -19,9 +19,9 @@ pub mod utils;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
-// #[cfg(test)]
-// #[path = "tests/pubkey_test.rs"]
-// mod pubkey_test;
+#[cfg(test)]
+#[path = "tests/pubkey_test.rs"]
+mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
@@ -52,7 +52,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("BEBdJkfY93ypr7r794mgHA2NiqMVe7ZYQHzQDAo6DYaA");
+declare_id!("3J8jbnhgiw5ysHX842Xt4mJngKs6aDh4akY2bXbKkXNC");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -103,10 +103,10 @@ fn start_bot<'info>(
     let payer = &accounts[0];
 
     let num_mints = data.mints as usize;
-    let pool_start = 4 + num_mints * 3;
+    let pool_start = 4 + num_mints * 2;
 
-    // Start token is always mint index 0, user token account at base + 2
-    let user_token_account = &accounts[6];
+    // Start token is always mint index 0, user token account at base + 1
+    let user_token_account = &accounts[5];
     let max_amount_in = parse_token_account(user_token_account)?.amount;
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
@@ -121,7 +121,7 @@ fn start_bot<'info>(
     let mut bot_config = BotConfig::new(
         Some(WSOL),
         max_amount_in,
-        0,
+        5_500,
         data.mints,
         data.mode,
         clock,
@@ -141,7 +141,7 @@ fn start_bot<'info>(
         &mut bot_config,
     )?;
 
-    if !test_mode && arbitrage_path.profit <= 0 {
+    if !test_mode && arbitrage_path.profit <= bot_config.min_profit {
         msg!("Not found");
         return Ok(None);
     }
@@ -582,10 +582,13 @@ fn run_multiple_trades_arbitrage<'info>(
 ///   accounts[1]             = spl token program
 ///   accounts[2]             = token-2022 program
 ///   accounts[3]             = memo program
-///   accounts[4 + i*3 + 0]  = mint_i
-///   accounts[4 + i*3 + 1]  = mint_i_token_program
-///   accounts[4 + i*3 + 2]  = user_mint_i_token_account
-///   accounts[4 + N*3 ..]   = pool accounts
+///   accounts[4 + i*2 + 0]  = mint_i
+///   accounts[4 + i*2 + 1]  = user_mint_i_token_account
+///   accounts[4 + N*2 ..]   = pool accounts
+///
+/// Token program for each mint is derived from mint_i.owner:
+///   mint.owner == spl_token::id() => accounts[1] (spl token program)
+///   otherwise                     => accounts[2] (token-2022 program)
 #[inline(never)]
 pub fn execute_arbitrage_path<'info>(
     accounts: &[AccountInfo<'info>],
@@ -619,7 +622,7 @@ pub fn execute_arbitrage_path<'info>(
         let mut output_base = 0usize;
         let mut found = 0u8;
         for i in 0..num_mints {
-            let base = 4 + i * 3;
+            let base = 4 + i * 2;
             let key = accounts[base].key; // &Pubkey, no copy
             if key == input_mint_key {
                 input_base = base;
@@ -642,6 +645,20 @@ pub fn execute_arbitrage_path<'info>(
             current_amount, input_mint_key, output_mint_key
         );
 
+        // Derive token program from mint owner
+        let spl_token_program = &accounts[1];
+        let token_2022_program = &accounts[2];
+        let input_token_program = if accounts[input_base].owner == spl_token_program.key {
+            spl_token_program.clone()
+        } else {
+            token_2022_program.clone()
+        };
+        let output_token_program = if accounts[output_base].owner == spl_token_program.key {
+            spl_token_program.clone()
+        } else {
+            token_2022_program.clone()
+        };
+
         // Execute swap - AccountInfo clone is unavoidable for CPI
         program_instance.invoke_swap_base_in(
             accounts,
@@ -649,17 +666,17 @@ pub fn execute_arbitrage_path<'info>(
             current_amount,
             None,
             payer.clone(),
-            accounts[input_base + 2].clone(), // user source token account
-            accounts[output_base + 2].clone(), // user destination token account
+            accounts[input_base + 1].clone(), // user source token account
+            accounts[output_base + 1].clone(), // user destination token account
             accounts[input_base].clone(),     // input mint
             accounts[output_base].clone(),    // output mint
-            accounts[input_base + 1].clone(), // input token program
-            accounts[output_base + 1].clone(), // output token program
+            input_token_program,              // input token program (derived from mint owner)
+            output_token_program,             // output token program (derived from mint owner)
         )?;
 
         // Direct byte read of amount field - much cheaper than try_deserialize
         // SPL Token account layout: mint (32) + owner (32) + amount (8) + ...
-        let output_token_account = &accounts[output_base + 2];
+        let output_token_account = &accounts[output_base + 1];
         let data = output_token_account.try_borrow_data()?;
         current_amount = u64::from_le_bytes(
             data[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]

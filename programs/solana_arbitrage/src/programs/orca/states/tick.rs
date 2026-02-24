@@ -170,14 +170,20 @@ impl<'a> TickArraySimple<'a> {
             && tick_index < self.start_tick_index + ticks_in_array
     }
 
-    /// Get the boundary tick index of this array in the swap direction
-    /// For a_to_b: returns the start tick index (lowest tick)
-    /// For b_to_a: returns the last tick index (highest tick)
+    /// Get the boundary tick index of this array in the swap direction.
+    /// Used as a sentinel when no initialized tick is found, so the caller
+    /// can advance past this array on the next iteration.
+    ///
+    /// For a_to_b: returns start_tick_index.
+    ///   Caller sets current_tick = boundary - 1, which falls below this array's range.
+    /// For b_to_a: returns start_tick_index + TICK_ARRAY_SIZE * tick_spacing (one past the array).
+    ///   Caller sets current_tick = boundary, which is outside this array's range,
+    ///   so the next search will find the next tick array.
     pub fn get_boundary_tick(&self, a_to_b: bool, tick_spacing: u16) -> i32 {
         if a_to_b {
             self.start_tick_index
         } else {
-            self.start_tick_index + (TICK_ARRAY_SIZE - 1) * tick_spacing as i32
+            self.start_tick_index + TICK_ARRAY_SIZE * tick_spacing as i32
         }
     }
 
@@ -203,7 +209,10 @@ impl<'a> TickArraySimple<'a> {
             }
         } else {
             // Searching right (increasing tick index)
-            for i in offset as usize..TICK_ARRAY_SIZE_USIZE {
+            // b_to_a search is exclusive of the current tick (offset+1),
+            // matching official Whirlpool behavior
+            let start = (offset as usize) + 1;
+            for i in start..TICK_ARRAY_SIZE_USIZE {
                 if let Some(tick) = self.get_tick(i) {
                     if tick.initialized {
                         let found_tick_index = self.start_tick_index + (i as i32 * tick_spacing as i32);

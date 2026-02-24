@@ -101,7 +101,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn get_sqrt_price(&self) -> Result<u128> { Ok(self.pool.sqrt_price) }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         if input_mint == self.base_token_pk {
             Ok((self.base_vault_amount, self.quote_vault_amount))
         } else {
@@ -1210,7 +1210,7 @@ mod tests {
             (inverse_price, price)
         };
 
-        let (max_sol_in, max_token_out) = meteora_damm_v2.get_max_amounts_in_out(sol_mint).unwrap();
+        let (max_sol_in, max_token_out) = meteora_damm_v2.get_max_amounts_in_out(&accounts, sol_mint).unwrap();
         debug_eprintln!("Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}", max_sol_in as f64 / 1_000_000_000.0, max_token_out as f64 / 1_000_000.0);
 
         debug_eprintln!("Sol price: {:?}", sol_price);

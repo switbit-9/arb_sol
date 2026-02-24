@@ -107,7 +107,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        clock: Clock,
+        _clock: Clock,
     ) -> Result<u64> {
         // if input_mint == self.base_token_pk {
         //     return self.swap_base_out_impl(accounts, input_mint, amount_in, _clock);
@@ -156,7 +156,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         Ok(amount_out_after_fee)
     }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
          let fee_factor = 1.0 - self.fee_rate;
 
         // x = input-side reserve, y = output-side reserve
@@ -183,7 +183,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         let dx = (x_reserve / fee_factor) * ((y_reserve / denom) - 1.0);
         let max_in = dx.max(0.0).min(u64::MAX as f64) as u64;
         let max_out = y_reserve as u64;
-
+        eprintln!("y_reserve: {:?}", y_reserve);
         Ok((max_in, max_out))
     }
 
@@ -259,6 +259,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             return Err(ProgramError::InvalidAccountData.into());
         };
 
+        let amount_out_value = self.swap_base_in(accounts, input_mint, max_amount_in, Clock::default())?;
         // Get stored accounts from self.get_accounts() - these are the accounts stored in the struct
         let program_id_stored = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
         let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
@@ -290,7 +291,6 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             (None, None)
         };
 
-        let amount_out_value = amount_out.unwrap_or(1);
         let mut metas = Vec::with_capacity(23);
         metas.push(AccountMeta::new(*pool_id.key, false));
         metas.push(AccountMeta::new(*payer.key, true));

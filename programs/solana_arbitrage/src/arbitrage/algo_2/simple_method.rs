@@ -10,7 +10,7 @@ const PRICE_SCALE: u128 = 1_000_000_000;
 /// Calculate swap amount using fixed-point arithmetic: amount_out = amount_in * price * fee_factor
 #[inline]
 fn calculate_swap_amount(edge: &Edge, amount_in: u64) -> u64 {
-    let scaled_price = (edge.get_price() * PRICE_SCALE as f64) as u128;
+    let scaled_price = (edge.get_price() * edge.fee_factor * PRICE_SCALE as f64) as u128;
     let result = (amount_in as u128)
         .saturating_mul(scaled_price)
         / PRICE_SCALE;

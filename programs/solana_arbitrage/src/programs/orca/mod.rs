@@ -5,6 +5,7 @@ use self::libraries::{swap_math, tick_math};
 use self::states::{OracleSimple, TickArraySimple, WhirlpoolSimple, FEE_RATE_HARD_LIMIT};
 use crate::programs::ProgramMeta;
 use crate::utils::token::{get_transfer_fee, get_transfer_inverse_fee};
+use crate::utils::utils::parse_token_account;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
@@ -449,66 +450,28 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         Ok(())
     }
 
-    fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         let a_to_b = input_mint == self.base_token_pk;
 
-        if self.liquidity == 0 {
-            return Ok((0, 0));
-        }
-
-        // For concentrated liquidity, max amounts depend on the liquidity depth
-        // Estimate based on moving the price to the boundary of the current tick range
-        let tick_spacing = self.tick_spacing as i32;
-
-        // Get the current tick boundaries
-        let tick_lower = (self.tick_current_index / tick_spacing) * tick_spacing;
-        let tick_upper = tick_lower + tick_spacing;
-
-        // Get sqrt prices at boundaries
-        let sqrt_price_lower =
-            tick_math::get_sqrt_price_at_tick(tick_lower).unwrap_or(tick_math::MIN_SQRT_PRICE_X64);
-        let sqrt_price_upper =
-            tick_math::get_sqrt_price_at_tick(tick_upper).unwrap_or(tick_math::MAX_SQRT_PRICE_X64);
-
-        // Calculate max amounts based on direction
-        let (max_in, max_out) = if a_to_b {
-            // Moving price down - max input is token A to reach lower bound
-            let max_input = libraries::liquidity_math::get_amount_in_for_liquidity(
-                self.sqrt_price,
-                sqrt_price_lower,
-                self.liquidity,
-                true,
-            )
-            .unwrap_or(u64::MAX);
-
-            let max_output = libraries::liquidity_math::get_amount_out_for_liquidity(
-                self.sqrt_price,
-                sqrt_price_lower,
-                self.liquidity,
-                true,
-            )
-            .unwrap_or(0);
-
-            (max_input, max_output)
+        let output_vault = if a_to_b {
+            &accounts[self.start_index + Self::VAULT_B_IDX]
         } else {
-            // Moving price up - max input is token B to reach upper bound
-            let max_input = libraries::liquidity_math::get_amount_in_for_liquidity(
-                self.sqrt_price,
-                sqrt_price_upper,
-                self.liquidity,
-                false,
-            )
-            .unwrap_or(u64::MAX);
-
-            let max_output = libraries::liquidity_math::get_amount_out_for_liquidity(
-                self.sqrt_price,
-                sqrt_price_upper,
-                self.liquidity,
-                false,
-            )
+            &accounts[self.start_index + Self::VAULT_A_IDX]
+        };
+        let max_out = parse_token_account(output_vault)
+            .map(|ta| ta.amount)
             .unwrap_or(0);
 
-            (max_input, max_output)
+        // Estimate max_in from max_out using current price.
+        // price = token_b / token_a, so:
+        //   a_to_b: input A, output B → max_in_A = max_out_B / (price * fee_factor)
+        //   b_to_a: input B, output A → max_in_B = max_out_A * price / fee_factor
+        let effective_price = if a_to_b { self.price } else { self.inverse_price };
+        let fee_factor = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
+        let max_in = if effective_price > 0.0 && fee_factor > 0.0 {
+            (max_out as f64 / (effective_price * fee_factor)) as u64
+        } else {
+            0
         };
 
         Ok((max_in, max_out))
@@ -574,30 +537,6 @@ impl<'info> OrcaWhirlpool<'info> {
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
-    }
-
-    /// Get the tick boundaries for the current tick
-    fn get_current_tick_boundaries(&self) -> (i32, i32) {
-        let tick_spacing = self.tick_spacing as i32;
-        let tick_lower = if self.tick_current_index >= 0 {
-            (self.tick_current_index / tick_spacing) * tick_spacing
-        } else {
-            ((self.tick_current_index - tick_spacing + 1) / tick_spacing) * tick_spacing
-        };
-        let tick_upper = tick_lower + tick_spacing;
-        (tick_lower, tick_upper)
-    }
-
-    /// Get the sqrt price at the next tick boundary in the swap direction
-    fn get_next_tick_sqrt_price(&self, a_to_b: bool) -> Result<u128> {
-        let (tick_lower, tick_upper) = self.get_current_tick_boundaries();
-
-        let target_tick = if a_to_b { tick_lower } else { tick_upper };
-
-        let clamped_tick = target_tick
-            .max(tick_math::MIN_TICK)
-            .min(tick_math::MAX_TICK);
-        tick_math::get_sqrt_price_at_tick(clamped_tick)
     }
 
     /// Calculate swap output using tick array traversal
@@ -1249,7 +1188,7 @@ mod tests {
             return;
         };
 
-        let (max_sol_in, max_token_out) = orca_whirlpool.get_max_amounts_in_out(sol_mint).unwrap();
+        let (max_sol_in, max_token_out) = orca_whirlpool.get_max_amounts_in_out(&accounts, sol_mint).unwrap();
         eprintln!(
             "Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}",
             max_sol_in as f64 / 1_000_000_000.0,

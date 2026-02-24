@@ -4,6 +4,8 @@ use anchor_lang::prelude::*;
 pub enum SolarBError {
     #[msg("insufficient accounts provided for the requested program")]
     InsufficientAccounts,
+    #[msg("bin array not found in provided accounts")]
+    InsufficientBinArray,
     #[msg("account pubkey does not match expected template")]
     AccountMismatch,
     #[msg("provided accounts length does not match registered span")]
