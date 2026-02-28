@@ -132,7 +132,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64> {
         // Determine trade direction based on input_mint
         let trade_direction = if input_mint == self.base_token_pk {
@@ -183,7 +183,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64> {
         // Determine trade direction based on output_mint
         // If output is quote (B), direction is A→B (base to quote)
@@ -908,7 +908,7 @@ mod tests {
         let amount_in = 1000000; // 0.001 tokens (assuming 9 decimals)
         let input_mint = base_token; // Swap base token in
         let result =
-            meteora_correct.swap_base_in(correct_accounts.as_slice(), input_mint, amount_in, clock);
+            meteora_correct.swap_base_in(correct_accounts.as_slice(), input_mint, amount_in, &clock);
         debug_eprintln!("result: {:?}", result);
         if let Err(ref e) = result {
             debug_eprintln!("Error: {:?}", e);
@@ -970,7 +970,7 @@ mod tests {
         // Test with a small amount (desired output amount)
         let amount_out = 1_000_000_000; // Desired output amount
         let input_mint = quote_token; // For swap_base_out, input is quote_token to get base_token out
-        let result = meteora.swap_base_out(accounts.as_slice(), input_mint, amount_out, clock);
+        let result = meteora.swap_base_out(accounts.as_slice(), input_mint, amount_out, &clock);
 
         // Should succeed and return some output amount
         assert!(result.is_ok());
@@ -1024,7 +1024,7 @@ mod tests {
 
         let amount_in = 1_000_000;
         let input_mint = base_token; // Swap base token in
-        let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, clock);
+        let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, &clock);
 
         // Should succeed even with referral
         assert!(result.is_ok());
@@ -1075,7 +1075,7 @@ mod tests {
 
         let amount_in = 1_000_000;
         let input_mint = base_token; // Swap base token in
-        let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, clock);
+        let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, &clock);
 
         // Should succeed without referral
         assert!(result.is_ok());
@@ -1216,7 +1216,7 @@ mod tests {
         debug_eprintln!("Sol price: {:?}", sol_price);
         debug_eprintln!("Token price: {:?}", token_price);
         let token_out: u64 = meteora_damm_v2
-            .swap_base_in(accounts.as_slice(), sol_mint, in_sol_amount, clock1.clone())
+            .swap_base_in(accounts.as_slice(), sol_mint, in_sol_amount, &clock1)
             .unwrap();
 
         // Expected using oracle price (for debug only)
@@ -1230,7 +1230,7 @@ mod tests {
         );
 
         let max_sol_in = meteora_damm_v2
-            .swap_base_out(accounts.as_slice(), token_mint, token_out, clock1.clone())
+            .swap_base_out(accounts.as_slice(), token_mint, token_out, &clock1)
             .unwrap();
         debug_eprintln!(
             "Step 1 (swap_base_out): {} MAX SOL IN -> {} TOKEN OUT",
@@ -1240,7 +1240,7 @@ mod tests {
         debug_eprintln!("================================================");
 
         let sol_out = meteora_damm_v2
-            .swap_base_in(accounts.as_slice(), token_mint, token_out, clock1.clone())
+            .swap_base_in(accounts.as_slice(), token_mint, token_out, &clock1)
             .unwrap();
         let expected_sol_out = (token_out as f64 * token_price) as u64;
 
@@ -1251,7 +1251,7 @@ mod tests {
             expected_sol_out as f64 / 1_000_000_000.0,
         );
         let max_token_in = meteora_damm_v2
-            .swap_base_out(accounts.as_slice(), sol_mint, sol_out, clock1.clone())
+            .swap_base_out(accounts.as_slice(), sol_mint, sol_out, &clock1)
             .unwrap();
         debug_eprintln!(
             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",

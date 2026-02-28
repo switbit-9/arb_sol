@@ -25,6 +25,60 @@ fn sqrt_price_to_price(sqrt_price_x64: u128) -> f64 {
     raw_price
 }
 
+/// Liquidity available in a contiguous tick range.
+/// Each range represents the liquidity between two adjacent initialized ticks.
+#[derive(Debug, Clone)]
+pub struct LiquidityRange {
+    /// Lower tick of this range (inclusive)
+    pub tick_lower: i32,
+    /// Upper tick of this range (exclusive)
+    pub tick_upper: i32,
+    /// Liquidity available in this range
+    pub liquidity: u128,
+    /// sqrt_price at lower tick (Q64.64)
+    pub sqrt_price_lower_x64: u128,
+    /// sqrt_price at upper tick (Q64.64)
+    pub sqrt_price_upper_x64: u128,
+}
+
+impl LiquidityRange {
+    /// Estimate how much of token_0 can be swapped within this range
+    /// (i.e. how much token_0 is needed to move the price from lower to upper).
+    /// Formula: Δx = L × (1/√P_lower − 1/√P_upper)
+    pub fn token_0_capacity(&self) -> u128 {
+        if self.liquidity == 0 || self.sqrt_price_lower_x64 == 0 || self.sqrt_price_upper_x64 == 0 {
+            return 0;
+        }
+        let q64 = 1u128 << 64;
+        // L × Q64 / sqrt_price_lower - L × Q64 / sqrt_price_upper
+        let a = (self.liquidity as u128)
+            .checked_mul(q64)
+            .and_then(|v| v.checked_div(self.sqrt_price_lower_x64));
+        let b = (self.liquidity as u128)
+            .checked_mul(q64)
+            .and_then(|v| v.checked_div(self.sqrt_price_upper_x64));
+        match (a, b) {
+            (Some(a), Some(b)) => a.saturating_sub(b),
+            _ => 0,
+        }
+    }
+
+    /// Estimate how much of token_1 can be swapped within this range
+    /// (i.e. how much token_1 is needed to move the price from lower to upper).
+    /// Formula: Δy = L × (√P_upper − √P_lower) / Q64
+    pub fn token_1_capacity(&self) -> u128 {
+        if self.liquidity == 0 {
+            return 0;
+        }
+        let q64 = 1u128 << 64;
+        let delta_sqrt = self.sqrt_price_upper_x64.saturating_sub(self.sqrt_price_lower_x64);
+        (self.liquidity as u128)
+            .checked_mul(delta_sqrt)
+            .map(|v| v / q64)
+            .unwrap_or(0)
+    }
+}
+
 /// Swap state used during swap calculation
 #[derive(Debug, Clone, Default)]
 struct SwapState {
@@ -108,7 +162,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let token_0_account = &accounts[self.start_index + Self::TOKEN_0_IDX];
         let token_1_account = &accounts[self.start_index + Self::TOKEN_1_IDX];
@@ -126,7 +180,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         let actual_amount_in = amount_in.saturating_sub(transfer_fee);
 
         // Calculate swap output - tick arrays parsed on-the-fly from account data (zero heap)
-        let amount_out =
+        let (_, amount_out) =
             self.calculate_swap_with_tick_arrays(accounts, actual_amount_in, zero_for_one, true)?;
 
         // Account for output transfer fees
@@ -141,7 +195,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let token_0_account = &accounts[self.start_index + Self::TOKEN_0_IDX];
         let token_1_account = &accounts[self.start_index + Self::TOKEN_1_IDX];
@@ -161,7 +215,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             .ok_or(ErrorCode::AmountOverflow)?;
 
         // Calculate required input - tick arrays parsed on-the-fly from account data (zero heap)
-        let amount_in =
+        let (_, amount_in) =
             self.calculate_swap_with_tick_arrays(accounts, amount_out_with_fee, zero_for_one, false)?;
 
         // Account for input transfer fees
@@ -416,16 +470,26 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         Ok(())
     }
 
-    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-        RaydiumCLMM::get_max_amounts_in_out(self, input_mint)
+    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
+        let zero_for_one = input_mint == self.base_token_pk;
+        // Simulate swap with u64::MAX input to exhaust all available liquidity across tick arrays
+        let (max_in, max_out) =
+            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
+        Ok((max_in, max_out))
     }
 
-    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
-        self.get_max_amount_in_current_tick(&mint)
+    fn get_max_amount_in<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        let zero_for_one = mint == self.base_token_pk;
+        let (max_in, _) =
+            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
+        Ok(max_in)
     }
 
-    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
-        self.get_max_amount_out_current_tick(&mint)
+    fn get_max_amount_out<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        let zero_for_one = mint == self.base_token_pk;
+        let (_, max_out) =
+            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
+        Ok(max_out)
     }
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
@@ -633,13 +697,14 @@ impl<'info> RaydiumCLMM<'info> {
 
     /// Calculate swap with pre-loaded tick arrays and tracked current array.
     /// Zero try_borrow_data() calls in the hot loop.
+    /// Returns (amount_consumed, amount_calculated).
     fn calculate_swap_with_tick_arrays(
         &self,
         accounts: &[AccountInfo],
         amount_specified: u64,
         zero_for_one: bool,
         is_base_input: bool,
-    ) -> Result<u64> {
+    ) -> Result<(u64, u64)> {
         let pool_id_bytes = self.pool_id.to_bytes();
         let ts = self.tick_spacing as i32;
         let ticks_in_array = TICK_ARRAY_SIZE * ts;
@@ -833,15 +898,117 @@ impl<'info> RaydiumCLMM<'info> {
             }
         }
 
-        Ok(state.amount_calculated)
+        let amount_consumed = amount_specified.saturating_sub(state.amount_specified_remaining);
+        Ok((amount_consumed, state.amount_calculated))
     }
 
-    /// Get the tick boundaries for the current tick
-    fn get_current_tick_boundaries(&self) -> (i32, i32) {
-        let tick_spacing = self.tick_spacing as i32;
-        let tick_lower = self.get_lower_tick_boundary(self.tick_current);
-        let tick_upper = tick_lower + tick_spacing;
-        (tick_lower, tick_upper)
+    /// Walk all provided tick arrays for the given direction and return the liquidity
+    /// distribution: a sorted list of `LiquidityRange` values showing how liquidity
+    /// changes across initialized ticks.
+    ///
+    /// `zero_for_one = true`  → buy direction (price decreasing, token_0 in)
+    /// `zero_for_one = false` → sell direction (price increasing, token_1 in)
+    pub fn get_liquidity_distribution(
+        &self,
+        accounts: &[AccountInfo],
+        zero_for_one: bool,
+    ) -> Result<Vec<LiquidityRange>> {
+        let pool_id_bytes = self.pool_id.to_bytes();
+
+        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        let (ta, ta_count) = Self::preload_tick_arrays(accounts, &pool_id_bytes, ta_from, ta_to);
+
+        // Collect all initialized ticks across all arrays, sorted ascending
+        let mut all_ticks: Vec<(i32, i128)> = Vec::new();
+        for idx in 0..ta_count {
+            let data = ta[idx].data;
+            for slot in 0..Self::TA_TICK_CNT {
+                unsafe {
+                    let b = data.add(Self::TA_TICKS_OFF + slot * Self::TA_TICK_SIZE);
+                    let lg = u128::from_le_bytes(*(b.add(Self::TS_LIQ_GROSS) as *const [u8; 16]));
+                    if lg != 0 {
+                        let t = i32::from_le_bytes(*(b as *const [u8; 4]));
+                        let ln = i128::from_le_bytes(*(b.add(Self::TS_LIQ_NET) as *const [u8; 16]));
+                        all_ticks.push((t, ln));
+                    }
+                }
+            }
+        }
+
+        // Sort by tick ascending
+        all_ticks.sort_unstable_by_key(|&(t, _)| t);
+        // Deduplicate (same tick can't appear twice, but just in case overlapping arrays)
+        all_ticks.dedup_by_key(|entry| entry.0);
+
+        if all_ticks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build ranges by walking ticks and tracking running liquidity.
+        // Start with pool's current liquidity and walk outward from current_tick.
+        let mut ranges = Vec::new();
+        let current_tick = self.tick_current;
+        let current_liq = self.liquidity;
+
+        if zero_for_one {
+            // Walking downward: from current tick toward lower ticks.
+            // Find ticks at or below current_tick, descending.
+            let mut liq = current_liq;
+            // Ticks below current_tick, in descending order
+            let below: Vec<_> = all_ticks.iter().filter(|&&(t, _)| t <= current_tick).copied().collect();
+
+            for i in (0..below.len()).rev() {
+                let (tick_at, liq_net) = below[i];
+                let tick_upper = if i + 1 < below.len() { below[i + 1].0 } else { current_tick + 1 };
+                let tick_lower = tick_at;
+
+                let sp_lower = tick_math::get_sqrt_price_at_tick(tick_lower)
+                    .unwrap_or(tick_math::MIN_SQRT_PRICE_X64);
+                let sp_upper = tick_math::get_sqrt_price_at_tick(tick_upper)
+                    .unwrap_or(tick_math::MAX_SQRT_PRICE_X64);
+
+                ranges.push(LiquidityRange {
+                    tick_lower,
+                    tick_upper,
+                    liquidity: liq,
+                    sqrt_price_lower_x64: sp_lower,
+                    sqrt_price_upper_x64: sp_upper,
+                });
+
+                // Crossing this tick downward: negate liquidity_net
+                liq = liquidity_math::add_delta(liq, -liq_net).unwrap_or(0);
+            }
+            // Return in descending order (current price → lower)
+            // ranges are already in the right order (highest tick first)
+        } else {
+            // Walking upward: from current tick toward higher ticks.
+            let mut liq = current_liq;
+            let above: Vec<_> = all_ticks.iter().filter(|&&(t, _)| t > current_tick).copied().collect();
+
+            for i in 0..above.len() {
+                let (tick_at, liq_net) = above[i];
+                let tick_lower = if i == 0 { current_tick } else { above[i - 1].0 };
+                let tick_upper = tick_at;
+
+                let sp_lower = tick_math::get_sqrt_price_at_tick(tick_lower)
+                    .unwrap_or(tick_math::MIN_SQRT_PRICE_X64);
+                let sp_upper = tick_math::get_sqrt_price_at_tick(tick_upper)
+                    .unwrap_or(tick_math::MAX_SQRT_PRICE_X64);
+
+                ranges.push(LiquidityRange {
+                    tick_lower,
+                    tick_upper,
+                    liquidity: liq,
+                    sqrt_price_lower_x64: sp_lower,
+                    sqrt_price_upper_x64: sp_upper,
+                });
+
+                // Crossing this tick upward: add liquidity_net directly
+                liq = liquidity_math::add_delta(liq, liq_net).unwrap_or(0);
+            }
+        }
+
+        Ok(ranges)
     }
 
     /// Get the lower tick boundary for a given tick
@@ -859,162 +1026,6 @@ impl<'info> RaydiumCLMM<'info> {
         self.get_lower_tick_boundary(tick) + self.tick_spacing as i32
     }
 
-    /// Get the maximum amount that can be swapped in within the current tick range
-    /// This is useful for arbitrage to know how much can be traded without crossing ticks
-    pub fn get_max_amount_in_current_tick(&self, input_mint: &Pubkey) -> Result<u64> {
-        let zero_for_one = *input_mint == self.base_token_pk;
-
-        if self.liquidity == 0 {
-            return Ok(0);
-        }
-
-        // Get the tick boundaries
-        let (tick_lower, tick_upper) = self.get_current_tick_boundaries();
-
-        // Get sqrt price at boundary
-        let sqrt_price_boundary = if zero_for_one {
-            tick_math::get_sqrt_price_at_tick(tick_lower)?
-        } else {
-            tick_math::get_sqrt_price_at_tick(tick_upper)?
-        };
-
-        // Calculate max input to reach boundary (without fees)
-        let max_amount_in_raw = if zero_for_one {
-            liquidity_math::get_delta_amount_0_unsigned(
-                sqrt_price_boundary,
-                self.sqrt_price_x64,
-                self.liquidity,
-                true,
-            )
-            .unwrap_or(0)
-        } else {
-            liquidity_math::get_delta_amount_1_unsigned(
-                self.sqrt_price_x64,
-                sqrt_price_boundary,
-                self.liquidity,
-                true,
-            )
-            .unwrap_or(0)
-        };
-
-        // Add fee to get the actual input amount needed
-        let max_amount_in_with_fee = (max_amount_in_raw as u128)
-            .mul_div_ceil(
-                FEE_RATE_DENOMINATOR_VALUE as u128,
-                (FEE_RATE_DENOMINATOR_VALUE - self.trade_fee_rate) as u128,
-            )
-            .unwrap_or(max_amount_in_raw as u128) as u64;
-
-        Ok(max_amount_in_with_fee)
-    }
-
-    /// Get the maximum amount that can be received out within the current tick range
-    pub fn get_max_amount_out_current_tick(&self, input_mint: &Pubkey) -> Result<u64> {
-        let zero_for_one = *input_mint == self.base_token_pk;
-
-        if self.liquidity == 0 {
-            return Ok(0);
-        }
-
-        // Get the tick boundaries
-        let (tick_lower, tick_upper) = self.get_current_tick_boundaries();
-
-        // Get sqrt price at boundary
-        let sqrt_price_boundary = if zero_for_one {
-            tick_math::get_sqrt_price_at_tick(tick_lower)?
-        } else {
-            tick_math::get_sqrt_price_at_tick(tick_upper)?
-        };
-
-        // Calculate max output to reach boundary
-        let max_amount_out = if zero_for_one {
-            // Output is token_1
-            liquidity_math::get_delta_amount_1_unsigned(
-                sqrt_price_boundary,
-                self.sqrt_price_x64,
-                self.liquidity,
-                false,
-            )
-            .unwrap_or(0)
-        } else {
-            // Output is token_0
-            liquidity_math::get_delta_amount_0_unsigned(
-                self.sqrt_price_x64,
-                sqrt_price_boundary,
-                self.liquidity,
-                false,
-            )
-            .unwrap_or(0)
-        };
-
-        Ok(max_amount_out)
-    }
-
-    /// Get the maximum amounts in/out for a specific input_mint within the current tick range.
-    /// Returns (max_amount_in, max_amount_out) - the maximum that can be swapped while staying
-    /// in the same tick price range without crossing to the next tick.
-    pub fn get_max_amounts_in_out(&self, input_mint: Pubkey) -> Result<(u64, u64)> {
-        let zero_for_one = input_mint == self.base_token_pk;
-
-        if self.liquidity == 0 {
-            return Ok((0, 0));
-        }
-
-        // Get the tick boundaries
-        let (tick_lower, tick_upper) = self.get_current_tick_boundaries();
-
-        // Get sqrt prices at boundaries
-        let sqrt_price_lower =
-            tick_math::get_sqrt_price_at_tick(tick_lower).unwrap_or(tick_math::MIN_SQRT_PRICE_X64);
-        let sqrt_price_upper =
-            tick_math::get_sqrt_price_at_tick(tick_upper).unwrap_or(tick_math::MAX_SQRT_PRICE_X64);
-
-        let (max_in, max_out) = if zero_for_one {
-            // Moving price down (token_0 -> token_1)
-            // Max input is token_0 needed to reach lower tick boundary
-            let max_input = liquidity_math::get_amount_in_for_liquidity(
-                self.sqrt_price_x64,
-                sqrt_price_lower,
-                self.liquidity,
-                true, // zero_for_one
-            )
-            .unwrap_or(u64::MAX);
-
-            // Max output is token_1 that can be received
-            let max_output = liquidity_math::get_amount_out_for_liquidity(
-                self.sqrt_price_x64,
-                sqrt_price_lower,
-                self.liquidity,
-                true, // zero_for_one
-            )
-            .unwrap_or(0);
-
-            (max_input, max_output)
-        } else {
-            // Moving price up (token_1 -> token_0)
-            // Max input is token_1 needed to reach upper tick boundary
-            let max_input = liquidity_math::get_amount_in_for_liquidity(
-                self.sqrt_price_x64,
-                sqrt_price_upper,
-                self.liquidity,
-                false, // one_for_zero
-            )
-            .unwrap_or(u64::MAX);
-
-            // Max output is token_0 that can be received
-            let max_output = liquidity_math::get_amount_out_for_liquidity(
-                self.sqrt_price_x64,
-                sqrt_price_upper,
-                self.liquidity,
-                false, // one_for_zero
-            )
-            .unwrap_or(0);
-
-            (max_input, max_output)
-        };
-
-        Ok((max_in, max_out))
-    }
 }
 
 #[cfg(test)]
@@ -1274,7 +1285,7 @@ mod tests {
         );
         eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::ACCOUNT_COUNT - RaydiumCLMM::TICK_BUY_1_IDX);
         let (max_in, max_out) = raydium_clmm
-            .get_max_amounts_in_out(raydium_clmm.base_token_pk)
+            .get_max_amounts_in_out(&accounts, raydium_clmm.base_token_pk)
             .unwrap();
         eprintln!(
             "Max SOL IN: {} -> MAX TOKEN OUT: {}",
@@ -1289,7 +1300,7 @@ mod tests {
         eprintln!("================================================");
         // Step 1: Swap token_0 -> token_1
         let token_out =
-            match raydium_clmm.swap_base_in(&accounts, input_mint, amount_in, clock.clone()) {
+            match raydium_clmm.swap_base_in(&accounts, input_mint, amount_in, &clock) {
                 Ok(out) => out,
                 Err(e) => {
                     eprintln!("swap_base_in failed: {:?}", e);
@@ -1304,7 +1315,7 @@ mod tests {
         );
 
         let max_sol_in =
-            match raydium_clmm.swap_base_out(&accounts, output_mint, token_out, clock.clone()) {
+            match raydium_clmm.swap_base_out(&accounts, output_mint, token_out, &clock) {
                 Ok(max_in) => max_in,
                 Err(e) => {
                     eprintln!("swap_base_out failed: {:?}", e);
@@ -1322,7 +1333,7 @@ mod tests {
 
         // Step 2: Swap token_1 -> token_0
         let sol_out =
-            match raydium_clmm.swap_base_in(&accounts, output_mint, token_out, clock.clone()) {
+            match raydium_clmm.swap_base_in(&accounts, output_mint, token_out, &clock) {
                 Ok(back) => back,
                 Err(e) => {
                     eprintln!("reverse swap_base_in failed: {:?}", e);
@@ -1337,7 +1348,7 @@ mod tests {
         );
 
         let max_token_in =
-            match raydium_clmm.swap_base_out(&accounts, input_mint, sol_out, clock.clone()) {
+            match raydium_clmm.swap_base_out(&accounts, input_mint, sol_out, &clock) {
                 Ok(max_in) => max_in,
                 Err(e) => {
                     eprintln!("reverse swap_base_out failed: {:?}", e);
@@ -1353,5 +1364,128 @@ mod tests {
 
         eprintln!("================================================");
         eprintln!("Round trip completed!");
+    }
+
+    #[tokio::test]
+    async fn test_raydium_clmm_liquidity_distribution() {
+        use anchor_client::Cluster;
+
+        let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+        let pool_id_key = Pubkey::from_str_const("AFT2PaCYfy93g47aTyG3wKu4KDEg2YMhUmwbdPDdcmCG");
+
+        eprintln!("Testing liquidity distribution for pool: {}", pool_id_key);
+
+        let pool_account = match rpc_client
+            .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
+            .await
+        {
+            Ok(acc) => acc,
+            Err(e) => { eprintln!("Could not fetch pool: {:?}", e); return; }
+        };
+
+        let pool_state_size = std::mem::size_of::<PoolStateSimple>();
+        let pool: PoolStateSimple =
+            bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
+
+        if pool.liquidity == 0 {
+            eprintln!("Pool has no liquidity"); return;
+        }
+
+        let vault_0_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_vault_0.to_bytes().as_ref()).unwrap()).await.unwrap();
+        let vault_1_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_vault_1.to_bytes().as_ref()).unwrap()).await.unwrap();
+        let mint_0_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_mint_0.to_bytes().as_ref()).unwrap()).await.unwrap();
+        let mint_1_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_mint_1.to_bytes().as_ref()).unwrap()).await.unwrap();
+        let amm_config_account = rpc_client.get_account(&SdkPubkey::try_from(pool.amm_config.to_bytes().as_ref()).unwrap()).await.unwrap();
+        let observation_account = rpc_client.get_account(&SdkPubkey::try_from(pool.observation_key.to_bytes().as_ref()).unwrap()).await.unwrap();
+
+        let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
+        let current_start_index = TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
+
+        let tick_array_start_indices = [
+            current_start_index,
+            current_start_index - ticks_in_array,
+            current_start_index,
+            current_start_index + ticks_in_array,
+        ];
+
+        let mut tick_array_keys_and_accounts = Vec::new();
+        for &start_index in &tick_array_start_indices {
+            let (tick_array_pda, _) = Pubkey::find_program_address(
+                &[b"tick_array", pool_id_key.as_ref(), &start_index.to_be_bytes()],
+                &RaydiumCLMM::PROGRAM_ID,
+            );
+            let tick_array_account = rpc_client
+                .get_account(&SdkPubkey::try_from(tick_array_pda.to_bytes().as_ref()).unwrap())
+                .await.unwrap();
+            tick_array_keys_and_accounts.push((tick_array_pda, tick_array_account));
+        }
+
+        let (buy_1_key, buy_1_account) = tick_array_keys_and_accounts.remove(0);
+        let (buy_2_key, buy_2_account) = tick_array_keys_and_accounts.remove(0);
+        let (sell_1_key, sell_1_account) = tick_array_keys_and_accounts.remove(0);
+        let (sell_2_key, sell_2_account) = tick_array_keys_and_accounts.remove(0);
+
+        let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
+        let vault_0 = account_to_account_info(pool.token_vault_0, vault_0_account);
+        let vault_1 = account_to_account_info(pool.token_vault_1, vault_1_account);
+        let token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
+        let token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
+        let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
+        let observation = account_to_account_info(pool.observation_key, observation_account);
+        let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
+        let tick_buy_2 = account_to_account_info(buy_2_key, buy_2_account);
+        let tick_sell_1 = account_to_account_info(sell_1_key, sell_1_account);
+        let tick_sell_2 = account_to_account_info(sell_2_key, sell_2_account);
+
+        let program_id_key = RaydiumCLMM::PROGRAM_ID;
+        let program_id_account = create_mock_account_info_with_data(program_id_key, system_program::id(), None);
+        let bitmap_ext = create_mock_account_info_with_data(RaydiumCLMM::PROGRAM_ID, system_program::id(), None);
+
+        let accounts = vec![
+            program_id_account, pool_id_account_info, vault_0, vault_1,
+            token_0, token_1, amm_config, observation, bitmap_ext,
+            tick_buy_1, tick_buy_2, tick_sell_1, tick_sell_2,
+        ];
+
+        let raydium_clmm = match RaydiumCLMM::new(&accounts, 0, accounts.len()) {
+            Ok(clmm) => clmm,
+            Err(e) => { eprintln!("Failed to create RaydiumCLMM: {:?}", e); return; }
+        };
+
+        eprintln!("\n=== Pool Info ===");
+        eprintln!("Current tick: {}", raydium_clmm.tick_current);
+        eprintln!("Current liquidity: {}", raydium_clmm.liquidity);
+        eprintln!("Tick spacing: {}", raydium_clmm.tick_spacing);
+        eprintln!("Price: {:.10}", raydium_clmm.price);
+
+        // Buy direction (zero_for_one): price goes down
+        eprintln!("\n=== Buy Direction (zero_for_one) - Liquidity Distribution ===");
+        let buy_ranges = raydium_clmm.get_liquidity_distribution(&accounts, true).unwrap();
+        for (i, r) in buy_ranges.iter().enumerate() {
+            let price_lower = sqrt_price_to_price(r.sqrt_price_lower_x64);
+            let price_upper = sqrt_price_to_price(r.sqrt_price_upper_x64);
+            eprintln!(
+                "  Range {}: ticks [{}, {}) | liquidity: {} | price: [{:.10}, {:.10}) | token_0 capacity: {} | token_1 capacity: {}",
+                i, r.tick_lower, r.tick_upper, r.liquidity,
+                price_lower, price_upper,
+                r.token_0_capacity(), r.token_1_capacity(),
+            );
+        }
+
+        // Sell direction (one_for_zero): price goes up
+        eprintln!("\n=== Sell Direction (one_for_zero) - Liquidity Distribution ===");
+        let sell_ranges = raydium_clmm.get_liquidity_distribution(&accounts, false).unwrap();
+        for (i, r) in sell_ranges.iter().enumerate() {
+            let price_lower = sqrt_price_to_price(r.sqrt_price_lower_x64);
+            let price_upper = sqrt_price_to_price(r.sqrt_price_upper_x64);
+            eprintln!(
+                "  Range {}: ticks [{}, {}) | liquidity: {} | price: [{:.10}, {:.10}) | token_0 capacity: {} | token_1 capacity: {}",
+                i, r.tick_lower, r.tick_upper, r.liquidity,
+                price_lower, price_upper,
+                r.token_0_capacity(), r.token_1_capacity(),
+            );
+        }
+
+        eprintln!("\nTotal buy ranges: {}, sell ranges: {}", buy_ranges.len(), sell_ranges.len());
     }
 }

@@ -43,7 +43,5 @@ pub use math::*;
 pub mod typedefs;
 pub use typedefs::*;
 
-pub mod utils;
-
 pub mod token;
 pub use token::*;

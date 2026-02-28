@@ -15,17 +15,21 @@ pub struct Edge {
     pub program: Pubkey,
     pub pool_id: Pubkey,
     pub side: EdgeSide,
-    pub price: f64, // Stored as scaled integer: actual_price * 1_000_000_000
+    pub price: f64,
     pub fee_factor: f64, // Directional fee factor for this edge's direction (1.0 - fee_rate)
     pub inverse_fee_factor: f64, // Fee factor for the opposite direction (1.0 - fee_rate_opposite)
+    /// Pre-computed price * fee_factor scaled by PRICE_SCALE (10^9) for integer-only swap estimation
+    pub scaled_price_with_fee: u128,
     pub left: Pool,
     pub right: Pool,
-    pub amount_in: u64,
-    pub amount_out: u64,
 }
+
+/// Scaling factor for fixed-point arithmetic (10^9)
+const PRICE_SCALE: f64 = 1_000_000_000.0;
 
 impl Edge {
     pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, inverse_fee_factor: f64, left: Pool, right: Pool) -> Self {
+        let scaled_price_with_fee = (price * fee_factor * PRICE_SCALE) as u128;
         Edge {
             program,
             pool_id,
@@ -33,15 +37,15 @@ impl Edge {
             price,
             fee_factor,
             inverse_fee_factor,
+            scaled_price_with_fee,
             left,
             right,
-            amount_in: 0, // TODO: Remove this
-            amount_out: 0, // TODO: Remove this
         }
     }
 
+    #[inline]
     pub fn get_price(&self) -> f64 {
-        return self.price;
+        self.price
     }
 }
 

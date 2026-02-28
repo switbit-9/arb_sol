@@ -7,13 +7,41 @@ use std::collections::HashMap;
 /// Price scaling factor for fixed-point arithmetic (10^9 for 9 decimal precision)
 const PRICE_SCALE: u128 = 1_000_000_000;
 
-/// Calculate swap amount using fixed-point arithmetic: amount_out = amount_in * price * fee_factor
+/// Format a pubkey as short string: first4..last4
+#[cfg(any(test, feature = "debug"))]
+fn short_key(key: &Pubkey) -> String {
+    let s = key.to_string();
+    format!("{}..{}", &s[..4], &s[s.len() - 4..])
+}
+
+/// Format arbitrage path as a readable route string.
+/// Example: `[So11..pump](pool Orca 9xQe..3Zuq) -> [EPjF..USDC](pool Raydium 7kS2..x9fN) -> [So11..pump] | in: 1000000 out: 1005000`
+#[cfg(any(test, feature = "debug"))]
+fn format_arb_path(edges: &[Edge], amount_in: u64, amount_out: u128) -> String {
+    let mut parts = Vec::new();
+    for edge in edges {
+        parts.push(format!(
+            "[{}] --(pool {} @ p={:.6} fee={:.4})--> [{}]",
+            short_key(&edge.left.mint_account),
+            short_key(&edge.pool_id),
+            edge.price,
+            edge.fee_factor,
+            short_key(&edge.right.mint_account),
+        ));
+    }
+    format!(
+        "{} | in: {} out: {}",
+        parts.join(" -> "),
+        amount_in,
+        amount_out
+    )
+}
+
+/// Calculate swap amount using pre-computed fixed-point arithmetic (zero f64 ops).
+/// amount_out = amount_in * scaled_price_with_fee / PRICE_SCALE
 #[inline]
 fn calculate_swap_amount(edge: &Edge, amount_in: u64) -> u64 {
-    let scaled_price = (edge.get_price() * edge.fee_factor * PRICE_SCALE as f64) as u128;
-    let result = (amount_in as u128)
-        .saturating_mul(scaled_price)
-        / PRICE_SCALE;
+    let result = (amount_in as u128).saturating_mul(edge.scaled_price_with_fee) / PRICE_SCALE;
     result.min(u64::MAX as u128) as u64
 }
 
@@ -30,6 +58,13 @@ pub fn find_cross_arbitrage_iterative<'info>(
     debug_eprintln!("start_amount: {:?}", start_amount);
     let mut max_profit = 0;
     let mut best_path: Option<(Vec<Edge>, i128, u128)> = None;
+
+    // Track best pair for display (even if profit < 0)
+    let mut display_max_profit = i128::MIN;
+    let mut best_buy_price = 0.0_f64;
+    let mut best_sell_price = 0.0_f64;
+    let mut best_buy_fee = 0.0_f64;
+    let mut best_sell_fee = 0.0_f64;
 
     // adjacency map: start -> edges
     let mut adj: HashMap<Pubkey, Vec<&Edge>> = HashMap::new();
@@ -61,6 +96,17 @@ pub fn find_cross_arbitrage_iterative<'info>(
 
                         let final_amount = calculate_swap_amount(edge2, amount_b) as u128;
                         let profit = final_amount as i128 - start_amount as i128;
+
+                        if profit > display_max_profit {
+                            display_max_profit = profit;
+                            let p1 = edge1.get_price();
+                            best_buy_price = if p1 > 1.0 { 1.0 / p1 } else { p1 };
+                            let p2: f64 = edge2.get_price();
+                            best_sell_price = if p2 > 1.0 { 1.0 / p2 } else { p2 };
+                            best_buy_fee = edge1.fee_factor;
+                            best_sell_fee = edge2.fee_factor;
+                        }
+
                         if profit < 0 || profit < min_profit {
                             continue;
                         }
@@ -77,14 +123,38 @@ pub fn find_cross_arbitrage_iterative<'info>(
         }
     }
 
+    let min_price = best_buy_price.min(best_sell_price);
+    let max_price = best_buy_price.max(best_sell_price);
+    let (max_fee, min_fee) = if best_sell_price >= best_buy_price {
+        (best_sell_fee, best_buy_fee)
+    } else {
+        (best_buy_fee, best_sell_fee)
+    };
+    let price_diff_pct = if min_price > 0.0 {
+        ((max_price - min_price) / min_price) * 100.0
+    } else {
+        0.0
+    };
+    debug_eprintln!("");
+    msg!(
+        "P={:.4}, F={:.4}, F={:.4}, {:.4})",
+        price_diff_pct,
+        1.0 - max_fee,
+        1.0 - min_fee,
+        display_max_profit as f64 / 1_000_000_000.0,
+    );
+    debug_eprintln!("");
+
     if let Some((edges, profit, final_amount)) = &best_path {
         #[cfg(any(test, feature = "debug"))]
         {
-            let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
+            debug_eprintln!("");
             debug_eprintln!(
-                "Best path: {:?}, pools: {:?}, profit {}",
-                edges, pool_ids, profit
+                "Best Cross Arb | profit: {} SOL | {}",
+                (*profit as f64 / 1_000_000_000.0),
+                format_arb_path(edges, start_amount, *final_amount)
             );
+            debug_eprintln!("");
         }
         Ok((edges.clone(), *profit, *final_amount))
     } else {
@@ -162,16 +232,17 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                                 // Debug logging
                                 #[cfg(any(test, feature = "debug"))]
                                 {
-                                debug_eprintln!(
-                                    "Triangular: profit={}, min_profit={}",
-                                    profit, min_profit
-                                );
+                                    debug_eprintln!(
+                                        "Triangular: profit={}, min_profit={}",
+                                        profit,
+                                        min_profit
+                                    );
                                 }
 
                                 if profit > max_profit && profit >= min_profit {
                                     #[cfg(any(test, feature = "debug"))]
                                     {
-                                    debug_eprintln!(
+                                        debug_eprintln!(
                                         "Found Triangular Arb: profit={}, final={}, start={}, min_profit={}",
                                         profit,
                                         final_amount,
@@ -186,7 +257,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                                 } else {
                                     #[cfg(any(test, feature = "debug"))]
                                     {
-                                    debug_eprintln!(
+                                        debug_eprintln!(
                                         "Ignored Triangular Arb: profit={}, final={}, start={}, min_profit={}",
                                         profit,
                                         final_amount,
@@ -206,11 +277,13 @@ pub fn find_triangular_arbitrage_iterative<'info>(
     if let Some((edges, profit, final_amount)) = &best_path {
         #[cfg(any(test, feature = "debug"))]
         {
-            let pool_ids: Vec<_> = edges.iter().map(|e| e.pool_id).collect();
+            debug_eprintln!("");
             debug_eprintln!(
-                "Best path: {:?}, pools: {:?}, profit {}",
-                edges, pool_ids, profit
+                "Best Triangular Arb | profit: {} | {}",
+                profit,
+                format_arb_path(edges, start_amount, *final_amount)
             );
+            debug_eprintln!("");
         }
         Ok((edges.clone(), *profit, *final_amount))
     } else {
@@ -241,18 +314,18 @@ pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edg
 
     #[cfg(any(test, feature = "debug"))]
     {
-    debug_eprintln!("================================================");
-    debug_eprintln!(
-        "Gen Edges: {:?} Pool={} Base={} Quote={} P={} IP={} F={} IF={}",
-        program_id,
-        pool_id,
-        base_mint,
-        quote_mint,
-        price,
-        inverse_price,
-        fee_a_to_b,
-        fee_b_to_a
-    );
+        debug_eprintln!("================================================");
+        debug_eprintln!(
+            "Gen Edges: {:?} Pool={} Base={} Quote={} P={} IP={} F={} IF={}",
+            program_id,
+            pool_id,
+            base_mint,
+            quote_mint,
+            price,
+            inverse_price,
+            fee_a_to_b,
+            fee_b_to_a
+        );
     }
 
     let edge_1 = Edge::new(
@@ -289,7 +362,6 @@ pub fn get_edges<'info>(instances: &[ProgramInstance<'info>]) -> Result<Vec<Edge
     }
     Ok(edges)
 }
-
 
 pub fn check_arbitrage<'info>(
     instances: &[ProgramInstance<'info>],

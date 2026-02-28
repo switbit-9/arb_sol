@@ -17,7 +17,7 @@ use super::super::{
 
 use super::BaseFeeHandler;
 use anchor_lang::prelude::*;
-use num::Integer;
+use num_integer::Integer;
 use ruint::aliases::U256;
 
 /// we denote reference_amount = x0, cliff_fee_numerator = c, fee_increment = i

@@ -45,6 +45,8 @@ pub struct MeteoraDlmm {
     pub start_index: usize,
     pub end_index: usize,
     pub fee_rate: f64,
+    /// Cached bitmap extension to avoid re-deserializing (~12KB) on every swap_base_in call
+    pub bitmap_extension: Option<Box<BinArrayBitmapExtension>>,
 }
 
 impl ProgramMeta for MeteoraDlmm {
@@ -61,21 +63,10 @@ impl ProgramMeta for MeteoraDlmm {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64> {
         let swap_for_y = input_mint == self.lb_pair.token_x_mint;
-        // Deserialize bitmap extension if available
-        let bitmap_extension_account = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
-        let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
-            != Self::PROGRAM_ID
-            && bitmap_extension_account.data_len() > 8
-        {
-            Some(bytemuck::pod_read_unaligned(
-                &bitmap_extension_account.try_borrow_data()?[8..],
-            ))
-        } else {
-            None
-        };
+        // Use cached bitmap extension (avoids ~12KB pod_read_unaligned per call)
         let bin_arrays = if swap_for_y {
             vec![
                 accounts[self.start_index + Self::BUY_BIN_1_IDX].clone(),
@@ -98,7 +89,7 @@ impl ProgramMeta for MeteoraDlmm {
                 amount_in,
                 swap_for_y,
                 bin_arrays,
-                bitmap_extension.as_ref(),
+                self.bitmap_extension.as_deref(),
                 &clock,
                 &base_token,
                 &quote_token,
@@ -119,22 +110,11 @@ impl ProgramMeta for MeteoraDlmm {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64> {
         let swap_for_y = output_mint == self.lb_pair.token_y_mint;
 
-        // Deserialize bitmap extension if available
-        let bitmap_extension_account = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
-        let bitmap_extension: Option<BinArrayBitmapExtension> = if *bitmap_extension_account.key
-            != Self::PROGRAM_ID
-            && bitmap_extension_account.data_len() > 8
-        {
-            Some(bytemuck::pod_read_unaligned(
-                &bitmap_extension_account.try_borrow_data()?[8..],
-            ))
-        } else {
-            None
-        };
+        // Use cached bitmap extension (avoids ~12KB pod_read_unaligned per call)
         let bin_arrays = if swap_for_y {
             vec![
                 accounts[self.start_index + Self::BUY_BIN_1_IDX].clone(),
@@ -157,7 +137,7 @@ impl ProgramMeta for MeteoraDlmm {
                 amount_out,
                 swap_for_y,
                 bin_arrays,
-                bitmap_extension.as_ref(),
+                self.bitmap_extension.as_deref(),
                 &clock,
                 &base_token,
                 &quote_token,
@@ -220,6 +200,9 @@ impl ProgramMeta for MeteoraDlmm {
         self.compute_max_amounts_in_out(accounts, input_mint)
     }
 
+    fn get_active_bin_max_in(&self, input_mint: Pubkey) -> Result<u64> {
+        MeteoraDlmm::get_max_amount_in_active_bin(self, input_mint)
+    }
 
     fn invoke_swap_base_in<'a>(
         &self,
@@ -278,18 +261,6 @@ impl ProgramMeta for MeteoraDlmm {
         let memo = &accounts[3];
         let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
         let bitmap_extension = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
-
-        // msg!("program_id: {:?}", program_id.key);
-        // msg!("pool_id: {:?}", pool_id.key);
-        // msg!("base_vault: {:?}", base_vault.key);
-        // msg!("quote_vault: {:?}", quote_vault.key);
-        // msg!("base_token: {:?}", base_token.key);
-        // msg!("quote_token: {:?}", quote_token.key);
-        // msg!("oracle: {:?}", oracle.key);
-        // msg!("host_fee_in: {:?}", host_fee_in.key);
-        // msg!("memo: {:?}", memo.key);
-        // msg!("event_authority: {:?}", event_authority.key);
-        // msg!("bitmap_extension: {:?}", bitmap_extension.key);
 
         let swap_for_y = input_mint == *base_token.key;
 
@@ -527,6 +498,7 @@ impl MeteoraDlmm {
         accounts: &[AccountInfo],
         start_index: usize,
         end_index: usize,
+        clock: &Clock,
     ) -> Result<Self> {
         // Clone accounts we need before using the Vec
         let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone();
@@ -576,7 +548,12 @@ impl MeteoraDlmm {
         })?;
         let (price, inverse_price) = get_prices(lb_price)?;
 
-        let fee_rate = compute_fee_rate(&lb_pair).map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+        let fee_rate = {
+            let mut lb_for_fee = *lb_pair;
+            let _ = lb_for_fee.update_references(clock.unix_timestamp);
+            let _ = lb_for_fee.update_volatility_accumulator();
+            compute_fee_rate(&lb_for_fee)
+        }.map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
         let instance = MeteoraDlmm {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
@@ -589,6 +566,7 @@ impl MeteoraDlmm {
             fee_rate,
             start_index,
             end_index,
+            bitmap_extension: bitmap_extension.map(Box::new),
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
@@ -596,12 +574,14 @@ impl MeteoraDlmm {
 
     /// Sum a single token amount from bin array account data, skipping duplicate pubkeys.
     /// If `sum_y` is true, sums amount_y (offset +8); otherwise sums amount_x (offset +0).
-    fn sum_bin_array_token(accounts: &[&AccountInfo], sum_y: bool) -> Result<u64> {
+    /// Sum both X and Y token amounts from bin arrays in a single pass.
+    /// Returns (total_x, total_y).
+    fn sum_bin_array_tokens_both(accounts: &[&AccountInfo]) -> Result<(u64, u64)> {
         const BIN_ARRAY_HEADER_SIZE: usize = 56;
         const BIN_SIZE: usize = 144;
         const MAX_BIN_PER_ARRAY: usize = 70;
-        let field_offset = if sum_y { 8 } else { 0 };
-        let mut total: u64 = 0;
+        let mut total_x: u64 = 0;
+        let mut total_y: u64 = 0;
         let mut seen = Pubkey::default();
         for acc in accounts {
             if *acc.key == seen { continue; }
@@ -609,38 +589,42 @@ impl MeteoraDlmm {
             let data = acc.try_borrow_data()?;
             if data.len() < BIN_ARRAY_HEADER_SIZE { continue; }
             for i in 0..MAX_BIN_PER_ARRAY {
-                let offset = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE + field_offset;
-                if offset + 8 > data.len() { break; }
-                let amount = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                total = total.saturating_add(amount);
+                let base = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE;
+                if base + 16 > data.len() { break; }
+                let x = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
+                let y = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
+                total_x = total_x.saturating_add(x);
+                total_y = total_y.saturating_add(y);
             }
         }
-        Ok(total)
+        Ok((total_x, total_y))
     }
 
     /// Compute (max_amount_in, max_amount_out) across all bin arrays for a given input mint.
-    /// Only called when needed — saves CU in the constructor.
+    /// Sums both sides directly from bin data — no price conversion needed.
     pub fn compute_max_amounts_in_out(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<(u64, u64)> {
         let swap_for_y = self.base_token_pk == input_mint;
-        let max_amount_out = if swap_for_y {
-            // X→Y: sum Y from buy arrays
-            Self::sum_bin_array_token(&[
+        let bin_accounts = if swap_for_y {
+            // X→Y: read from buy arrays
+            [
                 &accounts[self.start_index + Self::BUY_BIN_1_IDX],
                 &accounts[self.start_index + Self::BUY_BIN_2_IDX],
-            ], true)?
+            ]
         } else {
-            // Y→X: sum X from sell arrays
-            Self::sum_bin_array_token(&[
+            // Y→X: read from sell arrays
+            [
                 &accounts[self.start_index + Self::SELL_BIN_1_IDX],
                 &accounts[self.start_index + Self::SELL_BIN_2_IDX],
-            ], false)?
+            ]
         };
-        let max_amount_in = if swap_for_y {
-            (max_amount_out as f64 * self.inverse_price) as u64
+        let (total_x, total_y) = Self::sum_bin_array_tokens_both(&bin_accounts)?;
+        if swap_for_y {
+            // X→Y: input is X, output is Y
+            Ok((total_x, total_y))
         } else {
-            (max_amount_out as f64 * self.price) as u64
-        };
-        Ok((max_amount_in, max_amount_out))
+            // Y→X: input is Y, output is X
+            Ok((total_y, total_x))
+        }
     }
 
     pub fn get_max_amount_in(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<u64> {
@@ -972,7 +956,8 @@ mod tests {
         accounts.push(bin_array_buy_infos[1].clone());
         accounts.push(bin_array_sell_infos[0].clone());
         accounts.push(bin_array_sell_infos[1].clone());
-        let meteora_dlmm = MeteoraDlmm::new(&accounts, 0, accounts.len()).unwrap();
+        let clock = get_clock(&rpc_client).await.unwrap();
+        let meteora_dlmm = MeteoraDlmm::new(&accounts, 0, accounts.len(), &clock).unwrap();
         (meteora_dlmm, accounts)
     }
 
@@ -998,7 +983,7 @@ mod tests {
         // Step 1: swap_base_in SOL -> TOKEN (1 SOL in, get tokens out)
         let in_sol_amount: u64 = 1_000_000_000;
         let tokens_out = meteora_dlmm
-            .swap_base_in(&accounts, sol_mint, in_sol_amount, clock.clone())
+            .swap_base_in(&accounts, sol_mint, in_sol_amount, &clock)
             .unwrap();
         debug_eprintln!(
             "swap_base_in: {} SOL -> {} TOKEN",
@@ -1006,7 +991,7 @@ mod tests {
             tokens_out as f64 / 1e6,
         );
 
-        let max_sol_in = meteora_dlmm.swap_base_out(&accounts, other_mint, tokens_out, clock.clone()).unwrap();
+        let max_sol_in = meteora_dlmm.swap_base_out(&accounts, other_mint, tokens_out, &clock).unwrap();
         debug_eprintln!(
             "swap_base_out: {} TOKEN -> {} SOL",
             tokens_out as f64 / 1e6,
@@ -1015,7 +1000,7 @@ mod tests {
 
         // Step 2: swap_base_in TOKEN -> SOL (reverse direction)
         let sol_out = meteora_dlmm
-            .swap_base_in(&accounts, other_mint, tokens_out, clock.clone())
+            .swap_base_in(&accounts, other_mint, tokens_out, &clock)
             .unwrap();
         debug_eprintln!(
             "swap_base_in: {} TOKEN -> {} SOL",
@@ -1023,7 +1008,7 @@ mod tests {
             sol_out as f64 / 1e9,
         );
 
-        let max_token_in = meteora_dlmm.swap_base_out(&accounts, sol_mint, sol_out, clock.clone()).unwrap();
+        let max_token_in = meteora_dlmm.swap_base_out(&accounts, sol_mint, sol_out, &clock).unwrap();
         debug_eprintln!(
             "swap_base_out: {} SOL -> {} TOKEN",
             sol_out as f64 / 1e9,
@@ -1057,7 +1042,7 @@ mod tests {
         // First get a reference amount: how many tokens do we get for 1 SOL?
         let in_sol_amount: u64 = 1_000_000_000;
         let tokens_from_base_in = meteora_dlmm
-            .swap_base_in(&accounts, sol_mint, in_sol_amount, clock.clone())
+            .swap_base_in(&accounts, sol_mint, in_sol_amount, &clock)
             .unwrap();
         debug_eprintln!(
             "reference swap_base_in: {} SOL -> {} TOKEN",
@@ -1068,7 +1053,7 @@ mod tests {
         // swap_base_out: "I want exactly tokens_from_base_in tokens, how much SOL do I need?"
         // output_mint = other_mint (the token), amount_out = tokens_from_base_in
         let sol_needed = meteora_dlmm
-            .swap_base_out(&accounts, other_mint, tokens_from_base_in, clock.clone())
+            .swap_base_out(&accounts, other_mint, tokens_from_base_in, &clock)
             .unwrap();
         debug_eprintln!(
             "swap_base_out: need {} SOL to get {} TOKEN",
@@ -1089,7 +1074,7 @@ mod tests {
         // swap_base_out reverse: "I want 1 SOL out, how many tokens do I need?"
         let desired_sol_out: u64 = 1_000_000_000;
         let tokens_needed = meteora_dlmm
-            .swap_base_out(&accounts, sol_mint, desired_sol_out, clock.clone())
+            .swap_base_out(&accounts, sol_mint, desired_sol_out, &clock)
             .unwrap();
         debug_eprintln!(
             "swap_base_out: need {} TOKEN to get {} SOL",
@@ -1120,12 +1105,12 @@ mod tests {
         // swap_base_in: 1 SOL -> tokens
         let in_sol_amount: u64 = 1_000_000_000;
         let tokens_out = meteora_dlmm
-            .swap_base_in(&accounts, sol_mint, in_sol_amount, clock.clone())
+            .swap_base_in(&accounts, sol_mint, in_sol_amount, &clock)
             .unwrap();
 
         // swap_base_out: to get those same tokens, how much SOL is needed?
         let sol_needed_for_same_tokens = meteora_dlmm
-            .swap_base_out(&accounts, other_mint, tokens_out, clock.clone())
+            .swap_base_out(&accounts, other_mint, tokens_out, &clock)
             .unwrap();
 
         debug_eprintln!(

@@ -1,4 +1,3 @@
-pub mod constants;
 pub mod errors;
 pub mod meteora_damm_v1;
 pub mod meteora_damm_v2;
@@ -9,7 +8,6 @@ pub mod raydium_cpmm;
 pub mod raydium_clmm;
 pub mod programs;
 pub mod pump_amm;
-pub mod types;
 
 pub use errors::SolarBError;
 pub use meteora_damm_v1::MeteoraDammV1;
@@ -21,4 +19,3 @@ pub use programs::{ProgramInstance, ProgramMeta};
 pub use raydium_amm::RaydiumAmm;
 pub use raydium_clmm::RaydiumCLMM;
 pub use raydium_cpmm::RaydiumCPMM;
-pub use types::*;

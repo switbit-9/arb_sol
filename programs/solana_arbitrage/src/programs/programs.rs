@@ -51,7 +51,7 @@ pub trait ProgramMeta {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64>;
 
     /// Calculate input amount needed to receive a specific output amount
@@ -61,7 +61,7 @@ pub trait ProgramMeta {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        clock: Clock,
+        clock: &Clock,
     ) -> Result<u64>;
 
     /// Get prices for swap base in (base -> quote) and swap base out (quote -> base)
@@ -139,6 +139,12 @@ pub trait ProgramMeta {
 
     /// Get max amount that can be output for a given input mint direction
     fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
+        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+    }
+
+    /// Max input the active bin can absorb before crossing to the next bin (DLMM only).
+    /// Returns the amount BEFORE fees are added.
+    fn get_active_bin_max_in(&self, _input_mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 }

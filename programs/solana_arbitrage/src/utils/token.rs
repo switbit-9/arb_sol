@@ -123,7 +123,7 @@ pub fn get_transfer_inverse_fee(mint_info: &AccountInfo, post_fee_amount: u64) -
         return Ok(0);
     }
     if post_fee_amount == 0 {
-        return Err(error!(SolarBError::TransferFeeCalculationError));
+        return Ok(0);
     }
     let mint_data = mint_info.try_borrow_data()?;
     let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(

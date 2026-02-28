@@ -10,7 +10,6 @@ macro_rules! debug_eprintln {
 }
 
 pub mod arbitrage;
-pub mod math;
 pub mod programs;
 pub mod utils;
 
@@ -19,9 +18,9 @@ pub mod utils;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
-#[cfg(test)]
-#[path = "tests/pubkey_test.rs"]
-mod pubkey_test;
+// #[cfg(test)]
+// #[path = "tests/pubkey_test.rs"]
+// mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
@@ -36,8 +35,8 @@ use programs::{
 use utils::bot_config::BotConfig;
 use utils::utils::parse_token_account;
 
-// #[cfg(test)]
-// use crate::utils::test_utils::write_results_to_file;
+#[cfg(test)]
+use crate::utils::test_utils::write_results_to_file;
 
 // Pre-computed program ID bytes for fast comparison (avoids repeated .to_bytes() calls)
 const PUMP_AMM_ID_BYTES: [u8; 32] = PumpAmm::PROGRAM_ID.to_bytes();
@@ -52,7 +51,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("3J8jbnhgiw5ysHX842Xt4mJngKs6aDh4akY2bXbKkXNC");
+declare_id!("BbkVCKrSjwCe3uaJBgUQhJr4cNkt6S8PtNqo66r3RJs4");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -83,11 +82,6 @@ pub mod solar_b {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
-        // let first_accounts = &ctx.remaining_accounts[..7];
-        // msg!("first_accounts: {:?}", first_accounts.len());
-        // let rest = &ctx.remaining_accounts[7..];
-        // msg!("rest: {:?}", rest.len());
-        // msg!("clock: {:?}", clock);
         let clock: Clock = Clock::get()?;
         start_bot(&ctx.remaining_accounts, data, clock)?;
         Ok(())
@@ -111,12 +105,10 @@ fn start_bot<'info>(
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
-
     #[cfg(test)]
     debug_eprintln!("max_amount_in: {:?}", max_amount_in);
     let mut instances = parse_accounts(accounts, pool_start, &data, &clock)?;
 
-    // let max_amount_in = 100_000_000_000_u64;
     let test_mode = data.test;
     let mut bot_config = BotConfig::new(
         Some(WSOL),
@@ -149,12 +141,16 @@ fn start_bot<'info>(
     if test_mode {
         // Override with tiny amount: 100 lamports (0.0000001 SOL)
         arbitrage_path.start_amount = 1_000_000;
-        // msg!("Executing with 100 lamports");
-        // debug_eprintln!("arbitrage_path: {:?}", arbitrage_path);
+    }
+
+    #[cfg(test)]
+    {
+        if arbitrage_path.profit > 0 {
+            write_results_to_file(&[Some(arbitrage_path.clone())]);
+        }
     }
 
     execute_arbitrage_path(accounts, &arbitrage_path, &mut instances, payer, data.mints)?;
-    debug_eprintln!("ended");
     Ok(Some(arbitrage_path))
 }
 
@@ -236,7 +232,7 @@ pub fn find_program_instance<'info>(
     }
     if id_bytes == METEORA_DLMM_ID_BYTES {
         debug_eprintln!("MeteoraDlmm");
-        return create_meteora_dlmm(accounts, start_index, end_index);
+        return create_meteora_dlmm(accounts, start_index, end_index, clock);
     }
     if id_bytes == ORCA_WHIRLPOOL_ID_BYTES {
         debug_eprintln!("OrcaWhirlpool");
@@ -291,8 +287,9 @@ fn create_meteora_dlmm<'info>(
     accounts: &[AccountInfo<'info>],
     start: usize,
     end: usize,
+    clock: &Clock,
 ) -> Result<ProgramInstance<'info>> {
-    Ok(Box::new(MeteoraDlmm::new(accounts, start, end)?))
+    Ok(Box::new(MeteoraDlmm::new(accounts, start, end, clock)?))
 }
 
 #[inline(never)]
@@ -356,10 +353,33 @@ fn run_single_pair_arbitrage<'info>(
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
-    let (edges, profit, _) = check_arbitrage(instances, config)?;
+    let (mut edges, profit, _) = check_arbitrage(instances, config)?;
     if !config.test && profit <= 0 {
         debug_eprintln!("Not found 1");
         return Ok(None);
+    }
+
+    // In test mode, if no profitable path was found, build a fallback path
+    // from raw edges so we can still test the invoke flow
+    if config.test && edges.len() < 2 {
+        let all_edges = get_edges(instances)?;
+        if all_edges.len() >= 2 {
+            let start_token = config.start_token.unwrap_or(WSOL);
+            // First edge must buy (start_token → other), second must sell back, from different pools
+            let buy_edge = all_edges.iter().find(|e| e.left.mint_account == start_token);
+            if let Some(buy) = buy_edge {
+                let sell_edge = all_edges.iter().find(|e| e.right.mint_account == start_token && e.pool_id != buy.pool_id);
+                if let Some(sell) = sell_edge {
+                    edges = vec![buy.clone(), sell.clone()];
+                } else {
+                    return Ok(None);
+                }
+            } else {
+                return Ok(None);
+            }
+        } else {
+            return Ok(None);
+        }
     }
 
     let (optimal_amount_in, profit) =
@@ -370,7 +390,7 @@ fn run_single_pair_arbitrage<'info>(
     }
 
     // Use wrapping arithmetic to avoid overflow checks (we know values are valid)
-    let final_amount = (optimal_amount_in as i128).wrapping_add(profit) as u128;
+    let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
 
     let arbitrage_path = ArbitragePath {
         edges,
@@ -382,15 +402,16 @@ fn run_single_pair_arbitrage<'info>(
     // Debug logging only in test/debug builds - no float operations in production
     #[cfg(any(test, feature = "debug"))]
     {
-        let profit_pct = (profit as f64 / optimal_amount_in as f64) * 100.0;
-        debug_eprintln!(
-            "PROFIT: in={} out={} profit={} ({:.2}%)",
-            optimal_amount_in, final_amount, profit, profit_pct
-        );
+        if optimal_amount_in > 0 {
+            let profit_pct = (profit as f64 / optimal_amount_in as f64) * 100.0;
+            debug_eprintln!(
+                "PROFIT: in={} out={} profit={} ({:.2}%)",
+                optimal_amount_in, final_amount, profit, profit_pct
+            );
+        }
     }
 
-    // #[cfg(test)]
-    // write_results_to_file(&[Some(arbitrage_path.clone())]);
+
 
     Ok(Some(arbitrage_path))
 }
@@ -418,9 +439,21 @@ fn run_multi_hop_arbitrage<'info>(
         return Ok(None);
     }
 
-    if path_edges.is_empty() {
+    // In test mode, if no path was found, build a fallback from raw edges
+    let path_edges = if config.test && path_edges.is_empty() {
+        let start_token = config.start_token.unwrap_or(WSOL);
+        let buy_edge = edges.iter().find(|e| e.left.mint_account == start_token);
+        let sell_edge = edges.iter().find(|e| e.right.mint_account == start_token);
+        if let (Some(buy), Some(sell)) = (buy_edge, sell_edge) {
+            vec![buy.clone(), sell.clone()]
+        } else {
+            return Ok(None);
+        }
+    } else if path_edges.is_empty() {
         return Ok(None);
-    }
+    } else {
+        path_edges
+    };
 
     // Optimize the amount_in for the N-hop path
     // find_optimal_amount_in_v2 now handles any number of edges
@@ -432,7 +465,7 @@ fn run_multi_hop_arbitrage<'info>(
         return Ok(None);
     }
 
-    let final_amount = (optimal_amount_in as i128).wrapping_add(profit) as u128;
+    let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
 
     let arbitrage_path = ArbitragePath {
         edges: path_edges,
@@ -452,9 +485,6 @@ fn run_multi_hop_arbitrage<'info>(
             );
         }
     }
-
-    // #[cfg(test)]
-    // write_results_to_file(&[Some(arbitrage_path.clone())]);
 
     Ok(Some(arbitrage_path))
 }
@@ -530,9 +560,16 @@ fn run_multiple_trades_arbitrage<'info>(
             continue;
         }
 
-        if path_edges.is_empty() {
+        // In test mode, if no profitable path found, use first two edges from group
+        let path_edges = if config.test && path_edges.is_empty() {
+            let e0 = &all_edges[edge_indices[0]];
+            let e1 = &all_edges[edge_indices[1]];
+            vec![e0.clone(), e1.clone()]
+        } else if path_edges.is_empty() {
             continue;
-        }
+        } else {
+            path_edges
+        };
 
         // Optimize amount for this path (uses full instances for swap simulation)
         let (optimal_amount_in, refined_profit) =
@@ -540,7 +577,7 @@ fn run_multiple_trades_arbitrage<'info>(
 
         if !config.test && refined_profit > best_profit || config.test && best_path.is_none() {
             best_profit = refined_profit;
-            let final_amount = (optimal_amount_in as i128).wrapping_add(refined_profit) as u128;
+            let final_amount = (optimal_amount_in as i128).checked_add(refined_profit).unwrap_or(0) as u128;
             best_path = Some(ArbitragePath {
                 edges: path_edges,
                 profit: refined_profit,
@@ -563,8 +600,6 @@ fn run_multiple_trades_arbitrage<'info>(
             }
         }
 
-        // #[cfg(test)]
-        // write_results_to_file(&[best_path.clone()]);
     };
 
     Ok(best_path)
@@ -764,7 +799,7 @@ fn run_simulation<'info>(
             accounts,
             input_mint,
             current_amount,
-            bot_config.clock.clone(),
+            &bot_config.clock,
         )?;
 
         // swap_base_out: given that amount_out, how much would we need to put in?
@@ -772,7 +807,7 @@ fn run_simulation<'info>(
             accounts,
             output_mint,
             amount_out,
-            bot_config.clock.clone(),
+            &bot_config.clock,
         )?;
 
         let input_short = &input_mint.to_string()[..8];

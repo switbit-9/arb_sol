@@ -13,7 +13,6 @@ use std::marker::PhantomData;
 // ── Pool account data byte offsets (after 8-byte Anchor discriminator) ──
 const TOKEN_A_MINT_OFFSET: usize = 32;
 const TOKEN_B_MINT_OFFSET: usize = 64;
-const ENABLED_OFFSET: usize = 225;
 const TRADE_FEE_NUM_OFFSET: usize = 322;
 const TRADE_FEE_DEN_OFFSET: usize = 330;
 const PROTOCOL_FEE_NUM_OFFSET: usize = 338;
@@ -148,7 +147,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let (reserve_in, reserve_out) = if input_mint == self.base_token_pk {
             (self.base_vault_amount as u128, self.quote_vault_amount as u128)
@@ -213,7 +212,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let (reserve_in, reserve_out) = if output_mint == self.base_token_pk {
             // Output is A, input is B
@@ -694,13 +693,13 @@ mod tests {
 
         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
             let amount_out = damm
-                .swap_base_in(&accounts, input_mint, amount_in, clock.clone())
+                .swap_base_in(&accounts, input_mint, amount_in, &clock)
                 .unwrap();
             assert!(amount_out > 0, "swap_base_in should produce non-zero output");
 
             // Reverse: how much input is needed to get `amount_out` of quote?
             let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, clock.clone())
+                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, &clock)
                 .unwrap();
 
             // swap_base_in floors the output, so reversing may differ by ±tolerance
@@ -737,13 +736,13 @@ mod tests {
 
         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
             let amount_out = damm
-                .swap_base_in(&accounts, input_mint, amount_in, clock.clone())
+                .swap_base_in(&accounts, input_mint, amount_in, &clock)
                 .unwrap();
             assert!(amount_out > 0);
 
             // Reverse direction: output is base token
             let needed_in = damm
-                .swap_base_out(&accounts, damm.base_token_pk, amount_out, clock.clone())
+                .swap_base_out(&accounts, damm.base_token_pk, amount_out, &clock)
                 .unwrap();
 
             // swap_base_in floors the output, so reversing the floored output
@@ -783,13 +782,13 @@ mod tests {
         for &desired_out in &[1_000u64, 50_000, 1_000_000, 10_000_000] {
             // How much base do I need to get `desired_out` quote?
             let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, desired_out, clock.clone())
+                .swap_base_out(&accounts, damm.quote_token_pk, desired_out, &clock)
                 .unwrap();
             assert!(needed_in > 0);
 
             // Now actually swap that much base in
             let actual_out = damm
-                .swap_base_in(&accounts, damm.base_token_pk, needed_in, clock.clone())
+                .swap_base_in(&accounts, damm.base_token_pk, needed_in, &clock)
                 .unwrap();
 
             // We should get at least as much as we wanted
@@ -818,11 +817,11 @@ mod tests {
 
         for &amount_in in &[1_000u64, 1_000_000, 50_000_000] {
             let amount_out = damm
-                .swap_base_in(&accounts, damm.base_token_pk, amount_in, clock.clone())
+                .swap_base_in(&accounts, damm.base_token_pk, amount_in, &clock)
                 .unwrap();
 
             let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, clock.clone())
+                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, &clock)
                 .unwrap();
 
             // With zero fees, needed_in should be exactly amount_in or amount_in+1 (rounding)
@@ -867,7 +866,7 @@ mod tests {
 
         let amount_in: u64 = 10_000_000;
         let amount_out = damm
-            .swap_base_in(&accounts, damm.base_token_pk, amount_in, clock)
+            .swap_base_in(&accounts, damm.base_token_pk, amount_in, &clock)
             .unwrap();
 
         let new_base = damm.base_vault_amount as u128 + amount_in as u128;

@@ -104,7 +104,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let token_a_account = &accounts[self.start_index + Self::TOKEN_A_IDX];
         let token_b_account = &accounts[self.start_index + Self::TOKEN_B_IDX];
@@ -148,7 +148,7 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let token_a_account = &accounts[self.start_index + Self::TOKEN_A_IDX];
         let token_b_account = &accounts[self.start_index + Self::TOKEN_B_IDX];
@@ -1199,7 +1199,7 @@ mod tests {
         // Step 1: Swap SOL -> TOKEN
         let clock1 = get_clock(&rpc_client).await.unwrap();
         let token_out = orca_whirlpool
-            .swap_base_in(&accounts, sol_mint, sol_in, clock1.clone())
+            .swap_base_in(&accounts, sol_mint, sol_in, &clock1)
             .expect("swap_base_in failed");
         eprintln!(
             "Step 1 (swap_base_in): {} SOL -> {} TOKEN",
@@ -1208,7 +1208,7 @@ mod tests {
         );
 
         let max_sol_in = orca_whirlpool
-            .swap_base_out(&accounts, token_mint, token_out, clock1.clone())
+            .swap_base_out(&accounts, token_mint, token_out, &clock1)
             .expect("swap_base_out failed");
         eprintln!(
             "Step 1 (swap_base_out): MAX SOL IN {} -> {} TOKEN OUT",
@@ -1220,7 +1220,7 @@ mod tests {
 
         // Step 2: Swap TOKEN -> SOL
         let sol_out = orca_whirlpool
-            .swap_base_in(&accounts, token_mint, token_out, clock1.clone())
+            .swap_base_in(&accounts, token_mint, token_out, &clock1)
             .expect("second swap_base_in failed");
         eprintln!(
             "Step 2 (swap_base_in): {} TOKEN -> {} SOL",
@@ -1229,7 +1229,7 @@ mod tests {
         );
 
         let max_token_in = orca_whirlpool
-            .swap_base_out(&accounts, sol_mint, sol_out, clock1.clone())
+            .swap_base_out(&accounts, sol_mint, sol_out, &clock1)
             .expect("second swap_base_out failed");
         eprintln!(
             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",

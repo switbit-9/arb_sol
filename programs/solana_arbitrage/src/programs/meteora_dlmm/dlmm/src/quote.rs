@@ -2,7 +2,6 @@ use crate::extensions::LbPairExtension;
 use crate::*;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
-use std::collections::HashMap;
 use std::result::Result::Ok;
 
 
@@ -78,10 +77,6 @@ pub fn quote_exact_out<'a>(
     amount_out =
         calculate_transfer_fee_included_amount(out_mint_account, amount_out, epoch)?.amount;
 
-    // Create HashMap once for O(1) account lookup instead of O(n) find() each iteration
-    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> =
-        bin_arrays.iter().map(|acc| (*acc.key, acc)).collect();
-
     while amount_out > 0 {
         let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
             lb_pair_pubkey,
@@ -93,8 +88,9 @@ pub fn quote_exact_out<'a>(
         .pop()
         .context("Pool out of liquidity")?;
 
-        let active_bin_array_account = match bin_arrays_map.get(&active_bin_array_pubkey) {
-            Some(account) => *account,
+        // Linear scan over 2 elements is faster than HashMap alloc+hash+lookup
+        let active_bin_array_account = match bin_arrays.iter().find(|acc| *acc.key == active_bin_array_pubkey) {
+            Some(account) => account,
             None => {
                 // We don't have the required bin array account - stop the swap
                 // Return partial result if we made some progress, otherwise it's an error
@@ -239,10 +235,6 @@ pub fn quote_exact_in<'a>(
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;
 
-    // Create HashMap once for O(1) account lookup instead of O(n) find() each iteration
-    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> =
-        bin_arrays.iter().map(|acc| (*acc.key, acc)).collect();
-
     while amount_left > 0 {
         let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
             lb_pair_pubkey,
@@ -253,17 +245,10 @@ pub fn quote_exact_in<'a>(
         )?
         .pop()
         .context("Pool out of liquidity")?;
-        // msg!("12: {}", active_bin_array_pubkey);
-        let active_bin_array_account = match bin_arrays_map.get(&active_bin_array_pubkey) {
-            Some(account) => *account,
+        // Linear scan over 2 elements is faster than HashMap alloc+hash+lookup
+        let active_bin_array_account = match bin_arrays.iter().find(|acc| *acc.key == active_bin_array_pubkey) {
+            Some(account) => account,
             None => {
-                // msg!("12: ERROR - Required bin array {} not found in provided accounts, insufficient liquidity", active_bin_array_pubkey);
-                // msg!(
-                //     "12: Current amount_left: {}, total_amount_out so far: {}",
-                //     amount_left,
-                //     total_amount_out
-                // );
-                // We don't have the required bin array account - stop the swap
                 // This means we've exhausted the available bin arrays
                 // Return partial result if we made some progress, otherwise it's an error
                 if total_amount_out == 0 {
@@ -316,7 +301,6 @@ pub fn quote_exact_in<'a>(
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-            // debug_eprintln!("DLMM active_bin.active_id: {:?}", lb_pair.active_id);
 
             let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
 
@@ -349,25 +333,20 @@ pub fn quote_exact_in<'a>(
                 lb_pair.advance_active_bin(swap_for_y)?;
                 // Safety check: if we didn't actually advance (shouldn't happen), break to avoid infinite loop
                 if lb_pair.active_id == old_active_id {
-                    // msg!("16: ERROR - active_id did not change, breaking to avoid infinite loop");
                     break;
                 }
                 // Check if we've moved outside the current bin array range - if so, break to get new bin array
                 if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
-                    // msg!("16: active_id moved outside bin array range, breaking to get new array");
                     break;
                 }
             }
-            // msg!("16");
         }
     }
-    // msg!("17");
 
     let fee = get_transfer_fee(out_mint_account, total_amount_out, epoch)?;
 
     let transfer_fee_excluded_amount_out =
         total_amount_out.checked_sub(fee).context("MathOverflow")?;
-    // msg!("18");
     Ok(SwapExactInQuote {
         amount_out: transfer_fee_excluded_amount_out,
         fee: total_fee,
@@ -449,18 +428,14 @@ pub fn get_active_bin_array<'a>(
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;
 
-    let bin_arrays_map: HashMap<Pubkey, &AccountInfo> = bin_arrays
-        .iter()
-        .map(|acc: &AccountInfo<'a>| (*acc.key, acc))
-        .collect();
-
     let active_bin_array_pubkey =
         get_bin_array_pubkeys_for_swap(lb_pair_pubkey, lb_pair, bitmap_extension, swap_for_y, 1)?
             .pop()
             .context("Pool out of liquidity")?;
 
-    let active_bin_array_account = bin_arrays_map
-        .get(&active_bin_array_pubkey)
+    let active_bin_array_account = bin_arrays
+        .iter()
+        .find(|acc| *acc.key == active_bin_array_pubkey)
         .context("Active bin array not found in provided accounts")?;
 
     // Verify the active bin is in this bin array by reading the bin array index

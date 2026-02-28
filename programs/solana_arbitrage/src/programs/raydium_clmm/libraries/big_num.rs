@@ -8,10 +8,6 @@ construct_uint! {
     pub struct U256(4);
 }
 
-construct_uint! {
-    pub struct U1024(16);
-}
-
 impl U256 {
     pub fn div_rounding_up(a: U256, b: U256) -> U256 {
         let (quotient, remainder) = a.div_mod(b);

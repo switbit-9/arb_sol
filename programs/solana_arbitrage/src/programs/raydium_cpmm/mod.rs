@@ -101,6 +101,10 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
 
+    fn get_vault_amounts(&self) -> Result<(u64, u64)> {
+        Ok((self.base_vault_amount, self.quote_vault_amount))
+    }
+
     fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
         let fee_factor = 1.0 - self.fee_rate;
 
@@ -134,7 +138,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let base_token_account = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
         let quote_token_account = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
@@ -211,7 +215,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
-        _clock: Clock,
+        _clock: &Clock,
     ) -> Result<u64> {
         let base_token_account = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
         let quote_token_account = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
@@ -951,7 +955,7 @@ mod tests {
         );
 
         let input_mint = *base_token.key; // Swap base token in
-        let result = raydium_cpmm.swap_base_in(&accounts, input_mint, amount_in_adjusted, clock);
+        let result = raydium_cpmm.swap_base_in(&accounts, input_mint, amount_in_adjusted, &clock);
 
         match result {
             Ok(amount_out) => {
@@ -1095,7 +1099,7 @@ mod tests {
         // swap_base_out takes the desired output amount and returns required input
         // input_mint is the token we're putting in (base token) to get quote token out
         let input_mint = *base_token.key;
-        let result = raydium_cpmm.swap_base_out(&accounts, input_mint, amount_out_adjusted, clock);
+        let result = raydium_cpmm.swap_base_out(&accounts, input_mint, amount_out_adjusted, &clock);
 
         match result {
             Ok(amount_in_required) => {
@@ -1245,7 +1249,7 @@ mod tests {
         let clock1 = get_clock(&rpc_client).await.unwrap();
         eprintln!("sol_in: {:?}", sol_in);
         let token_out = raydium_cpmm
-            .swap_base_in(&accounts, sol_mint, sol_in, clock1.clone())
+            .swap_base_in(&accounts, sol_mint, sol_in, &clock1)
             .expect("swap_base_in failed");
         eprintln!(
             "Step 1 (swap_base_in): {} SOL -> {} TOKEN",
@@ -1253,7 +1257,7 @@ mod tests {
             token_out as f64 / 1_000_000.0,
         );
         let max_sol_in = raydium_cpmm
-            .swap_base_out(&accounts, token_mint, token_out, clock1.clone())
+            .swap_base_out(&accounts, token_mint, token_out, &clock1)
             .expect("swap_base_out failed");
         eprintln!(
             "Step 1 (swap_base_out): MAX SOL IN {} -> {} TOKEN OUT",
@@ -1264,7 +1268,7 @@ mod tests {
         eprintln!("================================================");
 
         let sol_out = raydium_cpmm
-            .swap_base_in(&accounts, token_mint, token_out, clock1.clone())
+            .swap_base_in(&accounts, token_mint, token_out, &clock1)
             .expect("second swap_base_in failed");
         eprintln!(
             "Step 2 (swap_base_in): {} TOKEN -> {} SOL",
@@ -1272,7 +1276,7 @@ mod tests {
             sol_out as f64 / 1_000_000_000.0,
         );
         let max_token_in = raydium_cpmm
-            .swap_base_out(&accounts, sol_mint, sol_out, clock1.clone())
+            .swap_base_out(&accounts, sol_mint, sol_out, &clock1)
             .expect("second swap_base_out failed");
         eprintln!(
             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",

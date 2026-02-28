@@ -1,7 +1,6 @@
 use crate::arbitrage::base::Edge;
 use crate::arbitrage::utils::find_instance_by_pool_id;
 use crate::programs::{ProgramInstance, ProgramMeta};
-use crate::programs::SolarBError;
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
@@ -9,49 +8,10 @@ use anchor_lang::solana_program::pubkey::Pubkey;
 /// Configuration for the optimization search - OPTIMIZED FOR LOW CU USAGE
 const GOLDEN_RATIO: f64 = 1.618033988749895; // (1 + sqrt(5)) / 2
 const MAX_ITERATIONS: usize = 12; // Reduced from 25 to save CU
-const CONVERGENCE_THRESHOLD: u64 = 100_000; // 0.1 SOL - larger = fewer iterations
+const CONVERGENCE_THRESHOLD: u64 = 10_000; // 0.1 SOL - larger = fewer iterations
 const MIN_SEARCH_AMOUNT: u64 = 1_000; // 0.000001 SOL minimum
 const MIN_PROFIT_THRESHOLD: i128 = 50_000; // 0.00005 SOL - skip refinement if below
 
-/// Quick profitability check with just 3 points
-/// Returns (is_potentially_profitable, best_amount_hint)
-fn quick_profit_check<'info>(
-    accounts: &[AccountInfo<'info>],
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
-    input_mint: Pubkey,
-    middle_mint: Pubkey,
-    min_amount: u64,
-    max_amount: u64,
-    clock: &Clock,
-) -> (bool, u64) {
-    // Test at 10%, 50%, 90% of range
-    let test_points: [u64; 4] = [
-        min_amount + ((max_amount - min_amount) / 10),
-        (min_amount + max_amount) / 2,
-        max_amount - ((max_amount - min_amount) / 10),
-        max_amount,
-    ];
-
-    for &amount in &test_points {
-        let profit = simulate_path(
-            accounts,
-            program_1,
-            program_2,
-            input_mint,
-            middle_mint,
-            amount,
-            clock.clone(),
-        )
-        .unwrap_or(i128::MIN);
-
-        if profit > MIN_PROFIT_THRESHOLD {
-            return (true, amount);
-        }
-    }
-
-    (false, min_amount)
-}
 
 /// Simulate a full arbitrage path and return the profit (DLMM + AMM)
 #[inline]
@@ -62,34 +22,12 @@ fn simulate_path<'info>(
     input_mint: Pubkey,
     middle_mint: Pubkey,
     amount_in: u64,
-    clock: Clock,
+    clock: &Clock,
 ) -> Result<i128> {
-    let token_out = program_1.swap_base_in(accounts, input_mint, amount_in, clock.clone())?;
+    let token_out = program_1.swap_base_in(accounts, input_mint, amount_in, clock)?;
     let sol_out = program_2.swap_base_in(accounts, middle_mint, token_out, clock)?;
 
     Ok(sol_out as i128 - amount_in as i128)
-}
-
-/// Simulate AMM -> AMM path and return the profit
-#[inline]
-fn simulate_amm_to_amm_path<'info>(
-    accounts: &[AccountInfo<'info>],
-    program_1: &Box<dyn ProgramMeta + 'info>,
-    program_2: &ProgramInstance<'info>,
-    input_mint: Pubkey,
-    middle_mint: Pubkey,
-    amount_in: u64,
-    clock: Clock,
-) -> Result<i128> {
-    // AMM1 swap
-    let token_out_from_program_1 =
-        program_1.swap_base_in(accounts, input_mint, amount_in, clock.clone())?;
-
-    // AMM2 swap
-    let final_out =
-        program_2.swap_base_in(accounts, middle_mint, token_out_from_program_1, clock)?;
-
-    Ok(final_out as i128 - amount_in as i128)
 }
 
 /// Golden section search to find the optimal input amount that maximizes profit
@@ -123,7 +61,7 @@ fn golden_section_search<'info>(
         input_mint,
         middle_mint,
         c,
-        clock.clone(),
+        clock,
     )
     .unwrap_or(i128::MIN);
 
@@ -134,7 +72,7 @@ fn golden_section_search<'info>(
         input_mint,
         middle_mint,
         d,
-        clock.clone(),
+        clock,
     )
     .unwrap_or(i128::MIN);
 
@@ -174,7 +112,7 @@ fn golden_section_search<'info>(
                 input_mint,
                 middle_mint,
                 c,
-                clock.clone(),
+                clock,
             )
             .unwrap_or(i128::MIN);
         } else {
@@ -190,7 +128,7 @@ fn golden_section_search<'info>(
                 input_mint,
                 middle_mint,
                 d,
-                clock.clone(),
+                clock,
             )
             .unwrap_or(i128::MIN);
         }
@@ -218,7 +156,7 @@ fn golden_section_search<'info>(
         input_mint,
         middle_mint,
         optimal,
-        clock.clone(),
+        clock,
     )?;
 
     #[cfg(any(test, feature = "debug"))]
@@ -276,11 +214,13 @@ fn hybrid_search<'info>(
     // }
 
     // Phase 1: Reduced grid search - only 6 points instead of 10
-    let grid_points = [0.05, 0.20, 0.40, 0.60, 0.80, 1.0];
+    let grid_points = [0.00001, 0.0001, 0.001, 0.01, 0.05, 0.20, 0.50, 0.7, 1.0];
 
     let mut best_amount = min_amount;
     let mut best_profit = i128::MIN;
     let mut best_idx = 0usize;
+    let mut prev_profit = i128::MIN;
+    let mut consecutive_decreases = 0u8;
 
     for (idx, &fraction) in grid_points.iter().enumerate() {
         let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
@@ -291,7 +231,7 @@ fn hybrid_search<'info>(
             input_mint,
             middle_mint,
             amount,
-            clock.clone(),
+            clock,
         )
         .unwrap_or(i128::MIN);
 
@@ -312,6 +252,18 @@ fn hybrid_search<'info>(
             best_amount = amount;
             best_idx = idx;
         }
+
+        // Profit function is unimodal (concave) for all pool types.
+        // If profit decreased 2 consecutive times, we've passed the peak — stop early.
+        if profit < prev_profit {
+            consecutive_decreases += 1;
+            if consecutive_decreases >= 2 {
+                break;
+            }
+        } else {
+            consecutive_decreases = 0;
+        }
+        prev_profit = profit;
     }
 
     #[cfg(any(test, feature = "debug"))]
@@ -371,7 +323,106 @@ fn hybrid_search<'info>(
     }
 }
 
-/// Find optimal amount for AMM -> DLMM path using hybrid search
+
+/// Result of the AMM↔DLMM analytical formula.
+struct AmmDlmmHint {
+    /// Optimal input amount (assuming linear DLMM)
+    optimal: u64,
+    /// Amount of middle token entering the DLMM at the optimal input
+    mid_amount: u64,
+    /// Whether the AMM is the first leg (true) or second leg (false)
+    amm_is_first: bool,
+}
+
+/// AMM↔DLMM analytical formula. Computes optimal input assuming DLMM is linear.
+///
+/// Formula: Δx* = (√(X·Y·f_amm·P_dlmm·f_dlmm) − X) / f_amm  (standard case)
+/// Also returns the mid amount so callers can check against active bin capacity.
+fn analytical_hint_amm_dlmm(
+    program_1: &dyn ProgramMeta,
+    program_2: &dyn ProgramMeta,
+    input_mint: Pubkey,
+    middle_mint: Pubkey,
+) -> Option<AmmDlmmHint> {
+    let name_1 = program_1.name();
+    let name_2 = program_2.name();
+
+    let (amm, dlmm, amm_is_first): (&dyn ProgramMeta, &dyn ProgramMeta, bool) =
+        if name_2 == "MeteoraDLMM" && name_1 != "MeteoraDLMM" {
+            (program_1, program_2, true)
+        } else if name_1 == "MeteoraDLMM" && name_2 != "MeteoraDLMM" {
+            (program_2, program_1, false)
+        } else {
+            return None;
+        };
+
+    let (base_vault, quote_vault) = amm.get_vault_amounts().ok()?;
+    let amm_base = amm.get_base_token();
+    let amm_input_mint = if amm_is_first { input_mint } else { middle_mint };
+
+    let (r_in, r_out) = if amm_input_mint == amm_base {
+        (base_vault as f64, quote_vault as f64)
+    } else {
+        (quote_vault as f64, base_vault as f64)
+    };
+    if r_in <= 0.0 || r_out <= 0.0 { return None; }
+
+    let (fee_a_to_b, fee_b_to_a) = amm.get_fee_factor().ok()?;
+    let f_amm = if amm_input_mint == amm_base { fee_a_to_b } else { fee_b_to_a };
+
+    let dlmm_input_mint = if amm_is_first { middle_mint } else { input_mint };
+    let (dlmm_price_base, dlmm_price_inv) = dlmm.get_prices().ok()?;
+    let dlmm_base = dlmm.get_base_token();
+    let p_dlmm = if dlmm_input_mint == dlmm_base { dlmm_price_base } else { dlmm_price_inv };
+
+    let (f_dlmm, _) = dlmm.get_fee_factor().ok()?;
+
+    if p_dlmm <= 0.0 || !p_dlmm.is_finite() { return None; }
+
+    let is_pump_sell = amm.name() == "PumpAmm" && amm_input_mint == amm_base;
+    let k = r_in * r_out;
+
+    let optimal = if amm_is_first {
+        if is_pump_sell {
+            (k * f_amm * p_dlmm * f_dlmm).sqrt() - r_in
+        } else {
+            ((k * f_amm * p_dlmm * f_dlmm).sqrt() - r_in) / f_amm
+        }
+    } else {
+        if is_pump_sell {
+            let b = p_dlmm * f_dlmm;
+            ((k * b * f_amm).sqrt() - r_in) / b
+        } else {
+            let a = p_dlmm * f_dlmm * f_amm;
+            ((k * a).sqrt() - r_in) / a
+        }
+    };
+
+    if optimal <= 0.0 || !optimal.is_finite() { return None; }
+
+    // Compute how much middle token enters the DLMM at the analytical optimal
+    let dx = optimal;
+    let mid = if amm_is_first {
+        // AMM output = mid tokens entering DLMM
+        if is_pump_sell {
+            r_out * dx / (r_in + dx) * f_amm
+        } else {
+            r_out * dx * f_amm / (r_in + dx * f_amm)
+        }
+    } else {
+        // DLMM is first: input goes directly into DLMM
+        dx
+    };
+
+    Some(AmmDlmmHint {
+        optimal: optimal as u64,
+        mid_amount: mid as u64,
+        amm_is_first,
+    })
+}
+
+
+/// Find optimal amount for 2-hop path using hybrid search
 pub fn find_optimal_amount<'info>(
     program_1: &ProgramInstance<'info>,
     program_2: &ProgramInstance<'info>,
@@ -380,38 +431,51 @@ pub fn find_optimal_amount<'info>(
     accounts: &[AccountInfo<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
+    // Try analytical shortcut: if the DLMM swap stays within the active bin,
+    // the formula is exact — skip the entire grid + golden section search.
+    if let Some(hint) = analytical_hint_amm_dlmm(
+        program_1.as_ref(), program_2.as_ref(), input_mint, middle_mint,
+    ) {
+        let dlmm: &dyn ProgramMeta = if hint.amm_is_first {
+            program_2.as_ref()
+        } else {
+            program_1.as_ref()
+        };
+        let dlmm_input_mint = if hint.amm_is_first { middle_mint } else { input_mint };
+
+        if let Ok(active_bin_max) = dlmm.get_active_bin_max_in(dlmm_input_mint) {
+            if hint.mid_amount <= active_bin_max {
+                // Mid fits in active bin → formula is exact
+                let amount = (hint.optimal).min(config.max_amount_in);
+                if amount > 0 {
+                    let profit = simulate_path(
+                        accounts, program_1, program_2,
+                        input_mint, middle_mint, amount, &config.clock,
+                    )?;
+                    debug_eprintln!(
+                        "Analytical exact (active bin): amount={} profit={} mid={} bin_cap={}",
+                        amount, profit, hint.mid_amount, active_bin_max,
+                    );
+                    if profit > 0 {
+                        return Ok((amount, profit));
+                    }
+                }
+            }
+        }
+    }
+
     let (program_1_max_in, program_1_max_out) = program_1
         .get_max_amounts_in_out(accounts, input_mint)
         .unwrap_or((0, 0));
     let (program_2_max_in, program_2_max_out) = program_2
         .get_max_amounts_in_out(accounts, middle_mint)
         .unwrap_or((0, 0));
-    
-    debug_eprintln!("{}: program_1_max_in: {:?}", program_1.name(), program_1_max_in);
-    debug_eprintln!("{}: program_1_max_out: {:?}", program_1.name(), program_1_max_out);
-    debug_eprintln!("{}: program_2_max_in: {:?}", program_2.name(), program_2_max_in);
-    debug_eprintln!("{}: program_2_max_out: {:?}", program_2.name(), program_2_max_out);
 
-    // Cap program_1 input so its output does not exceed program_2's capacity.
-    let max_in = if program_1_max_out > program_2_max_in && program_2_max_in > 0 {
-        #[cfg(any(test, feature = "debug"))]
-        {
-        debug_eprintln!("enter max out: {:?}", program_1_max_out);
-        }
-        program_1.swap_base_out(
-            accounts,
-            middle_mint,
-            program_2_max_in,
-            config.clock.clone(),
-        )?
-    } else {
-        program_1_max_in
-    };
-    // msg!("max_in: {:?}", max_in as f64 / 1_000_000_000.0);
-
-    let max_amount = config.max_amount_in.min(max_in);
+    let max_amount = config.max_amount_in
+        .min(program_1_max_in)
+        .min(program_2_max_out);
     let min_amount = MIN_SEARCH_AMOUNT;
-    // let max_amount = program_2_max_out;
+
     #[cfg(test)]
     {
         debug_eprintln!(
@@ -426,16 +490,6 @@ pub fn find_optimal_amount<'info>(
         );
         debug_eprintln!("max_amount: {:?}", max_amount as f64 / 1_000_000_000.0);
     }
-
-    // eprint!("max_amount: {:?}", max_amount);
-
-    // debug_eprintln!(
-    //     "Search bounds: min={} ({} SOL), max={} ({} SOL)",
-    //     min_amount,
-    //     min_amount as f64 / 1_000_000_000.0,
-    //     max_amount,
-    //     max_amount as f64 / 1_000_000_000.0
-    // );
 
     if max_amount <= min_amount {
         return Ok((0, 0));
@@ -473,7 +527,7 @@ fn simulate_n_hop_path<'info>(
             accounts,
             edge.left.mint_account,
             current_amount,
-            clock.clone(),
+            clock,
         )?;
     }
 
@@ -600,6 +654,8 @@ fn hybrid_search_n_hop<'info>(
     let mut best_amount = min_amount;
     let mut best_profit = i128::MIN;
     let mut best_idx = 0usize;
+    let mut prev_profit = i128::MIN;
+    let mut consecutive_decreases = 0u8;
 
     for (idx, &fraction) in grid_points.iter().enumerate() {
         let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
@@ -611,6 +667,18 @@ fn hybrid_search_n_hop<'info>(
             best_amount = amount;
             best_idx = idx;
         }
+
+        // Profit function is unimodal (concave) for all pool types.
+        // If profit decreased 2 consecutive times, we've passed the peak — stop early.
+        if profit < prev_profit {
+            consecutive_decreases += 1;
+            if consecutive_decreases >= 2 {
+                break;
+            }
+        } else {
+            consecutive_decreases = 0;
+        }
+        prev_profit = profit;
     }
 
     if best_profit < MIN_PROFIT_THRESHOLD {
@@ -679,7 +747,7 @@ pub fn find_optimal_amount_in_v2<'info>(
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     if edges.len() < 2 {
-        return Err(error!(SolarBError::InsufficientAccounts));
+        return Ok((0, 0));
     }
 
     // For 2-hop paths, use the optimized legacy path (more CU efficient)
@@ -715,3 +783,4 @@ pub fn find_optimal_amount_in_v3<'info>(
 ) -> Result<(u64, i128)> {
     find_optimal_amount_in_v2(edges, accounts, instances, config)
 }
+
