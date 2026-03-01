@@ -129,6 +129,10 @@ pub struct RaydiumCLMM<'info> {
     pub inverse_price: f64,
     pub start_index: usize,
     pub end_index: usize,
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -152,10 +156,6 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
     fn name(&self) -> &'static str { "RaydiumCLMM" }
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
-
-    fn get_liquidity(&self) -> Result<u128> { Ok(self.liquidity) }
-
-    fn get_sqrt_price(&self) -> Result<u128> { Ok(self.sqrt_price_x64) }
 
     fn swap_base_in<'a>(
         &self,
@@ -470,26 +470,24 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         Ok(())
     }
 
-    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-        let zero_for_one = input_mint == self.base_token_pk;
-        // Simulate swap with u64::MAX input to exhaust all available liquidity across tick arrays
-        let (max_in, max_out) =
-            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
-        Ok((max_in, max_out))
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
     }
 
-    fn get_max_amount_in<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
-        let zero_for_one = mint == self.base_token_pk;
-        let (max_in, _) =
-            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
-        Ok(max_in)
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
     }
 
-    fn get_max_amount_out<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
-        let zero_for_one = mint == self.base_token_pk;
-        let (_, max_out) =
-            self.calculate_swap_with_tick_arrays(accounts, u64::MAX, zero_for_one, true)?;
-        Ok(max_out)
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+    }
+
+    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
+        if input_mint == self.base_token_pk {
+            self.buy_max_out > 0
+        } else {
+            self.sell_max_out > 0
+        }
     }
 
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
@@ -579,7 +577,7 @@ impl<'info> RaydiumCLMM<'info> {
 
         let inverse_price = if price > 0.0 { 1.0 / price } else { 0.0 };
 
-        let instance = RaydiumCLMM {
+        let mut instance = RaydiumCLMM {
             pool_id: *pool_id.key,
             amm_config_key: pool.amm_config,
             base_token_pk: pool.token_mint_0,
@@ -601,9 +599,21 @@ impl<'info> RaydiumCLMM<'info> {
             inverse_price,
             start_index,
             end_index,
+            buy_max_in: 0,
+            buy_max_out: 0,
+            sell_max_in: 0,
+            sell_max_out: 0,
             phantom: PhantomData,
         };
-        // instance.log_accounts(accounts)?;
+        // Cache max amounts via tick array traversal (expensive, done once)
+        if let Ok((mi, mo)) = instance.calculate_swap_with_tick_arrays(accounts, u64::MAX, true, true) {
+            instance.buy_max_in = mi;
+            instance.buy_max_out = mo;
+        }
+        if let Ok((mi, mo)) = instance.calculate_swap_with_tick_arrays(accounts, u64::MAX, false, true) {
+            instance.sell_max_in = mi;
+            instance.sell_max_out = mo;
+        }
         Ok(instance)
     }
 
@@ -1284,9 +1294,7 @@ mod tests {
             raydium_clmm.trade_fee_rate as f64 / 10000.0
         );
         eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::ACCOUNT_COUNT - RaydiumCLMM::TICK_BUY_1_IDX);
-        let (max_in, max_out) = raydium_clmm
-            .get_max_amounts_in_out(&accounts, raydium_clmm.base_token_pk)
-            .unwrap();
+        let (max_in, max_out) = (raydium_clmm.buy_max_in, raydium_clmm.buy_max_out);
         eprintln!(
             "Max SOL IN: {} -> MAX TOKEN OUT: {}",
             max_in as f64 / 1_000_000_000.0,

@@ -17,6 +17,8 @@ pub use damm_v2::curve::{get_spot_price_a_to_b, get_spot_price_b_to_a};
 pub use crate::utils::utils::parse_token_account;
 pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
 use damm_v2::constants::fee::get_max_fee_numerator;
+use damm_v2::curve::{get_delta_amount_a_unsigned, get_delta_amount_b_unsigned};
+use damm_v2::u128x128_math::Rounding;
 use std::marker::PhantomData;
 
 pub fn get_current_point(
@@ -68,6 +70,10 @@ pub struct MeteoraDammV2<'info> {
     pub inverse_price: f64,
     pub fee_rate_a_to_b: f64,
     pub fee_rate_b_to_a: f64,
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -97,15 +103,23 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok((1.0 - self.fee_rate_a_to_b, 1.0 - self.fee_rate_b_to_a)) }
 
-    fn get_liquidity(&self) -> Result<u128> { Ok(self.pool.liquidity) }
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
+    }
 
-    fn get_sqrt_price(&self) -> Result<u128> { Ok(self.pool.sqrt_price) }
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
+    }
 
-    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+    }
+
+    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
         if input_mint == self.base_token_pk {
-            Ok((self.base_vault_amount, self.quote_vault_amount))
+            self.buy_max_out > 0
         } else {
-            Ok((self.quote_vault_amount, self.base_vault_amount))
+            self.sell_max_out > 0
         }
     }
 
@@ -225,7 +239,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             current_point,
         )?;
 
-        let transfer_fee_in = get_transfer_fee(token_in_mint, results.included_fee_input_amount)?;
+        let transfer_fee_in = get_transfer_inverse_fee(token_in_mint, results.included_fee_input_amount)?;
         let amount_in_with_fees = results
             .included_fee_input_amount
             .checked_add(transfer_fee_in)
@@ -233,25 +247,6 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         // Return the input amount needed to get the desired output
         Ok(amount_in_with_fees)
-    }
-
-
-
-    fn calculate_optimal_amount_in(&self, input_mint: Pubkey, target_price: f64) -> Result<u64> {
-        let liquidity = self.pool.liquidity as f64 / Q64_SCALE;
-        let sqrt_price = self.pool.sqrt_price as f64 / Q64_SCALE;
-        let target_sqrt_price = target_price.sqrt();
-        let current_sqrt_price = sqrt_price;
-        let optimal_amount_in = if self.base_token_pk == input_mint {
-            // Input A to DAMMV2 (A→B)
-            let f_amm = 1.0 - self.fee_rate_a_to_b;
-            (liquidity / f_amm) * (1.0 / target_sqrt_price - 1.0 / current_sqrt_price)
-        } else {
-            // Input B to DAMMV2 (B→A)
-            let f_amm = 1.0 - self.fee_rate_b_to_a;
-            (liquidity / f_amm) * (target_sqrt_price - current_sqrt_price)
-        };
-        return Ok(optimal_amount_in as u64);
     }
 
     fn invoke_swap_base_in<'a>(
@@ -539,6 +534,22 @@ impl<'info> MeteoraDammV2<'info> {
             .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
             .unwrap_or(fallback_fee);
 
+        // Cache max amounts from curve math (sqrt_min_price / sqrt_max_price boundaries)
+        // A→B (buy): price moves from sqrt_price down toward sqrt_min_price
+        let buy_max_in = get_delta_amount_a_unsigned(
+            pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Up,
+        ).unwrap_or(0);
+        let buy_max_out = get_delta_amount_b_unsigned(
+            pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Down,
+        ).unwrap_or(0).min(quote_vault_amount);
+        // B→A (sell): price moves from sqrt_price up toward sqrt_max_price
+        let sell_max_in = get_delta_amount_b_unsigned(
+            pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Up,
+        ).unwrap_or(0);
+        let sell_max_out = get_delta_amount_a_unsigned(
+            pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Down,
+        ).unwrap_or(0).min(base_vault_amount);
+
         let instance = MeteoraDammV2 {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
@@ -552,6 +563,10 @@ impl<'info> MeteoraDammV2<'info> {
             end_index,
             fee_rate_a_to_b,
             fee_rate_b_to_a,
+            buy_max_in,
+            buy_max_out,
+            sell_max_in,
+            sell_max_out,
             phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
@@ -1210,7 +1225,7 @@ mod tests {
             (inverse_price, price)
         };
 
-        let (max_sol_in, max_token_out) = meteora_damm_v2.get_max_amounts_in_out(&accounts, sol_mint).unwrap();
+        let (max_sol_in, max_token_out) = (meteora_damm_v2.buy_max_in, meteora_damm_v2.buy_max_out);
         debug_eprintln!("Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}", max_sol_in as f64 / 1_000_000_000.0, max_token_out as f64 / 1_000_000.0);
 
         debug_eprintln!("Sol price: {:?}", sol_price);

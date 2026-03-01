@@ -464,17 +464,25 @@ pub fn find_optimal_amount<'info>(
         }
     }
 
-    let (program_1_max_in, program_1_max_out) = program_1
-        .get_max_amounts_in_out(accounts, input_mint)
-        .unwrap_or((0, 0));
-    let (program_2_max_in, program_2_max_out) = program_2
-        .get_max_amounts_in_out(accounts, middle_mint)
-        .unwrap_or((0, 0));
+    let program_1_max_in = program_1.get_max_amount_in(accounts, input_mint).unwrap_or(0);
+    let program_1_max_out = program_1.get_max_amount_out(accounts, input_mint).unwrap_or(0);
+    let program_2_max_in = program_2.get_max_amount_in(accounts, middle_mint).unwrap_or(0);
+    let program_2_max_out = program_2.get_max_amount_out(accounts, middle_mint).unwrap_or(0);
+
+    // If program_1 can't produce any output tokens, the path is dead
+    if program_1_max_out == 0 {
+        msg!("OptAmt: p1 max_out=0, dead");
+        return Ok((0, 0));
+    }
 
     let max_amount = config.max_amount_in
         .min(program_1_max_in)
         .min(program_2_max_out);
     let min_amount = MIN_SEARCH_AMOUNT;
+
+    msg!("OpAm: max_in={}, p1_in={}, p1_out={}, p2_in={}, p2_out={}, eff_max={}",
+        config.max_amount_in, program_1_max_in, program_1_max_out,
+        program_2_max_in, program_2_max_out, max_amount);
 
     #[cfg(test)]
     {
@@ -492,6 +500,7 @@ pub fn find_optimal_amount<'info>(
     }
 
     if max_amount <= min_amount {
+        msg!("OptAmt: max {} <= min {}, skip", max_amount, min_amount);
         return Ok((0, 0));
     }
 
@@ -505,6 +514,7 @@ pub fn find_optimal_amount<'info>(
         max_amount,
         &config.clock,
     )?;
+    msg!("OptAmt: result in={}, profit={}", optimal_amount, profit);
     debug_eprintln!("optimal_amount: {:?}", optimal_amount);
     Ok((optimal_amount, profit))
 }
@@ -722,9 +732,9 @@ fn find_optimal_amount_n_hop<'info>(
     // Get max input from first program
     let first_instance = find_instance_by_pool_id(instances, &edges[0].pool_id)?;
     let input_mint = edges[0].left.mint_account;
-    let (first_max_in, _) = first_instance
-        .get_max_amounts_in_out(accounts, input_mint)
-        .unwrap_or((0, 0));
+    let first_max_in = first_instance
+        .get_max_amount_in(accounts, input_mint)
+        .unwrap_or(0);
 
     let max_amount = config.max_amount_in.min(first_max_in);
     let min_amount = MIN_SEARCH_AMOUNT;

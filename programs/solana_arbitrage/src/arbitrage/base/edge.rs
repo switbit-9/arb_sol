@@ -20,6 +20,10 @@ pub struct Edge {
     pub inverse_fee_factor: f64, // Fee factor for the opposite direction (1.0 - fee_rate_opposite)
     /// Pre-computed price * fee_factor scaled by PRICE_SCALE (10^9) for integer-only swap estimation
     pub scaled_price_with_fee: u128,
+    /// Max input amount this edge can accept (cached from program instance)
+    pub max_amount_in: u64,
+    /// Max output amount this edge can produce (cached from program instance)
+    pub max_amount_out: u64,
     pub left: Pool,
     pub right: Pool,
 }
@@ -28,7 +32,7 @@ pub struct Edge {
 const PRICE_SCALE: f64 = 1_000_000_000.0;
 
 impl Edge {
-    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, inverse_fee_factor: f64, left: Pool, right: Pool) -> Self {
+    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, inverse_fee_factor: f64, max_amount_in: u64, max_amount_out: u64, left: Pool, right: Pool) -> Self {
         let scaled_price_with_fee = (price * fee_factor * PRICE_SCALE) as u128;
         Edge {
             program,
@@ -38,6 +42,8 @@ impl Edge {
             fee_factor,
             inverse_fee_factor,
             scaled_price_with_fee,
+            max_amount_in,
+            max_amount_out,
             left,
             right,
         }

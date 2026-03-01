@@ -47,6 +47,12 @@ pub struct MeteoraDlmm {
     pub fee_rate: f64,
     /// Cached bitmap extension to avoid re-deserializing (~12KB) on every swap_base_in call
     pub bitmap_extension: Option<Box<BinArrayBitmapExtension>>,
+    /// Cached from init: base→quote (X→Y) buy bins
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    /// Cached from init: quote→base (Y→X) sell bins
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
 }
 
 impl ProgramMeta for MeteoraDlmm {
@@ -171,6 +177,10 @@ impl ProgramMeta for MeteoraDlmm {
         MeteoraDlmm::get_max_amount_out(self, accounts, mint)
     }
 
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+    }
+
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!("=== Meteora DLMM ===");
         msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
@@ -194,14 +204,6 @@ impl ProgramMeta for MeteoraDlmm {
     fn get_fee_factor(&self) -> Result<(f64, f64)> {
         let f = 1.0 - self.fee_rate;
         Ok((f, f))
-    }
-
-    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-        self.compute_max_amounts_in_out(accounts, input_mint)
-    }
-
-    fn get_active_bin_max_in(&self, input_mint: Pubkey) -> Result<u64> {
-        MeteoraDlmm::get_max_amount_in_active_bin(self, input_mint)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -554,6 +556,25 @@ impl MeteoraDlmm {
             let _ = lb_for_fee.update_volatility_accumulator();
             compute_fee_rate(&lb_for_fee)
         }.map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+
+        // Approximate max amounts from first bin array only, using active bin price.
+        let buy_acc = &accounts[start_index + Self::BUY_BIN_1_IDX];
+        let sell_acc = &accounts[start_index + Self::SELL_BIN_1_IDX];
+        let (buy_total_y, sell_total_x) = if buy_acc.key == sell_acc.key {
+            let (tx, ty) = Self::sum_bin_array_raw(buy_acc);
+            (ty, tx)
+        } else {
+            let (_, ty) = Self::sum_bin_array_raw(buy_acc);
+            let (tx, _) = Self::sum_bin_array_raw(sell_acc);
+            (ty, tx)
+        };
+        // Buy (swap_for_y): input X, output Y
+        let buy_max_out_val = buy_total_y;
+        let buy_max_in_val = if price > 0.0 { (buy_total_y as f64 / price) as u64 } else { 0 };
+        // Sell (swap_for_x): input Y, output X
+        let sell_max_out_val = sell_total_x;
+        let sell_max_in_val = if price > 0.0 { (sell_total_x as f64 * price) as u64 } else { 0 };
+
         let instance = MeteoraDlmm {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
@@ -567,63 +588,58 @@ impl MeteoraDlmm {
             start_index,
             end_index,
             bitmap_extension: bitmap_extension.map(Box::new),
+            buy_max_in: buy_max_in_val,
+            buy_max_out: buy_max_out_val,
+            sell_max_in: sell_max_in_val,
+            sell_max_out: sell_max_out_val,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
     }
 
-    /// Sum a single token amount from bin array account data, skipping duplicate pubkeys.
-    /// If `sum_y` is true, sums amount_y (offset +8); otherwise sums amount_x (offset +0).
-    /// Sum both X and Y token amounts from bin arrays in a single pass.
-    /// Returns (total_x, total_y).
-    fn sum_bin_array_tokens_both(accounts: &[&AccountInfo]) -> Result<(u64, u64)> {
+    /// Sum raw (amount_x, amount_y) from a single bin array — no price math, just byte reads.
+    fn sum_bin_array_raw(acc: &AccountInfo) -> (u64, u64) {
         const BIN_ARRAY_HEADER_SIZE: usize = 56;
         const BIN_SIZE: usize = 144;
         const MAX_BIN_PER_ARRAY: usize = 70;
+
+        let data = match acc.try_borrow_data() {
+            Ok(d) => d,
+            Err(_) => return (0, 0),
+        };
+        if data.len() < BIN_ARRAY_HEADER_SIZE { return (0, 0); }
+
         let mut total_x: u64 = 0;
         let mut total_y: u64 = 0;
-        let mut seen = Pubkey::default();
-        for acc in accounts {
-            if *acc.key == seen { continue; }
-            seen = *acc.key;
-            let data = acc.try_borrow_data()?;
-            if data.len() < BIN_ARRAY_HEADER_SIZE { continue; }
-            for i in 0..MAX_BIN_PER_ARRAY {
-                let base = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE;
-                if base + 16 > data.len() { break; }
-                let x = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
-                let y = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
-                total_x = total_x.saturating_add(x);
-                total_y = total_y.saturating_add(y);
-            }
+
+        for i in 0..MAX_BIN_PER_ARRAY {
+            let base = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE;
+            if base + 16 > data.len() { break; }
+
+            let amount_x = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
+            let amount_y = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
+
+            total_x = total_x.saturating_add(amount_x);
+            total_y = total_y.saturating_add(amount_y);
         }
-        Ok((total_x, total_y))
+
+        (total_x, total_y)
     }
 
-    /// Compute (max_amount_in, max_amount_out) across all bin arrays for a given input mint.
-    /// Sums both sides directly from bin data — no price conversion needed.
+    /// Compute approximate (max_amount_in, max_amount_out) from first bin array + active price.
     pub fn compute_max_amounts_in_out(&self, accounts: &[AccountInfo], input_mint: Pubkey) -> Result<(u64, u64)> {
         let swap_for_y = self.base_token_pk == input_mint;
-        let bin_accounts = if swap_for_y {
-            // X→Y: read from buy arrays
-            [
-                &accounts[self.start_index + Self::BUY_BIN_1_IDX],
-                &accounts[self.start_index + Self::BUY_BIN_2_IDX],
-            ]
+        let (total_x, total_y) = if swap_for_y {
+            Self::sum_bin_array_raw(&accounts[self.start_index + Self::BUY_BIN_1_IDX])
         } else {
-            // Y→X: read from sell arrays
-            [
-                &accounts[self.start_index + Self::SELL_BIN_1_IDX],
-                &accounts[self.start_index + Self::SELL_BIN_2_IDX],
-            ]
+            Self::sum_bin_array_raw(&accounts[self.start_index + Self::SELL_BIN_1_IDX])
         };
-        let (total_x, total_y) = Self::sum_bin_array_tokens_both(&bin_accounts)?;
         if swap_for_y {
-            // X→Y: input is X, output is Y
-            Ok((total_x, total_y))
+            let max_in = if self.price > 0.0 { (total_y as f64 / self.price) as u64 } else { 0 };
+            Ok((max_in, total_y))
         } else {
-            // Y→X: input is Y, output is X
-            Ok((total_y, total_x))
+            let max_in = if self.price > 0.0 { (total_x as f64 * self.price) as u64 } else { 0 };
+            Ok((max_in, total_x))
         }
     }
 

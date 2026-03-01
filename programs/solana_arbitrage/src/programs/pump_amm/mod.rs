@@ -75,6 +75,11 @@ pub struct PumpAmm<'info> {
     pub fee_rate: f64,
     pub start_index: usize,
     pub end_index: usize,
+    /// Cached max amounts from init
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -162,47 +167,24 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         Ok(amount_out_after_fee)
     }
 
-    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-         let fee_factor = 1.0 - self.fee_rate;
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
+    }
 
-        // x = input-side reserve, y = output-side reserve
-        let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {
-            (
-                self.base_vault_amount as f64,
-                self.quote_vault_amount as f64,
-            )
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
+    }
+
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+    }
+
+    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
+        if input_mint == self.base_token_pk {
+            self.buy_max_out > 0
         } else {
-            (
-                self.quote_vault_amount as f64,
-                self.base_vault_amount as f64,
-            )
-        };
-
-        // Target 99% of the effective max output to stay finite
-        let dx = if input_mint == self.base_token_pk {
-            // Selling base for quote: fee is on OUTPUT (quote) side
-            // dy = f * y * dx / (x + dx)  =>  dx = target_out * x / (f*y - target_out)
-            let effective_max_out = y_reserve * fee_factor;
-            let target_out = (effective_max_out * 0.99).max(0.0);
-            if target_out <= 0.0 || fee_factor * y_reserve <= target_out {
-                return Ok((0, y_reserve as u64));
-            }
-            let denom = fee_factor * y_reserve - target_out;
-            (x_reserve * target_out) / denom
-        } else {
-            // Buying base with quote: fee is on INPUT (quote) side
-            // dy = y * f*dx / (x + f*dx)  =>  dx = target_out * x / (f * (y - target_out))
-            let target_out = (y_reserve * 0.99).max(0.0);
-            if target_out <= 0.0 || y_reserve <= target_out {
-                return Ok((0, y_reserve as u64));
-            }
-            let denom = fee_factor * (y_reserve - target_out);
-            (x_reserve * target_out) / denom
-        };
-
-        let max_in = dx.max(0.0).min(u64::MAX as f64) as u64;
-        let max_out = y_reserve as u64;
-        Ok((max_in, max_out))
+            self.sell_max_out > 0
+        }
     }
 
 
@@ -571,26 +553,6 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
         Ok(())
     }
 
-    fn calculate_optimal_amount_in(
-        &self,
-        input_mint: Pubkey,
-        target_price: f64,
-    ) -> Result<u64> {
-        let base_amount = self.base_vault_amount;
-        let quote_amount = self.quote_vault_amount;
-        let k = (base_amount as f64) * (quote_amount as f64);
-
-        // Pump AMM fee is 1.25% (0.0125), so f_pump = 1 - 0.0125 = 0.9875
-        let f_pump = 1.0 - self.fee_rate;
-
-        let optimal_amount_in = if input_mint == self.base_token_pk {
-            ((k / target_price).sqrt() - base_amount as f64) / f_pump
-        } else {
-            ((k * target_price).sqrt() - quote_amount as f64) / f_pump
-        };
-        return Ok((optimal_amount_in as u128) as u64);
-    }
-
 }
 
 impl<'info> PumpAmm<'info> {
@@ -635,7 +597,8 @@ impl<'info> PumpAmm<'info> {
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount / 1_000_000_000);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount / 1_000_000);
-        // let base_vault_amount: u64 = (base_vault_amount as f64 * 1.09) as u64;
+        // TODO: maket to run in test
+        // let base_vault_amount: u64 = (base_vault_amount as f64 * 0.85) as u64;
         // let quote_vault_amount: u64 = quote_vault_amount;
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount);
@@ -644,23 +607,47 @@ impl<'info> PumpAmm<'info> {
         let (price, inverse_price) = get_prices(base_vault_amount, quote_vault_amount)?;
         let fee_rate = get_fees(price, inverse_price)?;
 
+        // Cache max amounts for both directions
+        let fee_factor = 1.0 - fee_rate;
+        let (buy_max_in, buy_max_out) = {
+            // base→quote: fee on output
+            let (x, y) = (base_vault_amount as f64, quote_vault_amount as f64);
+            let eff = y * fee_factor;
+            let target = eff * 0.99;
+            if target <= 0.0 || fee_factor * y <= target {
+                (0, y as u64)
+            } else {
+                let dx = (x * target) / (fee_factor * y - target);
+                (dx.max(0.0).min(u64::MAX as f64) as u64, y as u64)
+            }
+        };
+        let (sell_max_in, sell_max_out) = {
+            // quote→base: fee on input
+            let (x, y) = (quote_vault_amount as f64, base_vault_amount as f64);
+            let target = y * 0.99;
+            if target <= 0.0 || y <= target {
+                (0, y as u64)
+            } else {
+                let dx = (x * target) / (fee_factor * (y - target));
+                (dx.max(0.0).min(u64::MAX as f64) as u64, y as u64)
+            }
+        };
+
         let instance = PumpAmm {
-            // program_id: program_id.clone(),
-            // pool_id: pool_id.clone(),
-            // base_vault: base_vault.clone(),
-            // quote_vault: quote_vault.clone(),
-            price: price,
-            inverse_price: inverse_price,
-            fee_rate: fee_rate,
+            price,
+            inverse_price,
+            fee_rate,
             pool_id: *pool_id.key,
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
-            base_vault_amount: base_vault_amount,
-            quote_vault_amount: quote_vault_amount,
-            // base_vault_account: base_vault_account.clone(),
-            // quote_vault_account: quote_vault_account.clone(),
-            start_index: start_index,
-            end_index: end_index,
+            base_vault_amount,
+            quote_vault_amount,
+            start_index,
+            end_index,
+            buy_max_in,
+            buy_max_out,
+            sell_max_in,
+            sell_max_out,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;

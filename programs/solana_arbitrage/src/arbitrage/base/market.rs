@@ -36,6 +36,8 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
         let (fee_a_to_b, fee_b_to_a) = self.program.get_fee_factor().unwrap_or((1.0, 1.0));
         let program_id = *self.program.get_id();
         let pool_id = *self.program.get_pool_id();
+        let (buy_max_in, buy_max_out) = self.program.get_cached_max_amounts(self.left.mint_account);
+        let (sell_max_in, sell_max_out) = self.program.get_cached_max_amounts(self.right.mint_account);
         vec![
             Edge::new(
                 program_id,
@@ -44,6 +46,8 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
                 price,
                 fee_a_to_b,
                 fee_b_to_a,
+                buy_max_in,
+                buy_max_out,
                 self.left.clone(),
                 self.right.clone(),
             ),
@@ -54,6 +58,8 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
                 inverse_price,
                 fee_b_to_a,
                 fee_a_to_b,
+                sell_max_in,
+                sell_max_out,
                 self.right.clone(),
                 self.left.clone(),
             ),

@@ -8,7 +8,6 @@ use super::super::constants::{BASIS_POINT_MAX, BIN_STEP_BPS_DEFAULT, BIN_STEP_BP
 use super::super::error::PoolError;
 use super::super::safe_math::SafeMath;
 use super::super::state::fee::{BaseFeeStruct, DynamicFeeStruct, PoolFeesStruct};
-use super::super::state::config::{ BaseFeeConfig, DynamicFeeConfig, PoolFeesConfig};
 use super::super::state::pool::CollectFeeMode;
 use anchor_lang::prelude::*;
 
@@ -61,44 +60,9 @@ impl BaseFeeParameters {
         }
     }
 
-    pub fn to_base_fee_config(&self) -> BaseFeeConfig {
-        BaseFeeConfig {
-            cliff_fee_numerator: self.cliff_fee_numerator,
-            first_factor: self.first_factor,
-            second_factor: self.second_factor,
-            third_factor: self.third_factor,
-            base_fee_mode: self.base_fee_mode,
-            ..Default::default()
-        }
-    }
 }
 
 impl PoolFeeParameters {
-    pub fn to_pool_fees_config(&self) -> PoolFeesConfig {
-        let &PoolFeeParameters {
-            base_fee,
-            padding: _,
-            dynamic_fee,
-        } = self;
-        if let Some(dynamic_fee) = dynamic_fee {
-            PoolFeesConfig {
-                base_fee: base_fee.to_base_fee_config(),
-                protocol_fee_percent: PROTOCOL_FEE_PERCENT,
-                partner_fee_percent: PARTNER_FEE_PERCENT,
-                referral_fee_percent: HOST_FEE_PERCENT,
-                dynamic_fee: dynamic_fee.to_dynamic_fee_config(),
-                ..Default::default()
-            }
-        } else {
-            PoolFeesConfig {
-                base_fee: base_fee.to_base_fee_config(),
-                protocol_fee_percent: PROTOCOL_FEE_PERCENT,
-                partner_fee_percent: PARTNER_FEE_PERCENT,
-                referral_fee_percent: HOST_FEE_PERCENT,
-                ..Default::default()
-            }
-        }
-    }
     pub fn to_pool_fees_struct(&self) -> PoolFeesStruct {
         let &PoolFeeParameters {
             base_fee,
@@ -138,19 +102,6 @@ pub struct DynamicFeeParameters {
 }
 
 impl DynamicFeeParameters {
-    fn to_dynamic_fee_config(&self) -> DynamicFeeConfig {
-        DynamicFeeConfig {
-            initialized: 1,
-            bin_step: self.bin_step,
-            filter_period: self.filter_period,
-            decay_period: self.decay_period,
-            reduction_factor: self.reduction_factor,
-            bin_step_u128: self.bin_step_u128,
-            max_volatility_accumulator: self.max_volatility_accumulator,
-            variable_fee_control: self.variable_fee_control,
-            ..Default::default()
-        }
-    }
     fn to_dynamic_fee_struct(&self) -> DynamicFeeStruct {
         DynamicFeeStruct {
             initialized: 1,

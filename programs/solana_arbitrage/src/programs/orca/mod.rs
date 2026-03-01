@@ -60,6 +60,10 @@ pub struct OrcaWhirlpool<'info> {
     pub inverse_price: f64,
     pub start_index: usize,
     pub end_index: usize,
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -89,14 +93,6 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         // Symmetric fee: same rate for both A->B and B->A
         let f = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
         Ok((f, f))
-    }
-
-    fn get_liquidity(&self) -> Result<u128> {
-        Ok(self.liquidity)
-    }
-
-    fn get_sqrt_price(&self) -> Result<u128> {
-        Ok(self.sqrt_price)
     }
 
     fn swap_base_in<'a>(
@@ -450,31 +446,24 @@ impl<'info> ProgramMeta for OrcaWhirlpool<'info> {
         Ok(())
     }
 
-    fn get_max_amounts_in_out<'a>(&self, accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-        let a_to_b = input_mint == self.base_token_pk;
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
+    }
 
-        let output_vault = if a_to_b {
-            &accounts[self.start_index + Self::VAULT_B_IDX]
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
+    }
+
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+    }
+
+    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
+        if input_mint == self.base_token_pk {
+            self.buy_max_out > 0
         } else {
-            &accounts[self.start_index + Self::VAULT_A_IDX]
-        };
-        let max_out = parse_token_account(output_vault)
-            .map(|ta| ta.amount)
-            .unwrap_or(0);
-
-        // Estimate max_in from max_out using current price.
-        // price = token_b / token_a, so:
-        //   a_to_b: input A, output B → max_in_A = max_out_B / (price * fee_factor)
-        //   b_to_a: input B, output A → max_in_B = max_out_A * price / fee_factor
-        let effective_price = if a_to_b { self.price } else { self.inverse_price };
-        let fee_factor = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
-        let max_in = if effective_price > 0.0 && fee_factor > 0.0 {
-            (max_out as f64 / (effective_price * fee_factor)) as u64
-        } else {
-            0
-        };
-
-        Ok((max_in, max_out))
+            self.sell_max_out > 0
+        }
     }
 }
 
@@ -516,6 +505,23 @@ impl<'info> OrcaWhirlpool<'info> {
         let total_fee_rate =
             compute_total_fee_rate(pool.fee_rate, oracle_data.as_ref().map(|d| &***d));
 
+        // Cache max amounts from vault balances + price estimate
+        let fee_factor = 1.0 - (total_fee_rate as f64 / 1_000_000.0);
+        let vault_b_amount = parse_token_account(&accounts[start_index + Self::VAULT_B_IDX])
+            .map(|ta| ta.amount).unwrap_or(0);
+        let vault_a_amount = parse_token_account(&accounts[start_index + Self::VAULT_A_IDX])
+            .map(|ta| ta.amount).unwrap_or(0);
+        // a_to_b: output = vault_b
+        let buy_max_out = vault_b_amount;
+        let buy_max_in = if price > 0.0 && fee_factor > 0.0 {
+            (buy_max_out as f64 / (price * fee_factor)) as u64
+        } else { 0 };
+        // b_to_a: output = vault_a
+        let sell_max_out = vault_a_amount;
+        let sell_max_in = if inverse_price > 0.0 && fee_factor > 0.0 {
+            (sell_max_out as f64 / (inverse_price * fee_factor)) as u64
+        } else { 0 };
+
         let instance = OrcaWhirlpool {
             pool_id: *pool_account.key,
             whirlpools_config: pool.whirlpools_config,
@@ -533,6 +539,10 @@ impl<'info> OrcaWhirlpool<'info> {
             inverse_price,
             start_index,
             end_index,
+            buy_max_in,
+            buy_max_out,
+            sell_max_in,
+            sell_max_out,
             phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
@@ -1188,7 +1198,7 @@ mod tests {
             return;
         };
 
-        let (max_sol_in, max_token_out) = orca_whirlpool.get_max_amounts_in_out(&accounts, sol_mint).unwrap();
+        let (max_sol_in, max_token_out) = (orca_whirlpool.buy_max_in, orca_whirlpool.buy_max_out);
         eprintln!(
             "Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}",
             max_sol_in as f64 / 1_000_000_000.0,

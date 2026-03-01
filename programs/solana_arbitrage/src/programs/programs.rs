@@ -14,35 +14,12 @@ pub trait ProgramMeta {
     /// Human-readable program name (e.g. "PumpAmm", "MeteoraDLMM")
     fn name(&self) -> &'static str;
 
-    /// Compute price for swap base in (base -> quote)
-    fn compute_price_swap_base_in(&self, base_amount: u128, quote_amount: u128) -> Result<f64> {
-        if base_amount > 0 {
-            Ok(quote_amount as f64 / base_amount as f64)
-        } else {
-            Ok(0.0)
-        }
-    }
-
-    /// Compute price for swap base out (quote -> base)
-    fn compute_price_swap_base_out(&self, base_amount: u128, quote_amount: u128) -> Result<f64> {
-        if quote_amount > 0 {
-            Ok(base_amount as f64 / quote_amount as f64)
-        } else {
-            Ok(0.0)
-        }
-    }
-
     /// Get base and quote token mints
     fn get_mints(&self) -> (&Pubkey, &Pubkey);
 
     /// Get base token pubkey
     fn get_base_token(&self) -> Pubkey {
         *self.get_mints().0
-    }
-
-    /// Get quote token pubkey
-    fn get_quote_token(&self) -> Pubkey {
-        *self.get_mints().1
     }
 
     /// Calculate output amount for swap base in (base -> quote)
@@ -102,11 +79,6 @@ pub trait ProgramMeta {
     /// Log account information for debugging
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()>;
 
-    /// Calculate optimal amount in for AMM types
-    fn calculate_optimal_amount_in(&self, _input_mint: Pubkey, _target_price: f64) -> Result<u64> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
-    }
-
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
@@ -115,20 +87,6 @@ pub trait ProgramMeta {
     /// Each is (1 - fee_rate) for that direction, e.g. 0.9975 for 0.25% fee.
     /// For AMMs with symmetric fees, both values are identical.
     fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
-    }
-
-    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], _input_mint: Pubkey) -> Result<(u64, u64)> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
-    }
-
-    /// Get liquidity for concentrated liquidity AMMs
-    fn get_liquidity(&self) -> Result<u128> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
-    }
-
-    /// Get sqrt_price for concentrated liquidity AMMs
-    fn get_sqrt_price(&self) -> Result<u128> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
@@ -146,5 +104,18 @@ pub trait ProgramMeta {
     /// Returns the amount BEFORE fees are added.
     fn get_active_bin_max_in(&self, _input_mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
+    }
+
+    /// Get cached max amounts for a given input direction. Returns (max_in, max_out).
+    /// Uses pre-computed values from initialization — no accounts needed.
+    fn get_cached_max_amounts(&self, _input_mint: Pubkey) -> (u64, u64) {
+        (u64::MAX, u64::MAX)
+    }
+
+    /// Whether the pool has output liquidity for this input direction.
+    /// Cached from initialization — zero cost to call.
+    /// Default true for AMMs (vault amounts always imply liquidity).
+    fn has_output_liquidity(&self, _input_mint: Pubkey) -> bool {
+        true
     }
 }

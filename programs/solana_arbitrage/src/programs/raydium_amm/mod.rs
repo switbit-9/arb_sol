@@ -37,6 +37,10 @@ pub struct RaydiumAmm<'info> {
     pub swap_fee_denominator: u64,
     pub start_index: usize,
     pub end_index: usize,
+    pub buy_max_in: u64,
+    pub buy_max_out: u64,
+    pub sell_max_in: u64,
+    pub sell_max_out: u64,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -65,32 +69,16 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         Ok((self.base_vault_amount, self.quote_vault_amount))
     }
 
-    fn get_max_amounts_in_out<'a>(&self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey) -> Result<(u64, u64)> {
-        let fee_factor = 1.0 - self.fee_rate;
+    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
+    }
 
-        let (x_reserve, y_reserve) = if input_mint == self.base_token_pk {
-            (
-                self.base_vault_amount as f64,
-                self.quote_vault_amount as f64,
-            )
-        } else {
-            (
-                self.quote_vault_amount as f64,
-                self.base_vault_amount as f64,
-            )
-        };
+    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+        if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
+    }
 
-        let target_out = (y_reserve * 0.99).max(0.0);
-        if target_out <= 0.0 || y_reserve <= target_out {
-            return Ok((0, y_reserve as u64));
-        }
-
-        let denom = y_reserve - target_out;
-        let dx = (x_reserve / fee_factor) * ((y_reserve / denom) - 1.0);
-        let max_in = dx.max(0.0).min(u64::MAX as f64) as u64;
-        let max_out = y_reserve as u64;
-
-        Ok((max_in, max_out))
+    fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
+        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
     fn swap_base_in<'a>(
@@ -406,24 +394,6 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         msg!("7 open_orders: {}", accounts[self.start_index + Self::OPEN_ORDERS_IDX].key);
         Ok(())
     }
-
-    fn calculate_optimal_amount_in(
-        &self,
-        input_mint: Pubkey,
-        target_price: f64,
-    ) -> Result<u64> {
-        let base_amount = self.base_vault_amount;
-        let quote_amount = self.quote_vault_amount;
-        let k = (base_amount as f64) * (quote_amount as f64);
-        let f = 1.0 - self.fee_rate;
-
-        let optimal_amount_in = if input_mint == self.base_token_pk {
-            ((k / target_price).sqrt() - base_amount as f64) / f
-        } else {
-            ((k * target_price).sqrt() - quote_amount as f64) / f
-        };
-        Ok((optimal_amount_in as u128) as u64)
-    }
 }
 
 impl<'info> RaydiumAmm<'info> {
@@ -515,6 +485,8 @@ impl<'info> RaydiumAmm<'info> {
         let inverse_price = 1.0 / price;
 
         let fee_rate = amm.swap_fee_numerator as f64 / amm.swap_fee_denominator as f64;
+        let (buy_in, buy_out, sell_in, sell_out) =
+            Self::compute_cached_max(base_vault_amount, quote_vault_amount, fee_rate);
 
         let instance = RaydiumAmm {
             pool_id: *pool_id.key,
@@ -529,10 +501,30 @@ impl<'info> RaydiumAmm<'info> {
             swap_fee_denominator: amm.swap_fee_denominator,
             start_index,
             end_index,
+            buy_max_in: buy_in,
+            buy_max_out: buy_out,
+            sell_max_in: sell_in,
+            sell_max_out: sell_out,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
+    }
+
+    fn compute_cached_max(base_vault: u64, quote_vault: u64, fee_rate: f64) -> (u64, u64, u64, u64) {
+        fn cp_max(x: f64, y: f64, fee_factor: f64) -> (u64, u64) {
+            let target = y * 0.99;
+            if target <= 0.0 || y <= target || fee_factor <= 0.0 {
+                return (0, y as u64);
+            }
+            let denom = y - target;
+            let dx = (x / fee_factor) * ((y / denom) - 1.0);
+            (dx.max(0.0).min(u64::MAX as f64) as u64, y as u64)
+        }
+        let ff = 1.0 - fee_rate;
+        let (buy_in, buy_out) = cp_max(base_vault as f64, quote_vault as f64, ff);
+        let (sell_in, sell_out) = cp_max(quote_vault as f64, base_vault as f64, ff);
+        (buy_in, buy_out, sell_in, sell_out)
     }
 }
 

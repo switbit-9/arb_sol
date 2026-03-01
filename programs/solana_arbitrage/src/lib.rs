@@ -25,8 +25,8 @@ pub mod utils;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
 use arbitrage::algo_2::{
-    check_arbitrage, find_cross_arbitrage_iterative, find_triangular_arbitrage_iterative,
-    get_edges, ArbitragePath,
+    /* check_arbitrage, */ find_cross_arbitrage_iterative, find_cross_arbitrage_optimized,
+    find_triangular_arbitrage_iterative, get_edges, ArbitragePath,
 };
 use programs::{
     MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, RaydiumAmm,
@@ -51,7 +51,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("BbkVCKrSjwCe3uaJBgUQhJr4cNkt6S8PtNqo66r3RJs4");
+declare_id!("BJREZ2NxHAqSf4jeaogmdoyF2nhexVpeewokt5iqqCMt");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -119,9 +119,10 @@ fn start_bot<'info>(
         clock,
         test_mode,
     );
+    // msg!("Mode={}, mints={}, max_in={}", data.mode, data.mints, max_amount_in);
     let Some(mut arbitrage_path) = run_arbitrage(accounts, &instances, &mut bot_config)?
     else {
-        msg!("Not found");
+        msg!("Not found: no path");
         return Ok(None);
     };
 
@@ -134,7 +135,7 @@ fn start_bot<'info>(
     )?;
 
     if !test_mode && arbitrage_path.profit <= bot_config.min_profit {
-        msg!("Not found");
+        msg!("Not found: final profit {} <= min_profit {}", arbitrage_path.profit, bot_config.min_profit);
         return Ok(None);
     }
 
@@ -353,9 +354,23 @@ fn run_single_pair_arbitrage<'info>(
     instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
-    let (mut edges, profit, _) = check_arbitrage(instances, config)?;
+    // Run both methods for testing
+    let all_edges = get_edges(instances)?;
+    let edge_refs: Vec<&_> = all_edges.iter().collect();
+
+    debug_eprintln!("");
+    debug_eprintln!("");
+    debug_eprintln!("===============CROSS ARBITRAGE OPTIMIZED===============");
+    debug_eprintln!("");
+    debug_eprintln!("");
+
+    let (mut edges, profit, _) =
+        find_cross_arbitrage_optimized(&edge_refs, config)?;
+
+    msg!("e={}, p={}", edges.len(), profit);
+
     if !config.test && profit <= 0 {
-        debug_eprintln!("Not found 1");
+        msg!("Single: Rejected, profit <= 0");
         return Ok(None);
     }
 
@@ -385,7 +400,10 @@ fn run_single_pair_arbitrage<'info>(
     let (optimal_amount_in, profit) =
         find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
 
+    msg!("Single opt: in={}, p={}", optimal_amount_in, profit);
+
     if !config.test && (profit <= 0 || optimal_amount_in == 0) {
+        msg!("Single: rejected after opt, profit={} amt={}", profit, optimal_amount_in);
         return Ok(None);
     }
 
@@ -411,8 +429,6 @@ fn run_single_pair_arbitrage<'info>(
         }
     }
 
-
-
     Ok(Some(arbitrage_path))
 }
 
@@ -434,8 +450,10 @@ fn run_multi_hop_arbitrage<'info>(
     // Use triangular arbitrage finder for 3+ hop chains
     let (path_edges, profit, _) = find_triangular_arbitrage_iterative(&edge_refs, config)?;
 
+    msg!("Hop: edges={}, est_profit={}", path_edges.len(), profit);
+
     if !config.test && (profit <= 0 || path_edges.is_empty()) {
-        msg!("No profit 2");
+        msg!("Rejected, profit={} edges={}", profit, path_edges.len());
         return Ok(None);
     }
 
@@ -460,8 +478,10 @@ fn run_multi_hop_arbitrage<'info>(
     let (optimal_amount_in, profit) =
         find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
+    msg!("Hop opt: in={}, profit={}", optimal_amount_in, profit);
+
     if !config.test && profit <= 0 {
-        msg!("No profit 3");
+        msg!("Hop: rejected after opt, profit={}", profit);
         return Ok(None);
     }
 
@@ -553,10 +573,19 @@ fn run_multiple_trades_arbitrage<'info>(
         // Collect edge references for this group
         let group_edge_refs: Vec<&_> = edge_indices.iter().map(|&idx| &all_edges[idx]).collect();
 
-        // Run cross arbitrage on this edge group
-        let (path_edges, profit, _) = find_cross_arbitrage_iterative(&group_edge_refs, config)?;
+        debug_eprintln!("");
+        debug_eprintln!("");
+        debug_eprintln!("===============CROSS ARBITRAGE OPTIMIZED===============");
+        debug_eprintln!("");
+        debug_eprintln!("");
+
+        let (path_edges, profit, _) =
+            find_cross_arbitrage_optimized(&group_edge_refs, config)?;
+
+        msg!("Multi grp: edges={}, est_profit={}", path_edges.len(), profit);
 
         if !config.test && (profit <= 0 || path_edges.is_empty()) {
+            msg!("Multi grp: skip, profit={} edges={}", profit, path_edges.len());
             continue;
         }
 
@@ -575,6 +604,8 @@ fn run_multiple_trades_arbitrage<'info>(
         let (optimal_amount_in, refined_profit) =
             find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
+        msg!("Multi opt: in={}, profit={}", optimal_amount_in, refined_profit);
+
         if !config.test && refined_profit > best_profit || config.test && best_path.is_none() {
             best_profit = refined_profit;
             let final_amount = (optimal_amount_in as i128).checked_add(refined_profit).unwrap_or(0) as u128;
@@ -588,18 +619,17 @@ fn run_multiple_trades_arbitrage<'info>(
     }
 
     if let Some(ref path) = best_path {
+        msg!("Best: in={}, profit={}", path.start_amount, path.profit);
         #[cfg(any(test, feature = "debug"))]
         {
             let profit_pct = (path.profit as f64 / path.start_amount as f64) * 100.0;
-            #[cfg(any(test, feature = "debug"))]
-            {
-                debug_eprintln!(
-                    "MULTI-TRADE BEST: in={} out={} profit={} ({:.2}%)",
-                    path.start_amount, path.final_amount, path.profit, profit_pct
-                );
-            }
+            debug_eprintln!(
+                "MULTI-TRADE BEST: in={} out={} profit={} ({:.2}%)",
+                path.start_amount, path.final_amount, path.profit, profit_pct
+            );
         }
-
+    } else {
+        msg!("Multi: no profitable group found");
     };
 
     Ok(best_path)

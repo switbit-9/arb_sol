@@ -146,15 +146,3 @@ pub mod fee {
     }
 }
 
-pub mod seeds {
-    pub const CONFIG_PREFIX: &[u8] = b"config";
-    pub const CUSTOMIZABLE_POOL_PREFIX: &[u8] = b"cpool";
-    pub const POOL_PREFIX: &[u8] = b"pool";
-    pub const TOKEN_VAULT_PREFIX: &[u8] = b"token_vault";
-    pub const POOL_AUTHORITY_PREFIX: &[u8] = b"pool_authority";
-    pub const POSITION_PREFIX: &[u8] = b"position";
-    pub const POSITION_NFT_ACCOUNT_PREFIX: &[u8] = b"position_nft_account";
-    pub const TOKEN_BADGE_PREFIX: &[u8] = b"token_badge";
-    pub const REWARD_VAULT_PREFIX: &[u8] = b"reward_vault";
-    pub const CLAIM_FEE_OPERATOR_PREFIX: &[u8] = b"cf_operator";
-}
