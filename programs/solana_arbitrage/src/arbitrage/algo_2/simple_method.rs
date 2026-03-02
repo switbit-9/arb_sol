@@ -1,11 +1,8 @@
 use crate::arbitrage::base::{Edge, EdgeSide, Pool};
-use crate::programs::{ProgramInstance, ProgramMeta};
+use crate::programs::ProgramInstance;
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
 use std::collections::HashMap;
-
-/// Price scaling factor for fixed-point arithmetic (10^9 for 9 decimal precision)
-const PRICE_SCALE: u128 = 1_000_000_000;
 
 /// Format a pubkey as short string: first4..last4
 #[cfg(any(test, feature = "debug"))]
@@ -37,12 +34,28 @@ fn format_arb_path(edges: &[Edge], amount_in: u64, amount_out: u128) -> String {
     )
 }
 
-/// Calculate swap amount using pre-computed fixed-point arithmetic (zero f64 ops).
-/// amount_out = amount_in * scaled_price_with_fee / PRICE_SCALE
+/// Build a pool_id -> &ProgramInstance lookup map.
+fn build_pool_lookup<'a, 'info>(
+    instances: &'a [ProgramInstance<'info>],
+) -> HashMap<Pubkey, &'a ProgramInstance<'info>> {
+    instances
+        .iter()
+        .map(|inst| (*inst.get_pool_id(), inst))
+        .collect()
+}
+
+/// Call fast_quote on the program instance for the given edge.
+/// Returns (actual_amount_in, amount_out) — programs clamp to their max amounts.
 #[inline]
-fn calculate_swap_amount(edge: &Edge, amount_in: u64) -> u64 {
-    let result = (amount_in as u128).saturating_mul(edge.scaled_price_with_fee) / PRICE_SCALE;
-    result.min(u64::MAX as u128) as u64
+fn edge_fast_quote(
+    edge: &Edge,
+    amount_in: u64,
+    pool_lookup: &HashMap<Pubkey, &ProgramInstance>,
+) -> (u64, u64) {
+    pool_lookup
+        .get(&edge.pool_id)
+        .and_then(|p| p.fast_quote(edge.left.mint_account, amount_in, 0.0).ok())
+        .unwrap_or((0, 0))
 }
 
 /// Highly efficient iterative check for 2-hop (Cross) Arbitrage.
@@ -50,12 +63,13 @@ fn calculate_swap_amount(edge: &Edge, amount_in: u64) -> u64 {
 /// Path: Start -> Token B -> Start
 pub fn find_cross_arbitrage_iterative<'info>(
     edges: &[&Edge],
+    instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
     let start_amount = config.max_amount_in;
     let min_profit = config.min_profit;
-    debug_eprintln!("start_amount: {:?}", start_amount);
+    debug_eprintln!("[ARB] Start amount: {:.9} SOL ({})", start_amount as f64 / 1_000_000_000.0, start_amount);
     let mut max_profit = 0;
     let mut best_path: Option<(Vec<Edge>, i128, u128)> = None;
 
@@ -65,6 +79,8 @@ pub fn find_cross_arbitrage_iterative<'info>(
     let mut best_sell_price = 0.0_f64;
     let mut best_buy_fee = 0.0_f64;
     let mut best_sell_fee = 0.0_f64;
+
+    let pool_lookup = build_pool_lookup(instances);
 
     // adjacency map: start -> edges
     let mut adj: HashMap<Pubkey, Vec<&Edge>> = HashMap::new();
@@ -84,7 +100,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
         if let Some(root_edges) = adj.get(&root) {
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let amount_b = calculate_swap_amount(edge1, start_amount);
+                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_lookup);
 
                 if let Some(b_edges) = adj.get(&token_b) {
                     for edge2 in b_edges {
@@ -94,7 +110,8 @@ pub fn find_cross_arbitrage_iterative<'info>(
                             continue;
                         }
 
-                        let final_amount = calculate_swap_amount(edge2, amount_b) as u128;
+                        let (_, final_out) = edge_fast_quote(edge2, amount_b, &pool_lookup);
+                        let final_amount = final_out as u128;
                         let profit = final_amount as i128 - start_amount as i128;
 
                         if profit > display_max_profit {
@@ -169,6 +186,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
 /// Path: Start -> Token B -> Token C -> Start
 pub fn find_triangular_arbitrage_iterative<'info>(
     edges: &[&Edge],
+    instances: &[ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
@@ -177,6 +195,8 @@ pub fn find_triangular_arbitrage_iterative<'info>(
 
     let mut best_path: Option<(Vec<Edge>, i128, u128)> = None;
     let mut max_profit = i128::MIN; // Start with minimum to allow tracking best path
+
+    let pool_lookup = build_pool_lookup(instances);
 
     // 1. Build Adjacency List (Start -> [Edges])
     let mut adj: HashMap<Pubkey, Vec<&Edge>> = HashMap::new();
@@ -206,7 +226,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
             // Hop 1: Root -> B
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let amount_b = calculate_swap_amount(edge1, start_amount);
+                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_lookup);
 
                 // Hop 2: B -> C (single lookup instead of contains_key + get)
                 if let Some(b_edges) = adj.get(&token_b) {
@@ -218,7 +238,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                             continue;
                         }
 
-                        let amount_c = calculate_swap_amount(edge2, amount_b);
+                        let (_, amount_c) = edge_fast_quote(edge2, amount_b, &pool_lookup);
 
                         // Hop 3: C -> Root (Optimized Lookup)
                         // Instead of iterating adj[token_c] and filtering for 'root',
@@ -226,7 +246,8 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                         if let Some(third_leg_edges) = pair_map.get(&(token_c, root)) {
                             for edge3 in third_leg_edges {
                                 // Found 3-hop cycle
-                                let final_amount = calculate_swap_amount(edge3, amount_c) as u128;
+                                let (_, final_out) = edge_fast_quote(edge3, amount_c, &pool_lookup);
+                                let final_amount = final_out as u128;
                                 let profit = final_amount as i128 - start_amount as i128;
 
                                 // Debug logging
@@ -387,8 +408,8 @@ pub fn check_arbitrage<'info>(
     let edges = get_edges(instances)?;
     let edge_refs = edges.iter().collect::<Vec<_>>();
     if config.mints == 2 {
-        find_cross_arbitrage_iterative(&edge_refs, config)
+        find_cross_arbitrage_iterative(&edge_refs, instances, config)
     } else {
-        find_triangular_arbitrage_iterative(&edge_refs, config)
+        find_triangular_arbitrage_iterative(&edge_refs, instances, config)
     }
 }

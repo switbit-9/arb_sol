@@ -7,12 +7,14 @@ use anchor_lang::solana_program::{
     program_error::ProgramError,
     pubkey::Pubkey,
 };
-use dlmm::constants::FEE_PRECISION;
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
+use dlmm::constants::{BASIS_POINT_MAX, FEE_PRECISION};
 use dlmm::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
 use dlmm::dlmm::types::Bin;
 use dlmm::extensions::{BinExtension, LbPairExtension};
 use dlmm::math::price_math::get_price_from_id;
-use dlmm::quote::{get_active_bin_array, quote_exact_in, quote_exact_out};
+use dlmm::math::u64x64_math::ONE;
+use dlmm::quote::{get_active_bin_array, quote_exact_in, quote_exact_out, LbPairSlim, SwapCache};
 
 pub const SCALE_OFFSET: u8 = 64;
 
@@ -37,7 +39,8 @@ pub struct MeteoraDlmm {
     pub pool_id: Pubkey,
     pub base_token_pk: Pubkey,
     pub quote_token_pk: Pubkey,
-    pub lb_pair: Box<LbPair>,
+    /// Slim copy of LbPair (~28 bytes) with only swap-relevant fields
+    pub lb_pair_slim: LbPairSlim,
     pub active_bin: Bin,
     pub lb_price: u128,
     pub price: f64,
@@ -45,14 +48,18 @@ pub struct MeteoraDlmm {
     pub start_index: usize,
     pub end_index: usize,
     pub fee_rate: f64,
-    /// Cached bitmap extension to avoid re-deserializing (~12KB) on every swap_base_in call
-    pub bitmap_extension: Option<Box<BinArrayBitmapExtension>>,
     /// Cached from init: base→quote (X→Y) buy bins
     pub buy_max_in: u64,
     pub buy_max_out: u64,
     /// Cached from init: quote→base (Y→X) sell bins
     pub sell_max_in: u64,
     pub sell_max_out: u64,
+    /// SwapCache for buy direction (swap_for_y = true) — boxed to reduce stack frame in new()
+    pub buy_swap_cache: Box<SwapCache>,
+    /// SwapCache for sell direction (swap_for_y = false) — boxed to reduce stack frame in new()
+    pub sell_swap_cache: Box<SwapCache>,
+    pub base_transfer_fee: Option<TransferFee>,
+    pub quote_transfer_fee: Option<TransferFee>,
 }
 
 impl ProgramMeta for MeteoraDlmm {
@@ -71,34 +78,28 @@ impl ProgramMeta for MeteoraDlmm {
         amount_in: u64,
         clock: &Clock,
     ) -> Result<u64> {
-        let swap_for_y = input_mint == self.lb_pair.token_x_mint;
-        // Use cached bitmap extension (avoids ~12KB pod_read_unaligned per call)
-        let bin_arrays = if swap_for_y {
-            vec![
+        let swap_for_y = input_mint == self.base_token_pk;
+        let (bin_arrays, cache) = if swap_for_y {
+            (vec![
                 accounts[self.start_index + Self::BUY_BIN_1_IDX].clone(),
                 accounts[self.start_index + Self::BUY_BIN_2_IDX].clone(),
-            ]
+            ], &self.buy_swap_cache)
         } else {
-            vec![
+            (vec![
                 accounts[self.start_index + Self::SELL_BIN_1_IDX].clone(),
                 accounts[self.start_index + Self::SELL_BIN_2_IDX].clone(),
-            ]
+            ], &self.sell_swap_cache)
         };
-
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
 
         let quote = {
             quote_exact_in(
-                *accounts[self.start_index + Self::POOL_ID_IDX].key,
-                &self.lb_pair,
+                &self.lb_pair_slim,
                 amount_in,
                 swap_for_y,
                 bin_arrays,
-                self.bitmap_extension.as_deref(),
-                &clock,
-                &base_token,
-                &quote_token,
+                self.base_transfer_fee.as_ref(),
+                self.quote_transfer_fee.as_ref(),
+                cache,
             )
         }
         .map_err(|e| {
@@ -118,35 +119,29 @@ impl ProgramMeta for MeteoraDlmm {
         amount_out: u64,
         clock: &Clock,
     ) -> Result<u64> {
-        let swap_for_y = output_mint == self.lb_pair.token_y_mint;
+        let swap_for_y = output_mint == self.quote_token_pk;
 
-        // Use cached bitmap extension (avoids ~12KB pod_read_unaligned per call)
-        let bin_arrays = if swap_for_y {
-            vec![
+        let (bin_arrays, cache) = if swap_for_y {
+            (vec![
                 accounts[self.start_index + Self::BUY_BIN_1_IDX].clone(),
                 accounts[self.start_index + Self::BUY_BIN_2_IDX].clone(),
-            ]
+            ], &self.buy_swap_cache)
         } else {
-            vec![
+            (vec![
                 accounts[self.start_index + Self::SELL_BIN_1_IDX].clone(),
                 accounts[self.start_index + Self::SELL_BIN_2_IDX].clone(),
-            ]
+            ], &self.sell_swap_cache)
         };
-
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
 
         let quote = {
             quote_exact_out(
-                *accounts[self.start_index + Self::POOL_ID_IDX].key,
-                &self.lb_pair,
+                &self.lb_pair_slim,
                 amount_out,
                 swap_for_y,
                 bin_arrays,
-                self.bitmap_extension.as_deref(),
-                &clock,
-                &base_token,
-                &quote_token,
+                self.base_transfer_fee.as_ref(),
+                self.quote_transfer_fee.as_ref(),
+                cache,
             )
         }
         .map_err(|e| {
@@ -204,6 +199,61 @@ impl ProgramMeta for MeteoraDlmm {
     fn get_fee_factor(&self) -> Result<(f64, f64)> {
         let f = 1.0 - self.fee_rate;
         Ok((f, f))
+    }
+
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        let max_in_active = self.get_max_amount_in_active_bin(input_mint).unwrap_or(u64::MAX);
+
+        let (p, f) = if input_mint == self.base_token_pk {
+            (self.price, 1.0 - self.fee_rate)
+        } else {
+            (self.inverse_price, 1.0 - self.fee_rate)
+        };
+
+        #[cfg(any(test, feature = "debug"))]
+        {
+            let max_out_active = self.get_max_amount_out_active_bin(input_mint).unwrap_or(u64::MAX);
+            let (d_in, d_out) = if input_mint == Pubkey::from_str_const("So11111111111111111111111111111111111111112") { (9, 6) } else { (6, 9) };
+            let bin_step_pct = self.lb_pair_slim.bin_step as f64 / 10000.0;
+            eprintln!(
+                "[DLMM] Active bin: in={} ({}) out={} ({}) | Total: in={} ({}) out={} ({}) | Bin step: {:.2}% | Profit: {:.4}% - {}",
+                max_in_active as f64 / 10_f64.powi(d_in), max_in_active,
+                max_out_active as f64 / 10_f64.powi(d_out), max_out_active,
+                max_in as f64 / 10_f64.powi(d_in), max_in,
+                max_out as f64 / 10_f64.powi(d_out), max_out,
+                bin_step_pct * 100.0,
+                profit_pct * 100.0,
+                self.pool_id.to_string()
+            );
+        }
+
+
+        if max_in_active < amount_in && max_in > max_in_active {
+            let bin_step_frac = self.lb_pair_slim.bin_step as f64 / 10000.0;
+
+            if profit_pct > bin_step_frac {
+                eprintln!("[DLMM] Crossing bins: profit {:.2}% > bin step {:.2}%", profit_pct * 100.0, bin_step_frac * 100.0);
+                let pf = p * f;
+                let out_active = (max_in_active as f64 * pf) as u64;
+
+                let remaining = amount_in.min(max_in) - max_in_active;
+                let next_p = p / (1.0 + bin_step_frac);
+                let out_next = (remaining as f64 * next_p * f) as u64;
+
+                let total_in = max_in_active + remaining;
+                let total_out = (out_active + out_next).min(max_out);
+                return Ok((total_in, total_out));
+            }
+        }
+
+        let clamped_in = amount_in.min(max_in).min(max_in_active);
+        let out = (clamped_in as f64 * p * f) as u64;
+        Ok((clamped_in, out.min(max_out)))
+    }
+
+    fn get_active_bin_max_in(&self, input_mint: Pubkey) -> Result<u64> {
+        MeteoraDlmm::get_max_amount_in_active_bin(self, input_mint)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -506,7 +556,7 @@ impl MeteoraDlmm {
         let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone();
         let base_token: AccountInfo<'_> = accounts[start_index + Self::BASE_TOKEN_IDX].clone();
         let quote_token = accounts[start_index + Self::QUOTE_TOKEN_IDX].clone();
-        let (lb_pair, lb_price) = {
+        let (mut lb_pair, lb_price) = {
             // Borrow data from the cloned pool_id, not from the Vec
             let pool_data = pool_id.try_borrow_data()?;
             let slice = &pool_data[8..];
@@ -550,12 +600,8 @@ impl MeteoraDlmm {
         })?;
         let (price, inverse_price) = get_prices(lb_price)?;
 
-        let fee_rate = {
-            let mut lb_for_fee = *lb_pair;
-            let _ = lb_for_fee.update_references(clock.unix_timestamp);
-            let _ = lb_for_fee.update_volatility_accumulator();
-            compute_fee_rate(&lb_for_fee)
-        }.map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+        // Pre-apply update_references on the stored lb_pair (saves ~5K CU per swap call)
+        let _ = lb_pair.update_references(clock.unix_timestamp);
 
         // Approximate max amounts from first bin array only, using active bin price.
         let buy_acc = &accounts[start_index + Self::BUY_BIN_1_IDX];
@@ -575,11 +621,31 @@ impl MeteoraDlmm {
         let sell_max_out_val = sell_total_x;
         let sell_max_in_val = if price > 0.0 { (sell_total_x as f64 * price) as u64 } else { 0 };
 
+        let base_transfer_fee = dlmm::token::get_epoch_transfer_fee(&base_token, clock.epoch)
+            .map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+        let quote_transfer_fee = dlmm::token::get_epoch_transfer_fee(&quote_token, clock.epoch)
+            .map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+
+        let (buy_swap_cache, sell_swap_cache, fee_rate) =
+            Self::build_swap_caches(&mut lb_pair, accounts, start_index)
+                .map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+
+        // Extract slim fields — full LbPair is dropped after this
+        let lb_pair_slim = LbPairSlim {
+            active_id: lb_pair.active_id,
+            bin_step: lb_pair.bin_step,
+            volatility_accumulator: lb_pair.v_parameters.volatility_accumulator,
+            volatility_reference: lb_pair.v_parameters.volatility_reference,
+            index_reference: lb_pair.v_parameters.index_reference,
+            max_vol_acc: lb_pair.parameters.max_volatility_accumulator,
+            variable_fee_control: lb_pair.parameters.variable_fee_control,
+        };
+
         let instance = MeteoraDlmm {
             base_token_pk: *base_token.key,
             quote_token_pk: *quote_token.key,
             pool_id: *pool_id.key,
-            lb_pair,
+            lb_pair_slim,
             active_bin,
             lb_price,
             price,
@@ -587,11 +653,14 @@ impl MeteoraDlmm {
             fee_rate,
             start_index,
             end_index,
-            bitmap_extension: bitmap_extension.map(Box::new),
             buy_max_in: buy_max_in_val,
             buy_max_out: buy_max_out_val,
             sell_max_in: sell_max_in_val,
             sell_max_out: sell_max_out_val,
+            buy_swap_cache,
+            sell_swap_cache,
+            base_transfer_fee,
+            quote_transfer_fee,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
@@ -624,6 +693,71 @@ impl MeteoraDlmm {
         }
 
         (total_x, total_y)
+    }
+
+    /// Read the bin array index (i64) from the first 8 bytes after the discriminator.
+    /// Returns i64::MAX as sentinel if the account is too small or unreadable.
+    fn read_bin_array_index(acc: &AccountInfo) -> i64 {
+        if acc.data_len() > 16 {
+            if let Ok(data) = acc.try_borrow_data() {
+                return bytemuck::pod_read_unaligned(&data[8..16]);
+            }
+        }
+        i64::MAX
+    }
+
+    /// Build SwapCache for both directions + fee_rate. Separated from new() to reduce stack frame.
+    #[inline(never)]
+    fn build_swap_caches(
+        lb_pair: &mut LbPair,
+        accounts: &[AccountInfo],
+        start_index: usize,
+    ) -> anyhow::Result<(Box<SwapCache>, Box<SwapCache>, f64)> {
+        // Compute initial_vol_acc: update_volatility_accumulator result after update_references
+        let initial_vol_acc = {
+            let delta_id = (i64::from(lb_pair.v_parameters.index_reference)
+                - i64::from(lb_pair.active_id))
+                .unsigned_abs();
+            let va = u64::from(lb_pair.v_parameters.volatility_reference)
+                .saturating_add(delta_id.saturating_mul(BASIS_POINT_MAX as u64));
+            std::cmp::min(va, lb_pair.parameters.max_volatility_accumulator.into()) as u32
+        };
+        // Set for accurate fee_rate computation
+        lb_pair.v_parameters.volatility_accumulator = initial_vol_acc;
+        let fee_rate = compute_fee_rate(lb_pair)?;
+
+        let base_fee = lb_pair.get_base_fee().unwrap_or(0);
+        let price_base = {
+            let bps = u128::from(lb_pair.bin_step)
+                .checked_shl(SCALE_OFFSET.into())
+                .unwrap()
+                .checked_div(BASIS_POINT_MAX as u128)
+                .unwrap();
+            ONE.checked_add(bps).unwrap()
+        };
+        let has_variable_fee = lb_pair.parameters.variable_fee_control > 0;
+
+        let buy = Box::new(SwapCache {
+            base_fee,
+            price_base,
+            bin_array_indices: [
+                Self::read_bin_array_index(&accounts[start_index + Self::BUY_BIN_1_IDX]),
+                Self::read_bin_array_index(&accounts[start_index + Self::BUY_BIN_2_IDX]),
+            ],
+            initial_vol_acc,
+            has_variable_fee,
+        });
+        let sell = Box::new(SwapCache {
+            base_fee,
+            price_base,
+            bin_array_indices: [
+                Self::read_bin_array_index(&accounts[start_index + Self::SELL_BIN_1_IDX]),
+                Self::read_bin_array_index(&accounts[start_index + Self::SELL_BIN_2_IDX]),
+            ],
+            initial_vol_acc,
+            has_variable_fee,
+        });
+        Ok((buy, sell, fee_rate))
     }
 
     /// Compute approximate (max_amount_in, max_amount_out) from first bin array + active price.

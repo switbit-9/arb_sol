@@ -174,6 +174,50 @@ pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64) -> Result<
     Ok(fee)
 }
 
+/// Apply forward transfer fee using a pre-computed TransferFee.
+/// Returns the fee amount to subtract from `pre_fee_amount`.
+/// If `fee` is None (SPL Token, no transfer fee extension), returns 0.
+#[inline(always)]
+pub fn apply_transfer_fee(pre_fee_amount: u64, fee: Option<&TransferFee>) -> u64 {
+    match fee {
+        Some(tf) => tf.calculate_fee(pre_fee_amount).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Apply inverse transfer fee using a pre-computed TransferFee.
+/// Returns the fee amount to add to `post_fee_amount` to get the pre-fee amount.
+/// If `fee` is None (SPL Token, no transfer fee extension), returns 0.
+#[inline(always)]
+pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee: Option<&TransferFee>) -> Result<u64> {
+    match fee {
+        Some(tf) => {
+            if post_fee_amount == 0 {
+                return Ok(0);
+            }
+            if u16::from(tf.transfer_fee_basis_points) == MAX_FEE_BASIS_POINTS {
+                Ok(u64::from(tf.maximum_fee))
+            } else {
+                let inverse_fee = tf
+                    .calculate_inverse_fee(post_fee_amount)
+                    .ok_or(SolarBError::TransferFeeCalculationError)?;
+                let check = tf
+                    .calculate_fee(
+                        post_fee_amount
+                            .checked_add(inverse_fee)
+                            .ok_or(SolarBError::TransferFeeCalculationError)?,
+                    )
+                    .unwrap_or(0);
+                if check != inverse_fee {
+                    return Err(error!(SolarBError::TransferFeeCalculationError));
+                }
+                Ok(inverse_fee)
+            }
+        }
+        None => Ok(0),
+    }
+}
+
 pub fn get_transfer_fee_config(mint_info: &AccountInfo) -> Result<Option<TransferFeeConfig>> {
     if *mint_info.owner == Token::id() {
         return Ok(None);

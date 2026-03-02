@@ -120,7 +120,7 @@ mod tests {
     "GVUapDeHGQvDiBMkBb7opW5kMRF5RrQ1JjAbPsWNpump",
     "HefFPT8D5PKgXd67G2tULUxTRT3gz2ej5TjARQmg3b16",
 
-// ========= Pump AMM =========
+// ================= PUMP AMM =================
     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // program_id
     "AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x", // pool_id
     "6M13LRCjGdBSuo9ZvPZ7h4nj8mXvUu9RyRLAQ5rhScYs", // base_vault
@@ -136,68 +136,71 @@ mod tests {
     "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw", // global_config
     "11111111111111111111111111111111",             // system_program
     "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", // assoc_token_account_program
-    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw", // global_volume_accumulator 1
-    "62b5KqEUVBSnJPHtLCftqTkxCKLKoKaree6gsAokYcPm", // global_volume_accumulator 2
+    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw", // global_volume_accumulator
+    "62b5KqEUVBSnJPHtLCftqTkxCKLKoKaree6gsAokYcPm", // global_volume_accumulator
     "AepwkYPKLDwqacvBVfAZJVv7cjkZhYcQ3mSwjtRQm2HH", // vault_ata
     "BEPSWG5CBCcSVsQDk1aV7yB6oE3Hkyn2EJbZQe9G6foq", // vault_authority
-    
-    // ====== METEORA DLMM (Fee: 0.07296) ======
+// // ================= METEORA DLMM 1 =================
+//     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // program_id
+//     "53Gc9uyzrU1Cn82YxDqsgfRjptXecSsr3mLYYH7VWpjV", // pool_id
+//     "9U5JhcqD234bwejnfiiiYWSKFhwEhNKeRqw5oeULvobj", // base_vault
+//     "G1mHjydgtt2z8Pn6fH8Whf4mFGXk8j54xUNGTugfFSB3", // quote_vault
+//     "AVF9F4C4j8b1Kh4BmNHqybDaHgnZpJ7W7yLvL7hUpump", // base_token
+//     "So11111111111111111111111111111111111111112", // quote_token
+//     "2ThJTTzrhY2My5at1K5tJsUEETLKjvn2CihqY9MGvbJY", // oracle
+//     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // host_fee_in
+//     "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", // event_authority
+//     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // bitmap_extension
+//     "B7QbNcE42VgZW6eh5wpaeAD5AAvdxnuHue52U4KXArBn", // buy_bin
+//     "ACCjWiBbe1R2CmAmNa6h8Cy21zjPB9fjip1QxqNwuoZe", // buy_bin
+//     "B7QbNcE42VgZW6eh5wpaeAD5AAvdxnuHue52U4KXArBn", // buy_bin
+//     "G3NMtQrbtaDACcFmLECS3Qgzz9ob6AfvSpPtAPxEwUyt", // buy_bin
+
+// ================= METEORA DLMM 1 =================
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // program_id
-    "53gLtVkrPQHWVSGLG5XF3tphdX16ik8Rp31Yez9HkeNx", // pool_id
-    "FVNzSzamSuPKFL12cwH3dhjShjjGC3u6MhsrskeMiXpS", // base_vault
-    "9JGU2Aa2mJW8Hh1jUvmfZQBrxegEvaX7bepyFiAKPkYP", // quote_vault
+    "53Gc9uyzrU1Cn82YxDqsgfRjptXecSsr3mLYYH7VWpjV", // pool_id
+    "9U5JhcqD234bwejnfiiiYWSKFhwEhNKeRqw5oeULvobj", // base_vault
+    "G1mHjydgtt2z8Pn6fH8Whf4mFGXk8j54xUNGTugfFSB3", // quote_vault
     "AVF9F4C4j8b1Kh4BmNHqybDaHgnZpJ7W7yLvL7hUpump", // base_token
     "So11111111111111111111111111111111111111112", // quote_token
-    "9eqonXTPh3Fv1wUHr57YbSK36fM19ftYfnwkY9RppmN4", // oracle
+    "2ThJTTzrhY2My5at1K5tJsUEETLKjvn2CihqY9MGvbJY", // oracle
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // host_fee_in
     "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", // event_authority
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // bitmap_extension
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 1
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 2
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 3
-    "EPZ17HGtH7WSY8ZXDb2jYnyudc1dwi59LJuhKmc96pre", // buy_bin 4
-    
-    // ========= Pump AMM =========
-    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // program_id
-    "BDgZ5PvNRZ3xdzmQV4TgrAtAd16PK2r1mVfg8AeShEqR", // pool_id
-    "7zLMQMNRci618BBFD8b2AzPbBA2SqSbVK2swfJfGi88Q", // base_vault
-    "D5rgRPeZiHjvUWHdHcgQqVKZjxQVShT3GZ3VkgtXVccK", // quote_vault
-    "GVUapDeHGQvDiBMkBb7opW5kMRF5RrQ1JjAbPsWNpump", // base_token
-    "So11111111111111111111111111111111111111112", // quote_token
-    "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV", // protocol_fee_recipient
-    "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb", // protocol_fee_recipient_token_account
-    "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR", // event_authority
-    "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx", // fee_config
-    "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ", // fee_program
-    "WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i", // user_volume_accumulator
-    "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw", // global_config
-    "11111111111111111111111111111111",             // system_program
-    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", // assoc_token_account_program
-    "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw", // global_volume_accumulator 1
-    "6qrtTduxjUg8FqqxDzTDUKwbT8K7E5SLcui8wdxdpt52", // global_volume_accumulator 2
-    "DDtrHGKEvmY75N1mBFNGAAWqQbX9GGG7b6Boh37QpLzB", // vault_ata
-    "59GJ6jDHj5KBg4cSw44JLMkCea9wwFuZQE2UFNf5NkWq", // vault_authority
+    "B7QbNcE42VgZW6eh5wpaeAD5AAvdxnuHue52U4KXArBn", // buy_bin
+    "ACCjWiBbe1R2CmAmNa6h8Cy21zjPB9fjip1QxqNwuoZe", // buy_bin
+    "B7QbNcE42VgZW6eh5wpaeAD5AAvdxnuHue52U4KXArBn", // buy_bin
+    "G3NMtQrbtaDACcFmLECS3Qgzz9ob6AfvSpPtAPxEwUyt", // buy_bin
 
-
-    // ====== METEORA DLMM (Fee: 0.07296) ======
+    // ================= METEORA DLMM 2 =================
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // program_id
-    "53gLtVkrPQHWVSGLG5XF3tphdX16ik8Rp31Yez9HkeNx", // pool_id
-    "FVNzSzamSuPKFL12cwH3dhjShjjGC3u6MhsrskeMiXpS", // base_vault
-    "9JGU2Aa2mJW8Hh1jUvmfZQBrxegEvaX7bepyFiAKPkYP", // quote_vault
-    "GVUapDeHGQvDiBMkBb7opW5kMRF5RrQ1JjAbPsWNpump", // base_token
+    "23XcWM2E2wFnN6gEq3Y2kBz5m6vecwwjePL34fENPRue", // pool_id
+    "9AKwQqY3Ry58UaY3v5JNUsMMLqeBviPXMsDPFZzwpGTe", // base_vault
+    "Hgr3B7kz1DWqmJC9KiM1K2v9u6e5wWG6T2mEr6wktHmv", // quote_vault
+    "AVF9F4C4j8b1Kh4BmNHqybDaHgnZpJ7W7yLvL7hUpump", // base_token
     "So11111111111111111111111111111111111111112", // quote_token
-    "9eqonXTPh3Fv1wUHr57YbSK36fM19ftYfnwkY9RppmN4", // oracle
+    "71VzCVBUqhWaiCBGR3L57AWe4QDDwWr3tciJUJUqVH4K", // oracle
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // host_fee_in
     "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6", // event_authority
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // bitmap_extension
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 1
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 2
-    "JDiAZiZKDcfCGWukgAEXP4TZ1fyhwv57kY6FAuAaCHUY", // buy_bin 3
-    "EPZ17HGtH7WSY8ZXDb2jYnyudc1dwi59LJuhKmc96pre", // buy_bin 4
+    "7Q4kymu5bSDVoPJFf9A5GzGev74QBXAZufGTackz6VyB", // buy_bin
+    "CRQabb8eYXhSFq1xoqqZPJ8S6feGzEy52kKUfWkDApZj", // buy_bin
+    "7Q4kymu5bSDVoPJFf9A5GzGev74QBXAZufGTackz6VyB", // buy_bin
+    "FAUGZajAntxHT8V7wZFaEtpwAZDrEdBhvWSzxpFXKHXF", // buy_bin
 
+// ================= METEORA DAMMV2 =================
+    "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", // program_id
+    "6rfbVR7qZ8ftSpegyCCKXPX5vaZzjDzhPWP5Ag93YV4W", // pool_id
+    "TVQj3UiD1Z3TpTbH9QpZzMcNctyEiP6E3XqLhAg5fCz", // base_vault
+    "5xiGRLirA7TXxy7ydvtyeLqUTd31Xu1oQ4DqtwCApBbN", // quote_vault
+    "AVF9F4C4j8b1Kh4BmNHqybDaHgnZpJ7W7yLvL7hUpump", // base_token
+    "So11111111111111111111111111111111111111112", // quote_token
+    "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC", // pool_authority
+    "3rmHSu74h1ZcmAisVcWerTCiRDQbUrBKmcwptYGjHfet", // event_authority
+    "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", // (last line) program_id
 ];
 
-    const ACCOUNTS_LENGTH: [u8; 5] = [19, 14, 19, 14, 0];
+    const ACCOUNTS_LENGTH: [u8; 5] = [19, 14, 14, 9, 0];
     const MODE: u8 = crate::arb_mode::MULTIPLE_TRADES;
 
     // =========================================================================

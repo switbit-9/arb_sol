@@ -1,7 +1,7 @@
-use crate::extensions::LbPairExtension;
 use crate::*;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::{TransferFee, MAX_FEE_BASIS_POINTS};
 use std::result::Result::Ok;
 
 
@@ -17,181 +17,245 @@ pub struct SwapExactOutQuote {
     pub fee: u64,
 }
 
-fn validate_swap_activation(
-    lb_pair: &LbPair,
-    current_timestamp: u64,
-    current_slot: u64,
-) -> anyhow::Result<()> {
-    ensure!(
-        lb_pair.status()?.eq(&PairStatus::Enabled),
-        "Pair is disabled"
-    );
+/// Slim copy of LbPair with only the fields needed for swap simulation (~28 bytes vs 896).
+/// Created once in MeteoraDlmm::new(), used by quote_exact_in/out.
+#[derive(Clone, Copy, Debug)]
+pub struct LbPairSlim {
+    pub active_id: i32,
+    pub bin_step: u16,
+    pub volatility_accumulator: u32,
+    pub volatility_reference: u32,
+    pub index_reference: i32,
+    pub max_vol_acc: u32,
+    pub variable_fee_control: u32,
+}
 
-    let pair_type = lb_pair.pair_type()?;
-    if pair_type.eq(&PairType::Permission) {
-        let activation_type = lb_pair.activation_type()?;
-        let current_point = match activation_type {
-            ActivationType::Slot => current_slot,
-            ActivationType::Timestamp => current_timestamp,
-        };
+/// Pre-computed values cached at instance level to avoid redundant work across swap calls.
+/// All fields are constant for a given pool within a single transaction.
+#[derive(Clone, Debug)]
+pub struct SwapCache {
+    /// get_base_fee() result — depends only on constant pool params
+    pub base_fee: u128,
+    /// ONE + (bin_step << 64) / BASIS_POINT_MAX — constant multiplier between adjacent bins
+    pub price_base: u128,
+    /// Bin array indices for the 2 bin arrays in this direction [bin1_idx, bin2_idx]
+    pub bin_array_indices: [i64; 2],
+    /// Pre-computed volatility_accumulator after update_references (initial state)
+    pub initial_vol_acc: u32,
+    /// Whether variable_fee_control > 0 (skip variable fee computation entirely if false)
+    pub has_variable_fee: bool,
+}
 
-        ensure!(
-            current_point >= lb_pair.activation_point,
-            "Pair is disabled"
-        );
+#[inline(always)]
+fn apply_transfer_fee_cached(fee: Option<&TransferFee>, amount: u64) -> u64 {
+    match fee {
+        Some(tf) => tf.calculate_fee(amount).unwrap_or(0),
+        None => 0,
     }
+}
 
-    Ok(())
+#[inline(always)]
+fn calculate_transfer_fee_included_amount_cached(
+    fee: Option<&TransferFee>,
+    transfer_fee_excluded_amount: u64,
+) -> anyhow::Result<u64> {
+    match fee {
+        Some(tf) => {
+            if transfer_fee_excluded_amount == 0 {
+                return Ok(0);
+            }
+            let transfer_fee = if u16::from(tf.transfer_fee_basis_points) == MAX_FEE_BASIS_POINTS {
+                u64::from(tf.maximum_fee)
+            } else {
+                tf.calculate_inverse_fee(transfer_fee_excluded_amount)
+                    .context("Failed to calculate inverse transfer fee")?
+            };
+            let included = transfer_fee_excluded_amount
+                .checked_add(transfer_fee)
+                .context("Transfer fee calculation overflow")?;
+            let verification = tf.calculate_fee(included).unwrap_or(0);
+            if transfer_fee != verification {
+                return Err(anyhow::anyhow!("Transfer fee verification failed"));
+            }
+            Ok(included)
+        }
+        None => Ok(transfer_fee_excluded_amount),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn quote_exact_out<'a>(
-    lb_pair_pubkey: Pubkey,
-    lb_pair: &LbPair,
+    lb_pair: &LbPairSlim,
     mut amount_out: u64,
     swap_for_y: bool,
     bin_arrays: Vec<AccountInfo<'a>>,
-    bitmap_extension: Option<&BinArrayBitmapExtension>,
-    clock: &Clock,
-    mint_x_account: &AccountInfo<'a>,
-    mint_y_account: &AccountInfo<'a>,
+    transfer_fee_x: Option<&TransferFee>,
+    transfer_fee_y: Option<&TransferFee>,
+    cache: &SwapCache,
 ) -> anyhow::Result<SwapExactOutQuote> {
-    let current_timestamp = clock.unix_timestamp as u64;
-    let current_slot = clock.slot;
-    let epoch = clock.epoch;
-
-    validate_swap_activation(lb_pair, current_timestamp, current_slot)?;
-
-    let mut lb_pair = *lb_pair;
-    lb_pair.update_references(current_timestamp as i64)?;
+    let mut slim = *lb_pair;
 
     let mut total_amount_in: u64 = 0;
     let mut total_fee: u64 = 0;
 
-    let (in_mint_account, out_mint_account) = if swap_for_y {
-        (mint_x_account, mint_y_account)
+    let (in_fee, out_fee) = if swap_for_y {
+        (transfer_fee_x, transfer_fee_y)
     } else {
-        (mint_y_account, mint_x_account)
+        (transfer_fee_y, transfer_fee_x)
     };
 
-    amount_out =
-        calculate_transfer_fee_included_amount(out_mint_account, amount_out, epoch)?.amount;
+    amount_out = calculate_transfer_fee_included_amount_cached(out_fee, amount_out)?;
+
+    let mut prev_price: Option<u128> = None;
+    slim.volatility_accumulator = cache.initial_vol_acc;
+    let mut first_bin = true;
+
+    const BIN_ARRAY_HEADER_SIZE: usize = 56;
+    const BIN_SIZE: usize = 144;
 
     while amount_out > 0 {
-        let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
-            lb_pair_pubkey,
-            &lb_pair,
-            bitmap_extension,
-            swap_for_y,
-            1,
-        )?
-        .pop()
-        .context("Pool out of liquidity")?;
-
-        // Linear scan over 2 elements is faster than HashMap alloc+hash+lookup
-        let active_bin_array_account = match bin_arrays.iter().find(|acc| *acc.key == active_bin_array_pubkey) {
-            Some(account) => account,
-            None => {
-                // We don't have the required bin array account - stop the swap
-                // Return partial result if we made some progress, otherwise it's an error
-                if total_amount_in == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Insufficient liquidity: required bin array not available"
-                    ));
-                }
-                break;
+        let needed_index = BinArray::bin_id_to_bin_array_index(slim.active_id)? as i64;
+        let active_bin_array_account = if needed_index == cache.bin_array_indices[0] {
+            &bin_arrays[0]
+        } else if needed_index == cache.bin_array_indices[1] {
+            &bin_arrays[1]
+        } else {
+            if total_amount_in == 0 {
+                return Err(anyhow::anyhow!(
+                    "Insufficient liquidity: required bin array not available"
+                ));
             }
+            break;
         };
 
         let bin_array_data = active_bin_array_account.try_borrow_data()?;
-        // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
-        // Cache range calculation once per bin array (doesn't change within inner loop)
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
-        // Shift active_id if bitmap jumped over empty bin arrays
-        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(lb_pair.active_id)?;
+        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(slim.active_id)?;
         if i64::from(lb_pair_bin_array_index) != bin_array_index {
             if swap_for_y {
-                lb_pair.active_id = upper_bin_id;
+                slim.active_id = upper_bin_id;
             } else {
-                lb_pair.active_id = lower_bin_id;
+                slim.active_id = lower_bin_id;
             }
+            prev_price = None;
         }
 
-        // Constants moved outside loop for better performance
-        const BIN_ARRAY_HEADER_SIZE: usize = 56;
-        const BIN_SIZE: usize = 144;
-
         loop {
-            // Early exit checks
-            if amount_out == 0 {
-                break;
+            if amount_out == 0 { break; }
+            if slim.active_id < lower_bin_id || slim.active_id > upper_bin_id { break; }
+
+            if first_bin {
+                first_bin = false;
+            } else {
+                // Inlined update_volatility_accumulator
+                let delta_id = (i64::from(slim.index_reference) - i64::from(slim.active_id)).unsigned_abs();
+                let va = u64::from(slim.volatility_reference)
+                    .checked_add(delta_id.checked_mul(BASIS_POINT_MAX as u64).context("overflow")?)
+                    .context("overflow")?;
+                slim.volatility_accumulator = std::cmp::min(va, slim.max_vol_acc.into())
+                    .try_into().context("overflow")?;
             }
 
-            if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
-                break;
-            }
+            // Compute total_fee_rate with cached base_fee
+            let total_fee_rate = if cache.has_variable_fee {
+                // Inlined compute_variable_fee
+                let va: u128 = slim.volatility_accumulator.into();
+                let bs: u128 = slim.bin_step.into();
+                let vfc: u128 = slim.variable_fee_control.into();
+                let sq = va.checked_mul(bs).context("overflow")?.checked_pow(2).context("overflow")?;
+                let variable_fee = vfc.checked_mul(sq).context("overflow")?
+                    .checked_add(99_999_999_999).context("overflow")?
+                    .checked_div(100_000_000_000).context("overflow")?;
+                std::cmp::min(cache.base_fee + variable_fee, MAX_FEE_RATE.into())
+            } else {
+                std::cmp::min(cache.base_fee, MAX_FEE_RATE.into())
+            };
 
-            lb_pair.update_volatility_accumulator()?;
-
-            // Calculate bin index within array
-            let bin_index_in_array: i32 = lb_pair
-                .active_id
+            let bin_index_in_array: i32 = slim.active_id
                 .checked_sub(lower_bin_id)
                 .context("MathOverflow")?;
-            let bin_index_usize = bin_index_in_array as usize;
-            // Calculate bin offset (bounds check removed - validated by range check above)
-            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
+            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_in_array as usize * BIN_SIZE);
 
-            // Read single bin from account data (only ~144 bytes on stack)
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-            let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
+            // Incremental price computation
+            let price = if active_bin.price != 0 {
+                let p = active_bin.price;
+                prev_price = Some(p);
+                p
+            } else if let Some(prev) = prev_price {
+                let p = if swap_for_y {
+                    shl_div(prev, cache.price_base, SCALE_OFFSET, Rounding::Down)
+                        .unwrap_or_else(|| get_price_from_id(slim.active_id, slim.bin_step).unwrap_or(0))
+                } else {
+                    mul_shr(prev, cache.price_base, SCALE_OFFSET, Rounding::Down)
+                        .unwrap_or_else(|| get_price_from_id(slim.active_id, slim.bin_step).unwrap_or(0))
+                };
+                active_bin.price = p;
+                prev_price = Some(p);
+                p
+            } else {
+                let p = get_price_from_id(slim.active_id, slim.bin_step)?;
+                active_bin.price = p;
+                prev_price = Some(p);
+                p
+            };
 
             if !active_bin.is_empty(!swap_for_y) {
                 let bin_max_amount_out = active_bin.get_max_amount_out(swap_for_y);
+
+                let denominator_fee = u128::from(FEE_PRECISION)
+                    .checked_sub(total_fee_rate)
+                    .context("MathOverflow")?;
+
                 if amount_out >= bin_max_amount_out {
                     let max_amount_in = active_bin.get_max_amount_in(price, swap_for_y)?;
-                    let max_fee = lb_pair.compute_fee(max_amount_in)?;
+                    let max_fee = {
+                        let f = u128::from(max_amount_in)
+                            .checked_mul(total_fee_rate).context("MathOverflow")?
+                            .checked_add(denominator_fee).context("MathOverflow")?
+                            .checked_sub(1).context("MathOverflow")?;
+                        u64::try_from(f.checked_div(denominator_fee).context("MathOverflow")?).context("MathOverflow")?
+                    };
 
-                    total_amount_in = total_amount_in
-                        .checked_add(max_amount_in)
-                        .context("MathOverflow")?;
-
+                    total_amount_in = total_amount_in.checked_add(max_amount_in).context("MathOverflow")?;
                     total_fee = total_fee.checked_add(max_fee).context("MathOverflow")?;
-
-                    amount_out = amount_out
-                        .checked_sub(bin_max_amount_out)
-                        .context("MathOverflow")?;
+                    amount_out = amount_out.checked_sub(bin_max_amount_out).context("MathOverflow")?;
                 } else {
                     let amount_in = Bin::get_amount_in(amount_out, price, swap_for_y)?;
-                    let fee = lb_pair.compute_fee(amount_in)?;
+                    let fee = {
+                        let f = u128::from(amount_in)
+                            .checked_mul(total_fee_rate).context("MathOverflow")?
+                            .checked_add(denominator_fee).context("MathOverflow")?
+                            .checked_sub(1).context("MathOverflow")?;
+                        u64::try_from(f.checked_div(denominator_fee).context("MathOverflow")?).context("MathOverflow")?
+                    };
 
-                    total_amount_in = total_amount_in
-                        .checked_add(amount_in)
-                        .context("MathOverflow")?;
-
+                    total_amount_in = total_amount_in.checked_add(amount_in).context("MathOverflow")?;
                     total_fee = total_fee.checked_add(fee).context("MathOverflow")?;
-
                     amount_out = 0;
                 }
             }
 
             if amount_out > 0 {
-                lb_pair.advance_active_bin(swap_for_y)?;
+                // Inlined advance_active_bin
+                slim.active_id = if swap_for_y {
+                    slim.active_id.checked_sub(1)
+                } else {
+                    slim.active_id.checked_add(1)
+                }.context("overflow")?;
+                ensure!(slim.active_id >= MIN_BIN_ID && slim.active_id <= MAX_BIN_ID, "Insufficient liquidity");
             }
         }
     }
 
-    total_amount_in = total_amount_in
-        .checked_add(total_fee)
-        .context("MathOverflow")?;
-
+    total_amount_in = total_amount_in.checked_add(total_fee).context("MathOverflow")?;
     total_amount_in =
-        calculate_transfer_fee_included_amount(in_mint_account, total_amount_in, epoch)?.amount;
+        calculate_transfer_fee_included_amount_cached(in_fee, total_amount_in)?;
 
     Ok(SwapExactOutQuote {
         amount_in: total_amount_in,
@@ -201,150 +265,188 @@ pub fn quote_exact_out<'a>(
 
 #[allow(clippy::too_many_arguments)]
 pub fn quote_exact_in<'a>(
-    lb_pair_pubkey: Pubkey,
-    lb_pair: &LbPair,
+    lb_pair: &LbPairSlim,
     amount_in: u64,
     swap_for_y: bool,
     bin_arrays: Vec<AccountInfo<'a>>,
-    bitmap_extension: Option<&BinArrayBitmapExtension>,
-    clock: &Clock,
-    mint_x_account: &AccountInfo<'a>,
-    mint_y_account: &AccountInfo<'a>,
+    transfer_fee_x: Option<&TransferFee>,
+    transfer_fee_y: Option<&TransferFee>,
+    cache: &SwapCache,
 ) -> anyhow::Result<SwapExactInQuote> {
-    let current_timestamp: u64 = clock.unix_timestamp as u64;
-    let epoch = clock.epoch;
-
-    let mut lb_pair = *lb_pair;
-    lb_pair.update_references(current_timestamp as i64)?;
+    let mut slim = *lb_pair;
     let mut total_amount_out: u64 = 0;
     let mut total_fee: u64 = 0;
 
-    let (in_mint_account, out_mint_account) = if swap_for_y {
-        (mint_x_account, mint_y_account)
+    let (in_fee, out_fee) = if swap_for_y {
+        (transfer_fee_x, transfer_fee_y)
     } else {
-        (mint_y_account, mint_x_account)
+        (transfer_fee_y, transfer_fee_x)
     };
 
-    let fee = get_transfer_fee(in_mint_account, amount_in, epoch)?;
-
+    let fee = apply_transfer_fee_cached(in_fee, amount_in);
     let transfer_fee_excluded_amount_in = amount_in.checked_sub(fee).context("MathOverflow")?;
-
     let mut amount_left = transfer_fee_excluded_amount_in;
 
-    // Constants moved outside loop for better performance
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;
 
+    let mut prev_price: Option<u128> = None;
+    slim.volatility_accumulator = cache.initial_vol_acc;
+    let mut first_bin = true;
+
     while amount_left > 0 {
-        let active_bin_array_pubkey = get_bin_array_pubkeys_for_swap(
-            lb_pair_pubkey,
-            &lb_pair,
-            bitmap_extension,
-            swap_for_y,
-            1,
-        )?
-        .pop()
-        .context("Pool out of liquidity")?;
-        // Linear scan over 2 elements is faster than HashMap alloc+hash+lookup
-        let active_bin_array_account = match bin_arrays.iter().find(|acc| *acc.key == active_bin_array_pubkey) {
-            Some(account) => account,
-            None => {
-                // This means we've exhausted the available bin arrays
-                // Return partial result if we made some progress, otherwise it's an error
-                if total_amount_out == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Insufficient liquidity: required bin array not available"
-                    ));
-                }
-                break;
+        let needed_index = BinArray::bin_id_to_bin_array_index(slim.active_id)? as i64;
+        let active_bin_array_account = if needed_index == cache.bin_array_indices[0] {
+            &bin_arrays[0]
+        } else if needed_index == cache.bin_array_indices[1] {
+            &bin_arrays[1]
+        } else {
+            if total_amount_out == 0 {
+                return Err(anyhow::anyhow!(
+                    "Insufficient liquidity: required bin array not available"
+                ));
             }
+            break;
         };
 
         let bin_array_data = active_bin_array_account.try_borrow_data()?;
-        // Read only the index field (offset 8, size 8) to avoid deserializing entire BinArray
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
-        // Cache range calculation once per bin array (doesn't change within inner loop)
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
 
-        // Shift active_id if bitmap jumped over empty bin arrays
-        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(lb_pair.active_id)?;
+        let lb_pair_bin_array_index = BinArray::bin_id_to_bin_array_index(slim.active_id)?;
         if i64::from(lb_pair_bin_array_index) != bin_array_index {
             if swap_for_y {
-                lb_pair.active_id = upper_bin_id;
+                slim.active_id = upper_bin_id;
             } else {
-                lb_pair.active_id = lower_bin_id;
+                slim.active_id = lower_bin_id;
             }
+            prev_price = None;
         }
 
         loop {
-            // Early exit checks
-            if amount_left == 0 {
-                break;
+            if amount_left == 0 { break; }
+            if slim.active_id < lower_bin_id || slim.active_id > upper_bin_id { break; }
+
+            if first_bin {
+                first_bin = false;
+            } else {
+                // Inlined update_volatility_accumulator
+                let delta_id = (i64::from(slim.index_reference) - i64::from(slim.active_id)).unsigned_abs();
+                let va = u64::from(slim.volatility_reference)
+                    .checked_add(delta_id.checked_mul(BASIS_POINT_MAX as u64).context("overflow")?)
+                    .context("overflow")?;
+                slim.volatility_accumulator = std::cmp::min(va, slim.max_vol_acc.into())
+                    .try_into().context("overflow")?;
             }
 
-            if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
-                break;
-            }
-            lb_pair.update_volatility_accumulator()?;
+            // Compute total_fee_rate with cached base_fee
+            let total_fee_rate = if cache.has_variable_fee {
+                // Inlined compute_variable_fee
+                let va: u128 = slim.volatility_accumulator.into();
+                let bs: u128 = slim.bin_step.into();
+                let vfc: u128 = slim.variable_fee_control.into();
+                let sq = va.checked_mul(bs).context("overflow")?.checked_pow(2).context("overflow")?;
+                let variable_fee = vfc.checked_mul(sq).context("overflow")?
+                    .checked_add(99_999_999_999).context("overflow")?
+                    .checked_div(100_000_000_000).context("overflow")?;
+                std::cmp::min(cache.base_fee + variable_fee, MAX_FEE_RATE.into())
+            } else {
+                std::cmp::min(cache.base_fee, MAX_FEE_RATE.into())
+            };
 
-            // Calculate bin index within array
-            let bin_index_in_array: i32 = lb_pair
-                .active_id
+            let bin_index_in_array: i32 = slim.active_id
                 .checked_sub(lower_bin_id)
                 .context("MathOverflow")?;
-            let bin_index_usize = bin_index_in_array as usize;
-            // Calculate bin offset (bounds check removed - validated by range check above)
-            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_usize * BIN_SIZE);
+            let bin_offset = BIN_ARRAY_HEADER_SIZE + (bin_index_in_array as usize * BIN_SIZE);
 
-            // Read single bin from account data (only ~144 bytes on stack)
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-
-            let price = active_bin.get_or_store_bin_price(lb_pair.active_id, lb_pair.bin_step)?;
+            // Incremental price computation
+            let price = if active_bin.price != 0 {
+                let p = active_bin.price;
+                prev_price = Some(p);
+                p
+            } else if let Some(prev) = prev_price {
+                let p = if swap_for_y {
+                    shl_div(prev, cache.price_base, SCALE_OFFSET, Rounding::Down)
+                        .unwrap_or_else(|| get_price_from_id(slim.active_id, slim.bin_step).unwrap_or(0))
+                } else {
+                    mul_shr(prev, cache.price_base, SCALE_OFFSET, Rounding::Down)
+                        .unwrap_or_else(|| get_price_from_id(slim.active_id, slim.bin_step).unwrap_or(0))
+                };
+                active_bin.price = p;
+                prev_price = Some(p);
+                p
+            } else {
+                let p = get_price_from_id(slim.active_id, slim.bin_step)?;
+                active_bin.price = p;
+                prev_price = Some(p);
+                p
+            };
 
             if !active_bin.is_empty(!swap_for_y) {
-                let SwapResult {
-                    amount_in_with_fees,
-                    amount_out,
-                    fee,
-                    ..
-                } = active_bin.swap(amount_left, price, swap_for_y, &lb_pair, None)?;
+                let max_amount_out = active_bin.get_max_amount_out(swap_for_y);
+                let mut max_amount_in = active_bin.get_max_amount_in(price, swap_for_y)?;
 
-                amount_left = amount_left
-                    .checked_sub(amount_in_with_fees)
+                let denominator_fee = u128::from(FEE_PRECISION)
+                    .checked_sub(total_fee_rate)
                     .context("MathOverflow")?;
+                let max_fee = {
+                    let f = u128::from(max_amount_in)
+                        .checked_mul(total_fee_rate).context("MathOverflow")?
+                        .checked_add(denominator_fee).context("MathOverflow")?
+                        .checked_sub(1).context("MathOverflow")?;
+                    u64::try_from(f.checked_div(denominator_fee).context("MathOverflow")?).context("MathOverflow")?
+                };
+                max_amount_in = max_amount_in.checked_add(max_fee).context("MathOverflow")?;
 
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .context("MathOverflow")?;
-                total_fee = total_fee.checked_add(fee).context("MathOverflow")?;
+                let (amount_in_with_fees, amount_out, bin_fee) = if amount_left > max_amount_in {
+                    (max_amount_in, max_amount_out, max_fee)
+                } else {
+                    let fee_amt = {
+                        let f = u128::from(amount_left)
+                            .checked_mul(total_fee_rate).context("MathOverflow")?
+                            .checked_add((FEE_PRECISION - 1).into()).context("MathOverflow")?;
+                        u64::try_from(f.checked_div(FEE_PRECISION.into()).context("MathOverflow")?).context("MathOverflow")?
+                    };
+                    let amount_in_after_fee = amount_left.checked_sub(fee_amt).context("MathOverflow")?;
+                    let amt_out = Bin::get_amount_out(amount_in_after_fee, price, swap_for_y)?;
+                    (amount_left, std::cmp::min(amt_out, max_amount_out), fee_amt)
+                };
 
-                // Only advance if we still have amount left to swap
+                amount_left = amount_left.checked_sub(amount_in_with_fees).context("MathOverflow")?;
+                total_amount_out = total_amount_out.checked_add(amount_out).context("MathOverflow")?;
+                total_fee = total_fee.checked_add(bin_fee).context("MathOverflow")?;
+
                 if amount_left > 0 {
-                    lb_pair.advance_active_bin(swap_for_y)?;
+                    // Inlined advance_active_bin
+                    slim.active_id = if swap_for_y {
+                        slim.active_id.checked_sub(1)
+                    } else {
+                        slim.active_id.checked_add(1)
+                    }.context("overflow")?;
+                    ensure!(slim.active_id >= MIN_BIN_ID && slim.active_id <= MAX_BIN_ID, "Insufficient liquidity");
                 }
             } else {
                 #[cfg(any(test, feature = "debug"))]
-                debug_eprintln!("loop: lb_pair.active_id: {}", lb_pair.active_id);
-                // Bin is empty, advance to next bin immediately
-                let old_active_id = lb_pair.active_id;
-                lb_pair.advance_active_bin(swap_for_y)?;
-                // Safety check: if we didn't actually advance (shouldn't happen), break to avoid infinite loop
-                if lb_pair.active_id == old_active_id {
-                    break;
-                }
-                // Check if we've moved outside the current bin array range - if so, break to get new bin array
-                if lb_pair.active_id < lower_bin_id || lb_pair.active_id > upper_bin_id {
-                    break;
-                }
+                debug_eprintln!("loop: slim.active_id: {}", slim.active_id);
+                let old_active_id = slim.active_id;
+                // Inlined advance_active_bin
+                slim.active_id = if swap_for_y {
+                    slim.active_id.checked_sub(1)
+                } else {
+                    slim.active_id.checked_add(1)
+                }.context("overflow")?;
+                ensure!(slim.active_id >= MIN_BIN_ID && slim.active_id <= MAX_BIN_ID, "Insufficient liquidity");
+                if slim.active_id == old_active_id { break; }
+                if slim.active_id < lower_bin_id || slim.active_id > upper_bin_id { break; }
             }
         }
     }
 
-    let fee = get_transfer_fee(out_mint_account, total_amount_out, epoch)?;
-
+    let fee = apply_transfer_fee_cached(out_fee, total_amount_out);
     let transfer_fee_excluded_amount_out =
         total_amount_out.checked_sub(fee).context("MathOverflow")?;
     Ok(SwapExactInQuote {

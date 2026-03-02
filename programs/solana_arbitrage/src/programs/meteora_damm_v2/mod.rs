@@ -1,5 +1,6 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::{get_transfer_fee, get_transfer_inverse_fee};
+use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, get_epoch_transfer_fee};
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -17,7 +18,8 @@ pub use damm_v2::curve::{get_spot_price_a_to_b, get_spot_price_b_to_a};
 pub use crate::utils::utils::parse_token_account;
 pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
 use damm_v2::constants::fee::get_max_fee_numerator;
-use damm_v2::curve::{get_delta_amount_a_unsigned, get_delta_amount_b_unsigned};
+use damm_v2::curve::{get_delta_amount_a_unsigned, get_delta_amount_a_unsigned_unchecked, get_delta_amount_b_unsigned, get_delta_amount_b_unsigned_unchecked};
+use ruint::aliases::U256;
 use damm_v2::u128x128_math::Rounding;
 use std::marker::PhantomData;
 
@@ -70,10 +72,12 @@ pub struct MeteoraDammV2<'info> {
     pub inverse_price: f64,
     pub fee_rate_a_to_b: f64,
     pub fee_rate_b_to_a: f64,
-    pub buy_max_in: u64,
+    pub buy_max_in: u128,
     pub buy_max_out: u64,
-    pub sell_max_in: u64,
+    pub sell_max_in: u128,
     pub sell_max_out: u64,
+    pub base_transfer_fee: Option<TransferFee>,
+    pub quote_transfer_fee: Option<TransferFee>,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -101,10 +105,39 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn name(&self) -> &'static str { "MeteoraDammV2" }
 
+    fn get_vault_amounts(&self) -> Result<(u64, u64)> {
+        // Virtual reserves from concentrated liquidity parameters.
+        // Within a single range, CLAMM behaves as constant-product with:
+        //   virtual_base  = L / sqrt_price_q64
+        //   virtual_quote = L * sqrt_price_q64 / 2^128
+        let sq = self.pool.sqrt_price as f64;
+        let l = self.pool.liquidity as f64;
+        let q128: f64 = Q64_SCALE * Q64_SCALE; // 2^128
+
+        let virtual_base = l / sq;
+        let virtual_quote = l * sq / q128;
+
+        if !virtual_base.is_finite() || !virtual_quote.is_finite()
+            || virtual_base <= 0.0 || virtual_quote <= 0.0
+        {
+            return Err(error!(crate::programs::SolarBError::InvalidAccountData));
+        }
+
+        Ok((virtual_base as u64, virtual_quote as u64))
+    }
+
+    fn is_fee_on_input(&self, input_mint: Pubkey) -> bool {
+        match self.pool.collect_fee_mode {
+            0 => false, // BothToken: fee always on output
+            1 => input_mint != self.base_token_pk, // OnlyB: fee on input only for B→A
+            _ => false,
+        }
+    }
+
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok((1.0 - self.fee_rate_a_to_b, 1.0 - self.fee_rate_b_to_a)) }
 
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
-        if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
+        if mint == self.base_token_pk { Ok(self.buy_max_in.min(u64::MAX as u128) as u64) } else { Ok(self.sell_max_in.min(u64::MAX as u128) as u64) }
     }
 
     fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
@@ -112,7 +145,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
-        if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
+        if input_mint == self.base_token_pk {
+            ((self.buy_max_in.min(u64::MAX as u128)) as u64, self.buy_max_out)
+        } else {
+            ((self.sell_max_in.min(u64::MAX as u128)) as u64, self.sell_max_out)
+        }
     }
 
     fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
@@ -123,22 +160,28 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
-        msg!("=== Meteora DAMM V2 ===");
-        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
-        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
-        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
-        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
-        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
-        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
-        msg!("6 pool_authority: {}", accounts[self.start_index + Self::POOL_AUTHORITY_IDX].key);
-        msg!("7 event_authority: {}", accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key);
-        msg!("8 referral_token_account: {}", accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX].key);
-        msg!("base_fee_mode: {} cliff_fee: {} actual_fee_rate: {}",
-            self.pool.pool_fees.base_fee.base_fee_mode,
-            self.pool.pool_fees.base_fee.cliff_fee_numerator,
-            self.fee_rate_a_to_b);
-        Ok(())
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        eprintln!("max_in: {}, max_out: {}", max_in, max_out);
+        let amount_in = amount_in.min(max_in);
+        debug_eprintln!("[DAMM V2] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
+
+        let trade_direction = if input_mint == self.base_token_pk {
+            TradeDirection::AtoB
+        } else {
+            TradeDirection::BtoA
+        };
+
+        // No referral for fast_quote, use u64::MAX as current_point (always past activation)
+        let fee_mode = FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, false)?;
+        let results = self.pool.get_swap_result_from_exact_input(
+            amount_in,
+            &fee_mode,
+            trade_direction,
+            u64::MAX,
+        )?;
+
+        Ok((amount_in, results.output_amount.min(max_out)))
     }
 
     fn swap_base_in<'a>(
@@ -154,8 +197,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         } else {
             TradeDirection::BtoA
         };
-        #[cfg(any(test, feature = "debug"))]
-        debug_eprintln!("trade_direction: {:?}", trade_direction);
+
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
 
@@ -167,16 +209,13 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let fee_mode: FeeMode =
             FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
 
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-            (base_token, quote_token)
+        let (fee_in, fee_out) = if input_mint == self.base_token_pk {
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         } else {
-            (quote_token, base_token)
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         };
 
-        let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+        let transfer_fee = apply_transfer_fee(amount_in, fee_in);
         let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
         let results = self.pool.get_swap_result_from_exact_input(
@@ -186,7 +225,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             current_point,
         )?;
 
-        let transfer_fee_out = get_transfer_fee(token_out_mint, results.output_amount)?;
+        let transfer_fee_out = apply_transfer_fee(results.output_amount, fee_out);
         let amount_out_after_fee = results.output_amount.checked_sub(transfer_fee_out).unwrap();
 
         Ok(amount_out_after_fee)
@@ -207,25 +246,19 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         } else {
             TradeDirection::AtoB // Output is quote, input is base
         };
-        #[cfg(any(test, feature = "debug"))]
-        debug_eprintln!("trade_direction: {:?}", trade_direction);
         let current_timestamp = clock.unix_timestamp as u64;
         let current_slot = clock.slot as u64;
 
         let current_point =
             get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        // Determine input/output token accounts based on output_mint
-        let (token_in_mint, token_out_mint) = if output_mint == self.base_token_pk {
-            (quote_token, base_token) // Output is base, input is quote
+        let (fee_in, fee_out) = if output_mint == self.base_token_pk {
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         } else {
-            (base_token, quote_token) // Output is quote, input is base
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         };
 
-        let transfer_fee = get_transfer_inverse_fee(token_out_mint, amount_out)?;
+        let transfer_fee = apply_transfer_inverse_fee(amount_out, fee_out)?;
         let amount_out_with_fees = amount_out.checked_add(transfer_fee).unwrap();
 
         let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
@@ -239,7 +272,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             current_point,
         )?;
 
-        let transfer_fee_in = get_transfer_inverse_fee(token_in_mint, results.included_fee_input_amount)?;
+        let transfer_fee_in = apply_transfer_inverse_fee(results.included_fee_input_amount, fee_in)?;
         let amount_in_with_fees = results
             .included_fee_input_amount
             .checked_add(transfer_fee_in)
@@ -466,6 +499,25 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
         Ok(())
     }
+
+        fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
+        msg!("=== Meteora DAMM V2 ===");
+        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
+        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
+        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
+        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
+        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
+        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
+        msg!("6 pool_authority: {}", accounts[self.start_index + Self::POOL_AUTHORITY_IDX].key);
+        msg!("7 event_authority: {}", accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key);
+        msg!("8 referral_token_account: {}", accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX].key);
+        msg!("base_fee_mode: {} cliff_fee: {} actual_fee_rate: {}",
+            self.pool.pool_fees.base_fee.base_fee_mode,
+            self.pool.pool_fees.base_fee.cliff_fee_numerator,
+            self.fee_rate_a_to_b);
+        Ok(())
+    }
+
 }
 
 impl<'info> MeteoraDammV2<'info> {
@@ -535,20 +587,24 @@ impl<'info> MeteoraDammV2<'info> {
             .unwrap_or(fallback_fee);
 
         // Cache max amounts from curve math (sqrt_min_price / sqrt_max_price boundaries)
+        // Use _unchecked (U256) for max_in to avoid u64 overflow on wide price ranges
         // A→B (buy): price moves from sqrt_price down toward sqrt_min_price
-        let buy_max_in = get_delta_amount_a_unsigned(
+        let buy_max_in: u128 = get_delta_amount_a_unsigned_unchecked(
             pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Up,
-        ).unwrap_or(0);
+        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
         let buy_max_out = get_delta_amount_b_unsigned(
             pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Down,
         ).unwrap_or(0).min(quote_vault_amount);
         // B→A (sell): price moves from sqrt_price up toward sqrt_max_price
-        let sell_max_in = get_delta_amount_b_unsigned(
+        let sell_max_in: u128 = get_delta_amount_b_unsigned_unchecked(
             pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Up,
-        ).unwrap_or(0);
+        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
         let sell_max_out = get_delta_amount_a_unsigned(
             pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Down,
         ).unwrap_or(0).min(base_vault_amount);
+
+        let base_transfer_fee = get_epoch_transfer_fee(&base_token)?;
+        let quote_transfer_fee = get_epoch_transfer_fee(&quote_token)?;
 
         let instance = MeteoraDammV2 {
             base_token_pk: *base_token.key,
@@ -567,6 +623,8 @@ impl<'info> MeteoraDammV2<'info> {
             buy_max_out,
             sell_max_in,
             sell_max_out,
+            base_transfer_fee,
+            quote_transfer_fee,
             phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;

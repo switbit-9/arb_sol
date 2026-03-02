@@ -90,6 +90,12 @@ pub trait ProgramMeta {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
+    /// Whether the pool's fee is deducted from the input amount (before swap).
+    /// Default true (most AMMs). Override for pools with fee-on-output (e.g. DAMM V2).
+    fn is_fee_on_input(&self, _input_mint: Pubkey) -> bool {
+        true
+    }
+
     /// Get max amount that can be input for a given mint direction
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
@@ -117,5 +123,27 @@ pub trait ProgramMeta {
     /// Default true for AMMs (vault amounts always imply liquidity).
     fn has_output_liquidity(&self, _input_mint: Pubkey) -> bool {
         true
+    }
+
+    /// Simplified swap estimate from cached state only (no account reads).
+    /// Skips transfer fees. Used for candidate ranking, not execution.
+    /// Each program overrides this with its own swap math.
+    /// Returns (actual_amount_in, amount_out) — programs clamp to their max amounts.
+    /// profit_pct is the arb cycle's profit as a fraction (e.g. 0.02 = 2%).
+    /// DLMM uses this to decide whether crossing into the next bin is worthwhile.
+    /// Default: linear model from cached price * fee (ignores profit_pct).
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+        let (price, inverse_price) = self.get_prices()?;
+        let (fee_a_to_b, fee_b_to_a) = self.get_fee_factor().unwrap_or((1.0, 1.0));
+        let (base_mint, _) = self.get_mints();
+        let (p, f) = if input_mint == *base_mint {
+            (price, fee_a_to_b)
+        } else {
+            (inverse_price, fee_b_to_a)
+        };
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        let clamped_in = amount_in.min(max_in);
+        let out = (clamped_in as f64 * p * f) as u64;
+        Ok((clamped_in, out.min(max_out)))
     }
 }

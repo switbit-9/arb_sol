@@ -1,5 +1,6 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::get_transfer_fee;
+use crate::utils::token::{apply_transfer_fee, get_epoch_transfer_fee};
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -80,6 +81,8 @@ pub struct PumpAmm<'info> {
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
+    pub base_transfer_fee: Option<TransferFee>,
+    pub quote_transfer_fee: Option<TransferFee>,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -99,6 +102,36 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
     fn name(&self) -> &'static str { "PumpAmm" }
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
+
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        let amount_in = amount_in.min(max_in);
+        debug_eprintln!("[PUMP AMM] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
+
+        let base_reserve = self.base_vault_amount as u128;
+        let quote_reserve = self.quote_vault_amount as u128;
+
+        if input_mint == self.quote_token_pk {
+            // Buying base: fee applied BEFORE swap on quote input
+            let in_after_fee = (amount_in as f64 * (1.0 - self.fee_rate)) as u128;
+            // CP: out = base - (base * quote) / (quote + in_after_fee)
+            let numerator = base_reserve.saturating_mul(quote_reserve);
+            let denominator = quote_reserve.saturating_add(in_after_fee);
+            if denominator == 0 { return Ok((amount_in, 0)); }
+            let out = base_reserve.saturating_sub(numerator / denominator);
+            let out = out.min(u64::MAX as u128) as u64;
+            Ok((amount_in, out.min(max_out)))
+        } else {
+            // Selling base: fee applied AFTER swap on quote output
+            // CP: out_raw = quote - (base * quote) / (base + amount_in)
+            let numerator = base_reserve.saturating_mul(quote_reserve);
+            let denominator = base_reserve.saturating_add(amount_in as u128);
+            if denominator == 0 { return Ok((amount_in, 0)); }
+            let out_raw = quote_reserve.saturating_sub(numerator / denominator);
+            let out = (out_raw as f64 * (1.0 - self.fee_rate)) as u64;
+            Ok((amount_in, out.min(max_out)))
+        }
+    }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Ok((
@@ -128,17 +161,14 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             self.base_vault_amount
         };
 
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-            (base_token, quote_token)
+        let (fee_in, fee_out) = if input_mint == self.base_token_pk {
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         } else {
-            (quote_token, base_token)
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         };
 
         let amount_out_after_fee = if input_mint == self.quote_token_pk {
-            let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+            let transfer_fee = apply_transfer_fee(amount_in, fee_in);
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
             let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee_rate)) as u128;
@@ -146,12 +176,12 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             let amount_out: u64 =
                 self.calculate_buy_amount_out(base_reserve, quote_reserve, amount_in_after_fees)?;
 
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
             let amount_out_after_fee = amount_out.checked_sub(transfer_fee_out).unwrap();
             amount_out_after_fee.min(output_reserve)
         } else {
             // Selling base for quote: fee is applied on quote OUTPUT (not base input)
-            let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+            let transfer_fee = apply_transfer_fee(amount_in, fee_in);
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
             // No pool fee on base input
@@ -160,7 +190,7 @@ impl<'info> ProgramMeta for PumpAmm<'info> {
             // Apply pool fee on quote output
             let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee_rate)) as u64;
 
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out_after_pool_fee)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out_after_pool_fee, fee_out);
             let amount_out_after_fee = amount_out_after_pool_fee.checked_sub(transfer_fee_out).unwrap();
             amount_out_after_fee.min(output_reserve)
         };
@@ -598,11 +628,14 @@ impl<'info> PumpAmm<'info> {
         // eprintln!("base_vault_amount: {:?}", base_vault_amount / 1_000_000_000);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount / 1_000_000);
         // TODO: maket to run in test
-        // let base_vault_amount: u64 = (base_vault_amount as f64 * 0.85) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 0.95) as u64;
         // let quote_vault_amount: u64 = quote_vault_amount;
 
         // eprintln!("base_vault_amount: {:?}", base_vault_amount);
         // eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
+
+        let base_transfer_fee = get_epoch_transfer_fee(&base_token)?;
+        let quote_transfer_fee = get_epoch_transfer_fee(&quote_token)?;
 
         let (price, inverse_price) = get_prices(base_vault_amount, quote_vault_amount)?;
         let fee_rate = get_fees(price, inverse_price)?;
@@ -648,6 +681,8 @@ impl<'info> PumpAmm<'info> {
             buy_max_out,
             sell_max_in,
             sell_max_out,
+            base_transfer_fee,
+            quote_transfer_fee,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
@@ -711,7 +746,7 @@ impl<'info> PumpAmm<'info> {
     /// Then applies 0.02% fee (multiply by 0.9998)
     pub fn swap_base_in_impl<'a>(
         &self,
-        accounts: &[AccountInfo<'a>],
+        _accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
     ) -> Result<u64> {
@@ -729,17 +764,14 @@ impl<'info> PumpAmm<'info> {
             self.base_vault_amount
         };
 
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-            (base_token, quote_token)
+        let (fee_in, fee_out) = if input_mint == self.base_token_pk {
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         } else {
-            (quote_token, base_token)
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         };
 
         let amount_out_after_fee = if input_mint == self.quote_token_pk {
-            let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+            let transfer_fee = apply_transfer_fee(amount_in, fee_in);
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
             let amount_in_after_fees = (amount_in_after_fee as f64 * (1.0 - self.fee_rate)) as u128;
@@ -747,12 +779,12 @@ impl<'info> PumpAmm<'info> {
             let amount_out: u64 =
                 self.calculate_buy_amount_out(base_reserve, quote_reserve, amount_in_after_fees)?;
 
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
             let amount_out_after_fee = amount_out.checked_sub(transfer_fee_out).unwrap();
             amount_out_after_fee.min(output_reserve)
         } else {
             // Selling base for quote: fee is applied on quote OUTPUT (not base input)
-            let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+            let transfer_fee = apply_transfer_fee(amount_in, fee_in);
             let amount_in_after_fee = amount_in.checked_sub(transfer_fee).unwrap();
 
             // No pool fee on base input
@@ -761,7 +793,7 @@ impl<'info> PumpAmm<'info> {
             // Apply pool fee on quote output
             let amount_out_after_pool_fee = (amount_out as f64 * (1.0 - self.fee_rate)) as u64;
 
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out_after_pool_fee)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out_after_pool_fee, fee_out);
             let amount_out_after_fee = amount_out_after_pool_fee.checked_sub(transfer_fee_out).unwrap();
             amount_out_after_fee.min(output_reserve)
         };
@@ -774,7 +806,7 @@ impl<'info> PumpAmm<'info> {
     /// Note: Pool fee is only applied on the QUOTE side (not base)
     pub fn swap_base_out_impl<'a>(
         &self,
-        accounts: &[AccountInfo<'a>],
+        _accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
     ) -> Result<u64> {
@@ -789,15 +821,12 @@ impl<'info> PumpAmm<'info> {
         };
         let amount_out = amount_out.min(output_reserve.saturating_sub(1));
 
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if output_mint == self.base_token_pk {
+        let (fee_in, fee_out) = if output_mint == self.base_token_pk {
             // Output is base, input is quote
-            (quote_token, base_token)
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         } else {
             // Output is quote, input is base
-            (base_token, quote_token)
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         };
 
         let max_amount_in = if output_mint == self.base_token_pk {
@@ -805,7 +834,7 @@ impl<'info> PumpAmm<'info> {
             // Fee is applied on quote (input side)
 
             // Add transfer fee to desired output
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
             let amount_out_before_transfer_fee = (amount_out as u128)
                 .checked_add(transfer_fee_out as u128)
                 .ok_or(ProgramError::InvalidArgument)?;
@@ -829,7 +858,7 @@ impl<'info> PumpAmm<'info> {
             // Add transfer fee on input
             let amount_in_u64 = u64::try_from(amount_in_before_fee)
                 .map_err(|_| ProgramError::InvalidArgument)?;
-            let transfer_fee_in = get_transfer_fee(token_in_mint, amount_in_u64)?;
+            let transfer_fee_in = apply_transfer_fee(amount_in_u64, fee_in);
             amount_in_u64
                 .checked_add(transfer_fee_in)
                 .ok_or(ProgramError::InvalidArgument)?
@@ -838,7 +867,7 @@ impl<'info> PumpAmm<'info> {
             // Fee is applied on quote (output side), NOT on base (input side)
 
             // Add transfer fee to desired output
-            let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out)?;
+            let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
             let amount_out_before_transfer_fee = (amount_out as u128)
                 .checked_add(transfer_fee_out as u128)
                 .ok_or(ProgramError::InvalidArgument)?;
@@ -862,7 +891,7 @@ impl<'info> PumpAmm<'info> {
             // Add transfer fee on input (no pool fee on base)
             let amount_in_u64 = u64::try_from(base_in)
                 .map_err(|_| ProgramError::InvalidArgument)?;
-            let transfer_fee_in = get_transfer_fee(token_in_mint, amount_in_u64)?;
+            let transfer_fee_in = apply_transfer_fee(amount_in_u64, fee_in);
             amount_in_u64
                 .checked_add(transfer_fee_in)
                 .ok_or(ProgramError::InvalidArgument)?

@@ -220,7 +220,7 @@ fn hybrid_search<'info>(
     let mut best_profit = i128::MIN;
     let mut best_idx = 0usize;
     let mut prev_profit = i128::MIN;
-    let mut consecutive_decreases = 0u8;
+    let mut last_drop: i128 = 0;
 
     for (idx, &fraction) in grid_points.iter().enumerate() {
         let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
@@ -253,21 +253,24 @@ fn hybrid_search<'info>(
             best_idx = idx;
         }
 
-        // Profit function is unimodal (concave) for all pool types.
-        // If profit decreased 2 consecutive times, we've passed the peak — stop early.
-        if profit < prev_profit {
-            consecutive_decreases += 1;
-            if consecutive_decreases >= 2 {
+        // Only apply early exit after we've seen a positive profit.
+        // At tiny amounts, losses scale with size (fee overhead) and would
+        // falsely trigger the accelerating-drop heuristic before we reach
+        // the profitable region.
+        if best_profit > 0 && prev_profit != i128::MIN && profit < prev_profit {
+            let current_drop = prev_profit - profit;
+            if last_drop > 0 && current_drop > last_drop {
                 break;
             }
-        } else {
-            consecutive_decreases = 0;
+            last_drop = current_drop;
+        } else if profit >= prev_profit {
+            last_drop = 0;
         }
         prev_profit = profit;
     }
 
     #[cfg(any(test, feature = "debug"))]
-    {   
+    {
         debug_eprintln!(
             "Grid search best: amount={}, profit={}",
             best_amount, best_profit
@@ -431,38 +434,6 @@ pub fn find_optimal_amount<'info>(
     accounts: &[AccountInfo<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
-    // Try analytical shortcut: if the DLMM swap stays within the active bin,
-    // the formula is exact — skip the entire grid + golden section search.
-    if let Some(hint) = analytical_hint_amm_dlmm(
-        program_1.as_ref(), program_2.as_ref(), input_mint, middle_mint,
-    ) {
-        let dlmm: &dyn ProgramMeta = if hint.amm_is_first {
-            program_2.as_ref()
-        } else {
-            program_1.as_ref()
-        };
-        let dlmm_input_mint = if hint.amm_is_first { middle_mint } else { input_mint };
-
-        if let Ok(active_bin_max) = dlmm.get_active_bin_max_in(dlmm_input_mint) {
-            if hint.mid_amount <= active_bin_max {
-                // Mid fits in active bin → formula is exact
-                let amount = (hint.optimal).min(config.max_amount_in);
-                if amount > 0 {
-                    let profit = simulate_path(
-                        accounts, program_1, program_2,
-                        input_mint, middle_mint, amount, &config.clock,
-                    )?;
-                    debug_eprintln!(
-                        "Analytical exact (active bin): amount={} profit={} mid={} bin_cap={}",
-                        amount, profit, hint.mid_amount, active_bin_max,
-                    );
-                    if profit > 0 {
-                        return Ok((amount, profit));
-                    }
-                }
-            }
-        }
-    }
 
     let program_1_max_in = program_1.get_max_amount_in(accounts, input_mint).unwrap_or(0);
     let program_1_max_out = program_1.get_max_amount_out(accounts, input_mint).unwrap_or(0);
@@ -515,7 +486,7 @@ pub fn find_optimal_amount<'info>(
         &config.clock,
     )?;
     msg!("OptAmt: result in={}, profit={}", optimal_amount, profit);
-    debug_eprintln!("optimal_amount: {:?}", optimal_amount);
+    debug_eprintln!("optimal_amount: {:?}", optimal_amount as f64 / 1_000_000_000.0);
     Ok((optimal_amount, profit))
 }
 
@@ -665,7 +636,7 @@ fn hybrid_search_n_hop<'info>(
     let mut best_profit = i128::MIN;
     let mut best_idx = 0usize;
     let mut prev_profit = i128::MIN;
-    let mut consecutive_decreases = 0u8;
+    let mut last_drop: i128 = 0;
 
     for (idx, &fraction) in grid_points.iter().enumerate() {
         let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
@@ -678,15 +649,15 @@ fn hybrid_search_n_hop<'info>(
             best_idx = idx;
         }
 
-        // Profit function is unimodal (concave) for all pool types.
-        // If profit decreased 2 consecutive times, we've passed the peak — stop early.
-        if profit < prev_profit {
-            consecutive_decreases += 1;
-            if consecutive_decreases >= 2 {
+        // Only apply early exit after we've seen a positive profit.
+        if best_profit > 0 && prev_profit != i128::MIN && profit < prev_profit {
+            let current_drop = prev_profit - profit;
+            if last_drop > 0 && current_drop > last_drop {
                 break;
             }
-        } else {
-            consecutive_decreases = 0;
+            last_drop = current_drop;
+        } else if profit >= prev_profit {
+            last_drop = 0;
         }
         prev_profit = profit;
     }

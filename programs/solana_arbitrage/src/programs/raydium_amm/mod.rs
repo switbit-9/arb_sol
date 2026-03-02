@@ -2,8 +2,9 @@ pub mod state;
 
 use self::state::{AmmInfoFields, AMM_INFO_SIZE};
 use crate::programs::ProgramMeta;
-use crate::utils::token::get_transfer_fee;
+use crate::utils::token::{apply_transfer_fee, get_epoch_transfer_fee};
 use crate::utils::utils::parse_token_account;
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -41,6 +42,8 @@ pub struct RaydiumAmm<'info> {
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
+    pub base_transfer_fee: Option<TransferFee>,
+    pub quote_transfer_fee: Option<TransferFee>,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -81,6 +84,32 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        let amount_in = amount_in.min(max_in);
+
+        let (reserve_in, reserve_out) = if input_mint == self.base_token_pk {
+            (self.base_vault_amount as u128, self.quote_vault_amount as u128)
+        } else {
+            (self.quote_vault_amount as u128, self.base_vault_amount as u128)
+        };
+
+        // Ceiling division fee (matching Raydium processor)
+        let swap_fee = checked_ceil_div(
+            amount_in as u128 * self.swap_fee_numerator as u128,
+            self.swap_fee_denominator as u128,
+        )
+        .unwrap_or(0);
+        let in_after_fee = (amount_in as u128).saturating_sub(swap_fee);
+
+        // Constant product: out = reserve_out * in_after_fee / (reserve_in + in_after_fee)
+        let denominator = reserve_in.saturating_add(in_after_fee);
+        if denominator == 0 { return Ok((amount_in, 0)); }
+        let out = reserve_out.saturating_mul(in_after_fee) / denominator;
+        let out = out.min(u64::MAX as u128) as u64;
+        Ok((amount_in, out.min(max_out)))
+    }
+
     fn swap_base_in<'a>(
         &self,
         accounts: &[AccountInfo<'a>],
@@ -91,17 +120,14 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         let coin_reserve = self.base_vault_amount as u128;
         let pc_reserve = self.quote_vault_amount as u128;
 
-        let base_token = &accounts[self.start_index + Self::COIN_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::PC_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if input_mint == self.base_token_pk {
-            (base_token, quote_token)
+        let (fee_in, fee_out) = if input_mint == self.base_token_pk {
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         } else {
-            (quote_token, base_token)
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         };
 
         // Apply transfer fee on input
-        let transfer_fee = get_transfer_fee(token_in_mint, amount_in)?;
+        let transfer_fee = apply_transfer_fee(amount_in, fee_in);
         let actual_amount_in = amount_in.checked_sub(transfer_fee).unwrap();
 
         // Deduct swap fee (ceiling div, matching Raydium processor)
@@ -137,7 +163,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
             u64::try_from(amount_out).map_err(|_| ProgramError::InvalidArgument)?;
 
         // Apply transfer fee on output
-        let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out_u64)?;
+        let transfer_fee_out = apply_transfer_fee(amount_out_u64, fee_out);
         let amount_out_after_fee = amount_out_u64
             .checked_sub(transfer_fee_out)
             .unwrap();
@@ -155,19 +181,14 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         let coin_reserve = self.base_vault_amount as u128;
         let pc_reserve = self.quote_vault_amount as u128;
 
-        let base_token = &accounts[self.start_index + Self::COIN_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::PC_TOKEN_IDX];
-
-        let (token_in_mint, token_out_mint) = if output_mint == self.base_token_pk {
-            // Output is coin, input is pc
-            (quote_token, base_token)
+        let (fee_in, fee_out) = if output_mint == self.base_token_pk {
+            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
         } else {
-            // Output is pc, input is coin
-            (base_token, quote_token)
+            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
         };
 
         // Add transfer fee to desired output to get amount needed from pool
-        let transfer_fee_out = get_transfer_fee(token_out_mint, amount_out)?;
+        let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
         let amount_out_before_transfer_fee = (amount_out as u128)
             .checked_add(transfer_fee_out as u128)
             .ok_or(ProgramError::InvalidArgument)?;
@@ -216,7 +237,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
             u64::try_from(amount_in_before_fee).map_err(|_| ProgramError::InvalidArgument)?;
 
         // Add transfer fee on input
-        let transfer_fee_in = get_transfer_fee(token_in_mint, amount_in_u64)?;
+        let transfer_fee_in = apply_transfer_fee(amount_in_u64, fee_in);
         let total_amount_in = amount_in_u64
             .checked_add(transfer_fee_in)
             .ok_or(ProgramError::InvalidArgument)?;
@@ -488,6 +509,9 @@ impl<'info> RaydiumAmm<'info> {
         let (buy_in, buy_out, sell_in, sell_out) =
             Self::compute_cached_max(base_vault_amount, quote_vault_amount, fee_rate);
 
+        let base_transfer_fee = get_epoch_transfer_fee(&coin_token)?;
+        let quote_transfer_fee = get_epoch_transfer_fee(&pc_token)?;
+
         let instance = RaydiumAmm {
             pool_id: *pool_id.key,
             base_token_pk: *coin_token.key,
@@ -505,6 +529,8 @@ impl<'info> RaydiumAmm<'info> {
             buy_max_out: buy_out,
             sell_max_in: sell_in,
             sell_max_out: sell_out,
+            base_transfer_fee,
+            quote_transfer_fee,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;

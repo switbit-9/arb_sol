@@ -28,8 +28,6 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
 
 
     pub fn generate_edges(&'info self) -> Vec<Edge> {
-        // Compute prices - using a simple division for now
-        // In a real implementation, you'd want to use the program's compute_price methods
         let prices = self.program.get_prices().unwrap();
         let price = prices.0;
         let inverse_price = prices.1;
@@ -38,6 +36,7 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
         let pool_id = *self.program.get_pool_id();
         let (buy_max_in, buy_max_out) = self.program.get_cached_max_amounts(self.left.mint_account);
         let (sell_max_in, sell_max_out) = self.program.get_cached_max_amounts(self.right.mint_account);
+
         vec![
             Edge::new(
                 program_id,

@@ -18,9 +18,9 @@ pub mod utils;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
-// #[cfg(test)]
-// #[path = "tests/pubkey_test.rs"]
-// mod pubkey_test;
+#[cfg(test)]
+#[path = "tests/pubkey_test.rs"]
+mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
@@ -28,6 +28,7 @@ use arbitrage::algo_2::{
     /* check_arbitrage, */ find_cross_arbitrage_iterative, find_cross_arbitrage_optimized,
     find_triangular_arbitrage_iterative, get_edges, ArbitragePath,
 };
+use arbitrage::analytical_algo::run_arbitrage_analytical;
 use programs::{
     MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, PumpAmm, RaydiumAmm,
     RaydiumCLMM, RaydiumCPMM, SolarBError,
@@ -51,7 +52,7 @@ const RAYDIUM_CPMM_ID_BYTES: [u8; 32] = RaydiumCPMM::PROGRAM_ID.to_bytes();
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
-declare_id!("BJREZ2NxHAqSf4jeaogmdoyF2nhexVpeewokt5iqqCMt");
+declare_id!("7Zcv7W6855CWzN1zQT2yVNQg6zRqLdusTAzKtdpzSdyx");
 
 /// Arbitrage mode constants
 pub mod arb_mode {
@@ -105,6 +106,7 @@ fn start_bot<'info>(
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
+    let max_amount_in = 2_000_000_000;
     #[cfg(test)]
     debug_eprintln!("max_amount_in: {:?}", max_amount_in);
     let mut instances = parse_accounts(accounts, pool_start, &data, &clock)?;
@@ -120,8 +122,43 @@ fn start_bot<'info>(
         test_mode,
     );
     // msg!("Mode={}, mints={}, max_in={}", data.mode, data.mints, max_amount_in);
-    let Some(mut arbitrage_path) = run_arbitrage(accounts, &instances, &mut bot_config)?
-    else {
+
+    // Run both algorithms independently and pick the better result
+    let grid_result = run_arbitrage(accounts, &instances, &mut bot_config)?;
+    let analytical_result = run_arbitrage_analytical(accounts, &instances, &mut bot_config)?;
+
+    // Log comparison
+    let grid_profit = grid_result.as_ref().map_or(0, |r| r.profit);
+    let ana_profit = analytical_result.as_ref().map_or(0, |r| r.profit);
+    let grid_amount_in = grid_result.as_ref().map_or(0, |r| r.start_amount);
+    let ana_amount_in = analytical_result.as_ref().map_or(0, |r| r.start_amount);
+
+    debug_eprintln!("");
+    debug_eprintln!(
+        "RESULTS _____________________ : profit={} in={} | Ana: profit={} in={} | winner={}",
+        grid_profit as f64 / 1_000_000_000.0,
+        grid_amount_in as f64 / 1_000_000_000.0,
+        ana_profit as f64 / 1_000_000_000.0,
+        ana_amount_in as f64 / 1_000_000_000.0,
+        if ana_profit > grid_profit { "Ana" } else { "Grid" }
+    );
+    debug_eprintln!("");
+
+    // Pick the path with higher profit
+    let chosen = match (&grid_result, &analytical_result) {
+        (Some(g), Some(a)) => {
+            if a.profit > g.profit {
+                analytical_result
+            } else {
+                grid_result
+            }
+        }
+        (Some(_), None) => grid_result,
+        (None, Some(_)) => analytical_result,
+        (None, None) => None,
+    };
+
+    let Some(mut arbitrage_path) = chosen else {
         msg!("Not found: no path");
         return Ok(None);
     };
@@ -364,72 +401,73 @@ fn run_single_pair_arbitrage<'info>(
     debug_eprintln!("");
     debug_eprintln!("");
 
-    let (mut edges, profit, _) =
-        find_cross_arbitrage_optimized(&edge_refs, config)?;
+    let candidate = find_cross_arbitrage_optimized(&edge_refs, instances, config)?;
 
-    msg!("e={}, p={}", edges.len(), profit);
+    msg!("candidate={}", candidate.is_some());
 
-    if !config.test && profit <= 0 {
-        msg!("Single: Rejected, profit <= 0");
-        return Ok(None);
-    }
-
-    // In test mode, if no profitable path was found, build a fallback path
-    // from raw edges so we can still test the invoke flow
-    if config.test && edges.len() < 2 {
+    // In test mode, if no candidate found, build a fallback path
+    if config.test && candidate.is_none() {
         let all_edges = get_edges(instances)?;
         if all_edges.len() >= 2 {
             let start_token = config.start_token.unwrap_or(WSOL);
-            // First edge must buy (start_token → other), second must sell back, from different pools
             let buy_edge = all_edges.iter().find(|e| e.left.mint_account == start_token);
             if let Some(buy) = buy_edge {
                 let sell_edge = all_edges.iter().find(|e| e.right.mint_account == start_token && e.pool_id != buy.pool_id);
                 if let Some(sell) = sell_edge {
-                    edges = vec![buy.clone(), sell.clone()];
-                } else {
-                    return Ok(None);
+                    let edges = vec![buy.clone(), sell.clone()];
+                    let (optimal_amount_in, profit) =
+                        find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
+                    let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
+                    return Ok(Some(ArbitragePath {
+                        edges,
+                        profit,
+                        final_amount,
+                        start_amount: optimal_amount_in,
+                    }));
                 }
-            } else {
-                return Ok(None);
             }
-        } else {
-            return Ok(None);
         }
-    }
-
-    let (optimal_amount_in, profit) =
-        find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
-
-    msg!("Single opt: in={}, p={}", optimal_amount_in, profit);
-
-    if !config.test && (profit <= 0 || optimal_amount_in == 0) {
-        msg!("Single: rejected after opt, profit={} amt={}", profit, optimal_amount_in);
         return Ok(None);
     }
 
-    // Use wrapping arithmetic to avoid overflow checks (we know values are valid)
-    let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
+    let Some((edges, est_profit, _)) = candidate else {
+        if !config.test {
+            msg!("Single: Rejected, no profitable candidates");
+        }
+        return Ok(None);
+    };
 
-    let arbitrage_path = ArbitragePath {
+    msg!("Evaluating candidate: est_profit={}", est_profit);
+    let (optimal_amount_in, profit) =
+        find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
+
+    msg!("  opt: in={}, p={}", optimal_amount_in, profit);
+
+    if !config.test && (profit <= 0 || optimal_amount_in == 0) {
+        msg!("Single: rejected after opt, no profitable candidate");
+        return Ok(None);
+    }
+
+    let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
+    let best_result = ArbitragePath {
         edges,
         profit,
         final_amount,
         start_amount: optimal_amount_in,
     };
 
-    // Debug logging only in test/debug builds - no float operations in production
     #[cfg(any(test, feature = "debug"))]
     {
-        if optimal_amount_in > 0 {
-            let profit_pct = (profit as f64 / optimal_amount_in as f64) * 100.0;
+        if best_result.start_amount > 0 {
+            let profit_pct = (best_result.profit as f64 / best_result.start_amount as f64) * 100.0;
             debug_eprintln!(
                 "PROFIT: in={} out={} profit={} ({:.2}%)",
-                optimal_amount_in, final_amount, profit, profit_pct
+                best_result.start_amount, best_result.final_amount, best_result.profit, profit_pct
             );
         }
     }
 
-    Ok(Some(arbitrage_path))
+    Ok(Some(best_result))
 }
 
 /// CASE 2: Multi-hop chain arbitrage
@@ -448,7 +486,7 @@ fn run_multi_hop_arbitrage<'info>(
     let edge_refs: Vec<&_> = edges.iter().collect();
 
     // Use triangular arbitrage finder for 3+ hop chains
-    let (path_edges, profit, _) = find_triangular_arbitrage_iterative(&edge_refs, config)?;
+    let (path_edges, profit, _) = find_triangular_arbitrage_iterative(&edge_refs, instances, config)?;
 
     msg!("Hop: edges={}, est_profit={}", path_edges.len(), profit);
 
@@ -579,34 +617,44 @@ fn run_multiple_trades_arbitrage<'info>(
         debug_eprintln!("");
         debug_eprintln!("");
 
-        let (path_edges, profit, _) =
-            find_cross_arbitrage_optimized(&group_edge_refs, config)?;
+        let candidate = find_cross_arbitrage_optimized(&group_edge_refs, instances, config)?;
 
-        msg!("Multi grp: edges={}, est_profit={}", path_edges.len(), profit);
+        msg!("Multi grp: candidate={}", candidate.is_some());
 
-        if !config.test && (profit <= 0 || path_edges.is_empty()) {
-            msg!("Multi grp: skip, profit={} edges={}", profit, path_edges.len());
+        let Some((path_edges, est_profit, _)) = candidate else {
+            if config.test {
+                // In test mode, if no candidate found, use first two edges from group
+                let e0 = &all_edges[edge_indices[0]];
+                let e1 = &all_edges[edge_indices[1]];
+                let fallback_edges = vec![e0.clone(), e1.clone()];
+                let (optimal_amount_in, refined_profit) =
+                    find_optimal_amount_in_v2(&fallback_edges, accounts, instances, config)?;
+                if best_path.is_none() {
+                    let final_amount = (optimal_amount_in as i128).checked_add(refined_profit).unwrap_or(0) as u128;
+                    best_path = Some(ArbitragePath {
+                        edges: fallback_edges,
+                        profit: refined_profit,
+                        final_amount,
+                        start_amount: optimal_amount_in,
+                    });
+                }
+            } else {
+                msg!("Multi grp: skip, no candidate");
+            }
             continue;
-        }
-
-        // In test mode, if no profitable path found, use first two edges from group
-        let path_edges = if config.test && path_edges.is_empty() {
-            let e0 = &all_edges[edge_indices[0]];
-            let e1 = &all_edges[edge_indices[1]];
-            vec![e0.clone(), e1.clone()]
-        } else if path_edges.is_empty() {
-            continue;
-        } else {
-            path_edges
         };
 
-        // Optimize amount for this path (uses full instances for swap simulation)
+        msg!("  Evaluating candidate: est_profit={}", est_profit);
         let (optimal_amount_in, refined_profit) =
             find_optimal_amount_in_v2(&path_edges, accounts, instances, config)?;
 
-        msg!("Multi opt: in={}, profit={}", optimal_amount_in, refined_profit);
+        msg!("  Multi opt: in={}, profit={}", optimal_amount_in, refined_profit);
 
-        if !config.test && refined_profit > best_profit || config.test && best_path.is_none() {
+        if !config.test && (refined_profit <= 0 || optimal_amount_in == 0) {
+            continue;
+        }
+
+        if refined_profit > best_profit || (config.test && best_path.is_none()) {
             best_profit = refined_profit;
             let final_amount = (optimal_amount_in as i128).checked_add(refined_profit).unwrap_or(0) as u128;
             best_path = Some(ArbitragePath {

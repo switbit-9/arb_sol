@@ -9,9 +9,10 @@ use self::curve::calculator::CurveCalculator;
 use self::error::ErrorCode;
 use self::states::{AmmConfig, PoolState, SwapParams};
 use crate::utils::{
-    token::{get_transfer_fee, get_transfer_inverse_fee},
+    token::{apply_transfer_fee, apply_transfer_inverse_fee, get_epoch_transfer_fee},
     utils::parse_token_account,
 };
+use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use crate::{
     programs::ProgramMeta,
 };
@@ -81,6 +82,8 @@ pub struct RaydiumCPMM<'info> {
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
+    pub base_transfer_fee: Option<TransferFee>,
+    pub quote_transfer_fee: Option<TransferFee>,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -129,6 +132,50 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         }
     }
 
+    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        let amount_in = amount_in.min(max_in);
+        debug_eprintln!("[RAYD CPMM] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
+        let (
+            input_vault_key,
+            output_vault_key,
+            input_vault_amount,
+            output_vault_amount,
+        ) = if input_mint == self.base_token_pk {
+            (self.base_vault_key, self.quote_vault_key, self.base_vault_amount, self.quote_vault_amount)
+        } else {
+            (self.quote_vault_key, self.base_vault_key, self.quote_vault_amount, self.base_vault_amount)
+        };
+
+        let SwapParams {
+            total_input_token_amount,
+            total_output_token_amount,
+            is_creator_fee_on_input,
+            ..
+        } = self.pool.get_swap_params(
+            input_vault_key,
+            output_vault_key,
+            input_vault_amount,
+            output_vault_amount,
+        )?;
+
+        let creator_fee_rate = self.pool.adjust_creator_fee_rate(self.creator_fee_rate);
+        let result = CurveCalculator::swap_base_input(
+            u128::from(amount_in),
+            u128::from(total_input_token_amount),
+            u128::from(total_output_token_amount),
+            self.trade_fee_rate,
+            creator_fee_rate,
+            self.protocol_fee_rate,
+            self.fund_fee_rate,
+            is_creator_fee_on_input,
+        )
+        .ok_or(ErrorCode::ZeroTradingTokens)?;
+
+        let out = u64::try_from(result.output_amount).unwrap_or(u64::MAX);
+        Ok((amount_in, out.min(max_out)))
+    }
+
     fn swap_base_in<'a>(
         &self,
         accounts: &[AccountInfo<'a>],
@@ -136,25 +183,22 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         amount_in: u64,
         _clock: &Clock,
     ) -> Result<u64> {
-        let base_token_account = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token_account = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        // Determine input/output vaults and mints
+        // Determine input/output vaults
         let (
             input_vault_key,
             output_vault_key,
             input_vault_amount,
             output_vault_amount,
-            input_token_account,
-            output_token_account,
+            fee_in,
+            fee_out,
         ) = if input_mint == self.base_token_pk {
             (
                 self.base_vault_key,
                 self.quote_vault_key,
                 &self.base_vault_amount,
                 &self.quote_vault_amount,
-                base_token_account,
-                quote_token_account,
+                self.base_transfer_fee.as_ref(),
+                self.quote_transfer_fee.as_ref(),
             )
         } else {
             (
@@ -162,16 +206,16 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
                 self.base_vault_key,
                 &self.quote_vault_amount,
                 &self.base_vault_amount,
-                quote_token_account,
-                base_token_account,
+                self.quote_transfer_fee.as_ref(),
+                self.base_transfer_fee.as_ref(),
             )
         };
 
-        let transfer_fee = get_transfer_fee(input_token_account, amount_in)?;
+        let transfer_fee = apply_transfer_fee(amount_in, fee_in);
         let actual_amount_in = amount_in.saturating_sub(transfer_fee);
 
         let SwapParams {
-            trade_direction,
+            trade_direction: _,
             total_input_token_amount,
             total_output_token_amount,
             token_0_price_x64: _,
@@ -198,9 +242,9 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         .ok_or(ErrorCode::ZeroTradingTokens)?;
 
         let amount_out = u64::try_from(result.output_amount).unwrap();
-        let transfer_fee = get_transfer_fee(output_token_account, amount_out)?;
+        let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
         let amount_out = amount_out
-            .checked_sub(transfer_fee)
+            .checked_sub(transfer_fee_out)
             .ok_or(ErrorCode::MathOverflow)?;
 
         Ok(amount_out)
@@ -213,25 +257,22 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
         amount_out: u64,
         _clock: &Clock,
     ) -> Result<u64> {
-        let base_token_account = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token_account = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-
-        // Determine input/output vaults and mints
+        // Determine input/output vaults
         let (
             input_vault_key,
             output_vault_key,
             input_vault_amount,
             output_vault_amount,
-            input_token_account,
-            output_token_account,
+            fee_in,
+            fee_out,
         ) = if output_mint != self.base_token_pk {
             (
                 self.base_vault_key,
                 self.quote_vault_key,
                 &self.base_vault_amount,
                 &self.quote_vault_amount,
-                base_token_account,
-                quote_token_account,
+                self.base_transfer_fee.as_ref(),
+                self.quote_transfer_fee.as_ref(),
             )
         } else {
             (
@@ -239,12 +280,12 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
                 self.base_vault_key,
                 &self.quote_vault_amount,
                 &self.base_vault_amount,
-                quote_token_account,
-                base_token_account,
+                self.quote_transfer_fee.as_ref(),
+                self.base_transfer_fee.as_ref(),
             )
         };
 
-        let out_transfer_fee = get_transfer_inverse_fee(output_token_account, amount_out)?;
+        let out_transfer_fee = apply_transfer_inverse_fee(amount_out, fee_out)?;
         let amount_out_with_transfer_fee = amount_out
             .checked_add(out_transfer_fee)
             .ok_or(ErrorCode::MathOverflow)?;
@@ -280,7 +321,7 @@ impl<'info> ProgramMeta for RaydiumCPMM<'info> {
 
         let source_amount_swapped = u64::try_from(result.input_amount).unwrap();
         let amount_in_transfer_fee =
-            get_transfer_inverse_fee(input_token_account, source_amount_swapped)?;
+            apply_transfer_inverse_fee(source_amount_swapped, fee_in)?;
         let input_transfer_amount = source_amount_swapped
             .checked_add(amount_in_transfer_fee)
             .ok_or(ErrorCode::MathOverflow)?;
@@ -558,6 +599,11 @@ impl<'info> RaydiumCPMM<'info> {
         let (buy_in, buy_out, sell_in, sell_out) =
             Self::compute_cached_max(base_vault_amount, quote_vault_amount, fee_rate);
 
+        let base_token_acc = &accounts[start_index + Self::BASE_TOKEN_IDX];
+        let quote_token_acc = &accounts[start_index + Self::QUOTE_TOKEN_IDX];
+        let base_transfer_fee = get_epoch_transfer_fee(base_token_acc)?;
+        let quote_transfer_fee = get_epoch_transfer_fee(quote_token_acc)?;
+
         let instance = RaydiumCPMM {
             pool_id: *pool_id.key,
             base_token_pk: pool.token_0_mint,
@@ -580,6 +626,8 @@ impl<'info> RaydiumCPMM<'info> {
             buy_max_out: buy_out,
             sell_max_in: sell_in,
             sell_max_out: sell_out,
+            base_transfer_fee,
+            quote_transfer_fee,
             phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;

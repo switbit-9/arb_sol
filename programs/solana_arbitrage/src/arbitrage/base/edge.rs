@@ -32,7 +32,18 @@ pub struct Edge {
 const PRICE_SCALE: f64 = 1_000_000_000.0;
 
 impl Edge {
-    pub fn new(program: Pubkey, pool_id: Pubkey, side: EdgeSide, price: f64, fee_factor: f64, inverse_fee_factor: f64, max_amount_in: u64, max_amount_out: u64, left: Pool, right: Pool) -> Self {
+    pub fn new(
+        program: Pubkey,
+        pool_id: Pubkey,
+        side: EdgeSide,
+        price: f64,
+        fee_factor: f64,
+        inverse_fee_factor: f64,
+        max_amount_in: u64,
+        max_amount_out: u64,
+        left: Pool,
+        right: Pool,
+    ) -> Self {
         let scaled_price_with_fee = (price * fee_factor * PRICE_SCALE) as u128;
         Edge {
             program,
