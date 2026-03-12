@@ -1,6 +1,5 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, get_epoch_transfer_fee};
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
+use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, lookup_fee_rate};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -66,8 +65,8 @@ pub struct MeteoraDammV2<'info> {
     pub pool: Pool,
     pub base_vault_amount: u64,
     pub quote_vault_amount: u64,
-    pub start_index: usize,
-    pub end_index: usize,
+    pub static_base: usize,
+    pub dyn_start: usize,
     pub price: f64,
     pub inverse_price: f64,
     pub fee_rate_a_to_b: f64,
@@ -76,8 +75,9 @@ pub struct MeteoraDammV2<'info> {
     pub buy_max_out: u64,
     pub sell_max_in: u128,
     pub sell_max_out: u64,
-    pub base_transfer_fee: Option<TransferFee>,
-    pub quote_transfer_fee: Option<TransferFee>,
+    pub base_fee_rate: f64,
+    pub quote_fee_rate: f64,
+    pub prepared: bool,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -154,13 +154,13 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
         if input_mint == self.base_token_pk {
-            self.buy_max_out > 0
+            self.quote_vault_amount > 0
         } else {
-            self.sell_max_out > 0
+            self.base_vault_amount > 0
         }
     }
 
-    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         eprintln!("max_in: {}, max_out: {}", max_in, max_out);
         let amount_in = amount_in.min(max_in);
@@ -185,7 +185,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -204,15 +204,15 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         let current_point =
             get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
-        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let referral_token_account = &accounts[self.static_base + Self::S_REFERRAL_TOKEN_ACCOUNT];
         let has_referral = !referral_token_account.key.eq(&Pubkey::default()); // TODO: check if this is correct
         let fee_mode: FeeMode =
             FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
 
         let (fee_in, fee_out) = if input_mint == self.base_token_pk {
-            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+            (self.base_fee_rate, self.quote_fee_rate)
         } else {
-            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+            (self.quote_fee_rate, self.base_fee_rate)
         };
 
         let transfer_fee = apply_transfer_fee(amount_in, fee_in);
@@ -232,7 +232,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
@@ -253,15 +253,15 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             get_current_point(self.pool.activation_type, current_slot, current_timestamp)?;
 
         let (fee_in, fee_out) = if output_mint == self.base_token_pk {
-            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+            (self.quote_fee_rate, self.base_fee_rate)
         } else {
-            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+            (self.base_fee_rate, self.quote_fee_rate)
         };
 
-        let transfer_fee = apply_transfer_inverse_fee(amount_out, fee_out)?;
+        let transfer_fee = apply_transfer_inverse_fee(amount_out, fee_out);
         let amount_out_with_fees = amount_out.checked_add(transfer_fee).unwrap();
 
-        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let referral_token_account = &accounts[self.static_base + Self::S_REFERRAL_TOKEN_ACCOUNT];
         let has_referral = !referral_token_account.key.eq(&Pubkey::default()); // TODO: check if this is correct
         let fee_mode =
             FeeMode::get_fee_mode(self.pool.collect_fee_mode, trade_direction, has_referral)?;
@@ -272,7 +272,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             current_point,
         )?;
 
-        let transfer_fee_in = apply_transfer_inverse_fee(results.included_fee_input_amount, fee_in)?;
+        let transfer_fee_in = apply_transfer_inverse_fee(results.included_fee_input_amount, fee_in);
         let amount_in_with_fees = results
             .included_fee_input_amount
             .checked_add(transfer_fee_in)
@@ -283,7 +283,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn invoke_swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
@@ -323,18 +323,16 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             (user_quote_token_account, user_base_token_account)
         };
 
-        let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
-        let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
-        let pool_authority = &accounts[self.start_index + Self::POOL_AUTHORITY_IDX];
-        let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let program_id = &accounts[self.static_base + Self::S_PROGRAM_ID];
+        let pool_authority = &accounts[self.static_base + Self::S_POOL_AUTHORITY];
+        let event_authority = &accounts[self.static_base + Self::S_EVENT_AUTHORITY];
+        let referral_token_account = &accounts[self.static_base + Self::S_REFERRAL_TOKEN_ACCOUNT];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let base_vault = &accounts[self.dyn_start + Self::D_BASE_VAULT];
+        let quote_vault = &accounts[self.dyn_start + Self::D_QUOTE_VAULT];
 
         let amount_out_value = amount_out.unwrap_or(0);
-        let metas = [
+        let metas = vec![
             AccountMeta::new_readonly(*pool_authority.key, false),
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*input_token_account.key, false),
@@ -355,14 +353,15 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             AccountMeta::new_readonly(*program_id.key, false),
         ];
 
-        let mut data = vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
-        data.extend_from_slice(&max_amount_in.to_le_bytes());
-        data.extend_from_slice(&amount_out_value.to_le_bytes());
+        let mut data = [0u8; 24];
+        data[..8].copy_from_slice(&Self::SWAP_DISC);
+        data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
+        data[16..24].copy_from_slice(&amount_out_value.to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: *program_id.key,
-            accounts: metas.to_vec(),
-            data,
+            accounts: metas,
+            data: data.to_vec(),
         };
 
         // Stack-allocated accounts - avoids heap allocation
@@ -371,8 +370,6 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             pool_id.clone(),
             base_vault.clone(),
             quote_vault.clone(),
-            unsafe { std::mem::transmute(base_token.clone()) },
-            unsafe { std::mem::transmute(quote_token.clone()) },
             unsafe { std::mem::transmute(referral_token_account.clone()) },
             event_authority.clone(),
             program_id.clone(),
@@ -392,7 +389,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn invoke_swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -428,15 +425,13 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             return Err(ProgramError::InvalidAccountData.into());
         };
 
-        let program_id = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let base_vault = &accounts[self.start_index + Self::BASE_VAULT_IDX];
-        let quote_vault = &accounts[self.start_index + Self::QUOTE_VAULT_IDX];
-        let pool_authority = &accounts[self.start_index + Self::POOL_AUTHORITY_IDX];
-        let event_authority = &accounts[self.start_index + Self::EVENT_AUTHORITY_IDX];
-        let base_token = &accounts[self.start_index + Self::BASE_TOKEN_IDX];
-        let quote_token = &accounts[self.start_index + Self::QUOTE_TOKEN_IDX];
-        let referral_token_account = &accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX];
+        let program_id = &accounts[self.static_base + Self::S_PROGRAM_ID];
+        let pool_authority = &accounts[self.static_base + Self::S_POOL_AUTHORITY];
+        let event_authority = &accounts[self.static_base + Self::S_EVENT_AUTHORITY];
+        let referral_token_account = &accounts[self.static_base + Self::S_REFERRAL_TOKEN_ACCOUNT];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let base_vault = &accounts[self.dyn_start + Self::D_BASE_VAULT];
+        let quote_vault = &accounts[self.dyn_start + Self::D_QUOTE_VAULT];
 
         let (input_token_account, output_token_account) = if self.base_token_pk == input_mint {
             (user_base_token_account, user_quote_token_account)
@@ -445,7 +440,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         };
 
         let min_amount_out_value = min_amount_out.unwrap_or(0);
-        let metas = [
+        let metas = vec![
             AccountMeta::new_readonly(*pool_authority.key, false), // pool_authority
             AccountMeta::new(*pool_id.key, false),                 // pool_id
             AccountMeta::new(*input_token_account.key, false),     // input_token_account
@@ -465,27 +460,26 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
             AccountMeta::new_readonly(*event_authority.key, false), // event_authority
             AccountMeta::new_readonly(*program_id.key, false),      // program_id
         ];
-        let mut data = vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
-        data.extend_from_slice(&amount_in.to_le_bytes());
-        data.extend_from_slice(&min_amount_out_value.to_le_bytes());
+        let mut data = [0u8; 24];
+        data[..8].copy_from_slice(&Self::SWAP_DISC);
+        data[8..16].copy_from_slice(&amount_in.to_le_bytes());
+        data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
         let swap_ix = Instruction {
-            program_id: *accounts[self.start_index + 0].key, // program_id
-            accounts: metas.to_vec(),
-            data,
+            program_id: *program_id.key,
+            accounts: metas,
+            data: data.to_vec(),
         };
 
         // Stack-allocated accounts - avoids heap allocation
         let accounts_arr = [
-            accounts[self.start_index + Self::POOL_AUTHORITY_IDX].clone(),
-            accounts[self.start_index + Self::POOL_ID_IDX].clone(),
-            accounts[self.start_index + Self::BASE_VAULT_IDX].clone(),
-            accounts[self.start_index + Self::QUOTE_VAULT_IDX].clone(),
-            unsafe { std::mem::transmute(base_token.clone()) },
-            unsafe { std::mem::transmute(quote_token.clone()) },
+            pool_authority.clone(),
+            pool_id.clone(),
+            base_vault.clone(),
+            quote_vault.clone(),
             unsafe { std::mem::transmute(referral_token_account.to_account_info()) },
-            accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].clone(),
-            accounts[self.start_index + Self::PROGRAM_ID_IDX].clone(),
+            event_authority.clone(),
+            program_id.clone(),
             unsafe { std::mem::transmute(input_token_account.to_account_info()) },
             unsafe { std::mem::transmute(output_token_account.to_account_info()) },
             unsafe { std::mem::transmute(payer.to_account_info()) },
@@ -500,17 +494,18 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         Ok(())
     }
 
+        #[cfg(any(test, feature = "debug"))]
         fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!("=== Meteora DAMM V2 ===");
-        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
-        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
-        msg!("2 base_vault: {}", accounts[self.start_index + Self::BASE_VAULT_IDX].key);
-        msg!("3 quote_vault: {}", accounts[self.start_index + Self::QUOTE_VAULT_IDX].key);
-        msg!("4 base_token: {}", accounts[self.start_index + Self::BASE_TOKEN_IDX].key);
-        msg!("5 quote_token: {}", accounts[self.start_index + Self::QUOTE_TOKEN_IDX].key);
-        msg!("6 pool_authority: {}", accounts[self.start_index + Self::POOL_AUTHORITY_IDX].key);
-        msg!("7 event_authority: {}", accounts[self.start_index + Self::EVENT_AUTHORITY_IDX].key);
-        msg!("8 referral_token_account: {}", accounts[self.start_index + Self::REFERRAL_TOKEN_ACCOUNT_IDX].key);
+        msg!("S0 program_id: {}", accounts[self.static_base + Self::S_PROGRAM_ID].key);
+        msg!("S1 pool_authority: {}", accounts[self.static_base + Self::S_POOL_AUTHORITY].key);
+        msg!("S2 event_authority: {}", accounts[self.static_base + Self::S_EVENT_AUTHORITY].key);
+        msg!("S3 referral_token_account: {}", accounts[self.static_base + Self::S_REFERRAL_TOKEN_ACCOUNT].key);
+        msg!("D0 pool: {}", accounts[self.dyn_start + Self::D_POOL].key);
+        msg!("D1 base_vault: {}", accounts[self.dyn_start + Self::D_BASE_VAULT].key);
+        msg!("D2 quote_vault: {}", accounts[self.dyn_start + Self::D_QUOTE_VAULT].key);
+        msg!("base_token (from pool): {}", self.base_token_pk);
+        msg!("quote_token (from pool): {}", self.quote_token_pk);
         msg!("base_fee_mode: {} cliff_fee: {} actual_fee_rate: {}",
             self.pool.pool_fees.base_fee.base_fee_mode,
             self.pool.pool_fees.base_fee.cliff_fee_numerator,
@@ -521,38 +516,47 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 }
 
 impl<'info> MeteoraDammV2<'info> {
+    const SWAP_DISC: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
-    pub const PROGRAM_ID_IDX: usize = 0;
-    pub const POOL_ID_IDX: usize = 1;
-    pub const BASE_VAULT_IDX: usize = 2;
-    pub const QUOTE_VAULT_IDX: usize = 3;
-    pub const BASE_TOKEN_IDX: usize = 4;
-    pub const QUOTE_TOKEN_IDX: usize = 5;
-    pub const POOL_AUTHORITY_IDX: usize = 6;
-    pub const EVENT_AUTHORITY_IDX: usize = 7;
-    pub const REFERRAL_TOKEN_ACCOUNT_IDX: usize = 8;
+    // Static accounts (from static_base, shared across pools)
+    pub const S_PROGRAM_ID: usize = 0;
+    pub const S_POOL_AUTHORITY: usize = 1;
+    pub const S_EVENT_AUTHORITY: usize = 2;
+    pub const S_REFERRAL_TOKEN_ACCOUNT: usize = 3;
+
+    // Dynamic accounts (from dyn_start, per-pool)
+    pub const D_POOL: usize = 0;
+    pub const D_BASE_VAULT: usize = 1;
+    pub const D_QUOTE_VAULT: usize = 2;
+
+    pub const MIN_ACCOUNTS: usize = 3; // dynamic account count
     pub fn new(
         accounts: &[AccountInfo<'info>],
-        start_index: usize,
-        end_index: usize,
+        static_base: usize,
+        dyn_start: usize,
+        dyn_end: usize,
         clock: &Clock,
+        mint_fees: &[(Pubkey, f64)],
     ) -> Result<Self> {
-        // Access accounts by indices (relative to start_index)
-        let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone(); // 1
+        if dyn_end.saturating_sub(dyn_start) < Self::MIN_ACCOUNTS {
+            return Err(ProgramError::NotEnoughAccountKeys.into());
+        }
+        // Access accounts by indices
+        let pool_id = accounts[dyn_start + Self::D_POOL].clone();
         let pool_data = pool_id.try_borrow_data()?;
         let pool: Pool = bytemuck::pod_read_unaligned(&pool_data[8..]);
-        let base_token = accounts[start_index + Self::BASE_TOKEN_IDX].clone(); // 4
-        let quote_token = accounts[start_index + Self::QUOTE_TOKEN_IDX].clone(); // 5
+        // Read base/quote token pubkeys from pool state (no longer passed as accounts)
+        let base_token_pk = pool.token_a_mint;
+        let quote_token_pk = pool.token_b_mint;
         let (price, inverse_price) = get_prices(pool)?;
-        let base_vault = accounts[start_index + Self::BASE_VAULT_IDX].clone(); // 2
-        let quote_vault = accounts[start_index + Self::QUOTE_VAULT_IDX].clone(); // 3
+        let base_vault = accounts[dyn_start + Self::D_BASE_VAULT].clone();
+        let quote_vault = accounts[dyn_start + Self::D_QUOTE_VAULT].clone();
         let base_vault_amount = parse_token_account(&base_vault)?.amount;
         let quote_vault_amount = parse_token_account(&quote_vault)?.amount;
-        #[cfg(any(test, feature = "debug"))]
-        debug_eprintln!("base_vault_amount: {:?}", base_vault_amount);
-        #[cfg(any(test, feature = "debug"))]
-        debug_eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
+
+        // debug_eprintln!("base_vault_amount: {:?}", base_vault_amount);
+        // debug_eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
 
         // Compute actual fee using the full fee pipeline (base fee scheduler + dynamic fee)
         // cliff_fee_numerator is the initial/max fee, but the actual fee decays over time
@@ -586,51 +590,64 @@ impl<'info> MeteoraDammV2<'info> {
             .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
             .unwrap_or(fallback_fee);
 
-        // Cache max amounts from curve math (sqrt_min_price / sqrt_max_price boundaries)
-        // Use _unchecked (U256) for max_in to avoid u64 overflow on wide price ranges
-        // A→B (buy): price moves from sqrt_price down toward sqrt_min_price
-        let buy_max_in: u128 = get_delta_amount_a_unsigned_unchecked(
-            pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Up,
-        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
-        let buy_max_out = get_delta_amount_b_unsigned(
-            pool.sqrt_min_price, pool.sqrt_price, pool.liquidity, Rounding::Down,
-        ).unwrap_or(0).min(quote_vault_amount);
-        // B→A (sell): price moves from sqrt_price up toward sqrt_max_price
-        let sell_max_in: u128 = get_delta_amount_b_unsigned_unchecked(
-            pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Up,
-        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
-        let sell_max_out = get_delta_amount_a_unsigned(
-            pool.sqrt_price, pool.sqrt_max_price, pool.liquidity, Rounding::Down,
-        ).unwrap_or(0).min(base_vault_amount);
-
-        let base_transfer_fee = get_epoch_transfer_fee(&base_token)?;
-        let quote_transfer_fee = get_epoch_transfer_fee(&quote_token)?;
-
+        // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV2 {
-            base_token_pk: *base_token.key,
-            quote_token_pk: *quote_token.key,
+            base_token_pk,
+            quote_token_pk,
             pool: pool.clone(),
             pool_id: *pool_id.key,
             price: price,
             inverse_price: inverse_price,
             base_vault_amount: base_vault_amount,
             quote_vault_amount: quote_vault_amount,
-            start_index,
-            end_index,
+            static_base,
+            dyn_start,
             fee_rate_a_to_b,
             fee_rate_b_to_a,
-            buy_max_in,
-            buy_max_out,
-            sell_max_in,
-            sell_max_out,
-            base_transfer_fee,
-            quote_transfer_fee,
+            buy_max_in: 0,
+            buy_max_out: 0,
+            sell_max_in: 0,
+            sell_max_out: 0,
+            base_fee_rate: 0.0,
+            quote_fee_rate: 0.0,
+            prepared: false,
             phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
     }
-    
+
+    /// Compute deferred fields: max amounts, transfer fee rates.
+    /// Called only for instances that participate in a profitable arb path.
+    pub fn prepare_for_execution(
+        &mut self,
+        _accounts: &[AccountInfo<'info>],
+        mint_fees: &[(Pubkey, f64)],
+    ) {
+        if self.prepared {
+            return;
+        }
+        self.prepared = true;
+
+        self.base_fee_rate = lookup_fee_rate(mint_fees, &self.base_token_pk);
+        self.quote_fee_rate = lookup_fee_rate(mint_fees, &self.quote_token_pk);
+
+        // Cache max amounts from curve math (sqrt_min_price / sqrt_max_price boundaries)
+        // A→B (buy): price moves from sqrt_price down toward sqrt_min_price
+        self.buy_max_in = get_delta_amount_a_unsigned_unchecked(
+            self.pool.sqrt_min_price, self.pool.sqrt_price, self.pool.liquidity, Rounding::Up,
+        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
+        self.buy_max_out = get_delta_amount_b_unsigned(
+            self.pool.sqrt_min_price, self.pool.sqrt_price, self.pool.liquidity, Rounding::Down,
+        ).unwrap_or(0).min(self.quote_vault_amount);
+        // B→A (sell): price moves from sqrt_price up toward sqrt_max_price
+        self.sell_max_in = get_delta_amount_b_unsigned_unchecked(
+            self.pool.sqrt_price, self.pool.sqrt_max_price, self.pool.liquidity, Rounding::Up,
+        ).map(|v| v.min(U256::from(u128::MAX)).try_into().unwrap_or(u128::MAX)).unwrap_or(0);
+        self.sell_max_out = get_delta_amount_a_unsigned(
+            self.pool.sqrt_price, self.pool.sqrt_max_price, self.pool.liquidity, Rounding::Down,
+        ).unwrap_or(0).min(self.base_vault_amount);
+    }
 }
 
 #[cfg(test)]
@@ -856,8 +873,18 @@ mod tests {
 
     #[test]
     fn test_meteora_damm_v2_new_insufficient_accounts() {
-        let accounts = vec![];
-        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock());
+        // static_base=0, dyn_start=4, dyn_end=4 -> 0 dynamic accounts < MIN_ACCOUNTS
+        let program_id = Pubkey::new_unique();
+        let pool_authority = Pubkey::new_unique();
+        let event_authority = Pubkey::new_unique();
+        let referral_token_account = Pubkey::new_unique();
+        let accounts = vec![
+            create_mock_account_info(program_id, system_program::id(), None),
+            create_mock_account_info(pool_authority, system_program::id(), None),
+            create_mock_account_info(event_authority, system_program::id(), None),
+            create_mock_account_info(referral_token_account, system_program::id(), None),
+        ];
+        let result = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 4, &default_clock(), &[]);
         assert!(result.is_err());
     }
 
@@ -867,34 +894,29 @@ mod tests {
         let pool_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         let referral_token_account = Pubkey::new_unique();
 
+        // Static accounts: [0..4), Dynamic accounts: [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            create_mock_account_info(pool_id, system_program::id(), None),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            create_mock_account_info(pool_id, system_program::id(), None),           // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let result = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock());
+        let result = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]);
         assert!(result.is_ok());
 
         let meteora = result.unwrap();
-        // assert_eq!(*meteora.accounts[0].key, program_id);
-        // assert_eq!(*meteora.accounts[1].key, pool_id);
-        // assert_eq!(*meteora.accounts[2].key, base_vault);
-        // assert_eq!(*meteora.accounts[3].key, quote_vault);
-        assert_eq!(meteora.base_token_pk, base_token);
-        assert_eq!(meteora.quote_token_pk, quote_token);
+        // base_token_pk and quote_token_pk now come from pool state (token_a_mint / token_b_mint)
+        // With a zeroed pool, they will be Pubkey::default()
+        assert_eq!(meteora.base_token_pk, Pubkey::default());
+        assert_eq!(meteora.quote_token_pk, Pubkey::default());
     }
 
     #[test]
@@ -912,26 +934,23 @@ mod tests {
         let program_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         let referral_token_account = Pubkey::new_unique();
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            pool_account.clone(),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            pool_account.clone(),                                                    // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
-        let data = accounts[1].try_borrow_data().unwrap();
+        let mut meteora = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
+        let data = accounts[4].try_borrow_data().unwrap();
         let pool: Pool = bytemuck::pod_read_unaligned(&data[8..]);
 
         debug_eprintln!("pool: {:?}", pool.token_a_mint);
@@ -949,25 +968,22 @@ mod tests {
         let base_vault = pool.token_a_vault;
         let quote_vault = pool.token_b_vault;
         let base_token = pool.token_a_mint;
-        let quote_token = pool.token_b_mint;
-        let pool_authority = Pubkey::new_unique(); // This might need to be calculated properly
+        let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         let referral_token_account = Pubkey::default(); // Use default for no referral
 
         let correct_accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            pool_account.clone(),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            pool_account.clone(),                                                    // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora_correct =
-            MeteoraDammV2::new(correct_accounts.as_slice(), 0, correct_accounts.len(), &default_clock()).unwrap();
+        let mut meteora_correct =
+            MeteoraDammV2::new(correct_accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
 
         let clock = Clock {
             slot: 200000000, // High slot number to ensure activation
@@ -1007,26 +1023,23 @@ mod tests {
         let program_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         let referral_token_account = Pubkey::new_unique();
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            pool_account.clone(),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            pool_account.clone(),                                                    // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
-        let data = accounts[1].try_borrow_data().unwrap();
+        let mut meteora = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
+        let data = accounts[4].try_borrow_data().unwrap();
         let pool: Pool = bytemuck::pod_read_unaligned(&data[8..]);
 
         debug_eprintln!("pool: {:?}", pool.token_a_mint);
@@ -1042,6 +1055,7 @@ mod tests {
 
         // Test with a small amount (desired output amount)
         let amount_out = 1_000_000_000; // Desired output amount
+        let quote_token = pool.token_b_mint;
         let input_mint = quote_token; // For swap_base_out, input is quote_token to get base_token out
         let result = meteora.swap_base_out(accounts.as_slice(), input_mint, amount_out, &clock);
 
@@ -1066,26 +1080,23 @@ mod tests {
         let program_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         // Use a non-default referral token account
         let referral_token_account = Pubkey::new_unique();
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            pool_account.clone(),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            pool_account.clone(),                                                    // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
+        let mut meteora = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
 
         let clock = Clock {
             slot: 1000,
@@ -1096,6 +1107,7 @@ mod tests {
         };
 
         let amount_in = 1_000_000;
+        let base_token = meteora.base_token_pk;
         let input_mint = base_token; // Swap base token in
         let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, &clock);
 
@@ -1117,26 +1129,23 @@ mod tests {
         let program_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         // Use default (zero) referral token account
         let referral_token_account = Pubkey::default();
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            pool_account.clone(),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            pool_account.clone(),                                                    // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
+        let mut meteora = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
 
         let clock = Clock {
             slot: 1000,
@@ -1147,6 +1156,7 @@ mod tests {
         };
 
         let amount_in = 1_000_000;
+        let base_token = meteora.base_token_pk;
         let input_mint = base_token; // Swap base token in
         let result = meteora.swap_base_in(accounts.as_slice(), input_mint, amount_in, &clock);
 
@@ -1160,25 +1170,22 @@ mod tests {
         let pool_id = Pubkey::new_unique();
         let base_vault = Pubkey::new_unique();
         let quote_vault = Pubkey::new_unique();
-        let base_token = Pubkey::new_unique();
-        let quote_token = Pubkey::new_unique();
         let pool_authority = Pubkey::new_unique();
         let event_authority = Pubkey::new_unique();
         let referral_token_account = Pubkey::new_unique();
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            create_mock_account_info(program_id, system_program::id(), None),
-            create_mock_account_info(pool_id, system_program::id(), None),
-            create_mock_account_info(base_vault, system_program::id(), None),
-            create_mock_account_info(quote_vault, system_program::id(), None),
-            create_mock_account_info(base_token, system_program::id(), None),
-            create_mock_account_info(quote_token, system_program::id(), None),
-            create_mock_account_info(pool_authority, system_program::id(), None),
-            create_mock_account_info(event_authority, system_program::id(), None),
-            create_mock_account_info(referral_token_account, system_program::id(), None),
+            create_mock_account_info(program_id, system_program::id(), None),       // S0
+            create_mock_account_info(pool_authority, system_program::id(), None),    // S1
+            create_mock_account_info(event_authority, system_program::id(), None),   // S2
+            create_mock_account_info(referral_token_account, system_program::id(), None), // S3
+            create_mock_account_info(pool_id, system_program::id(), None),           // D0
+            create_mock_account_info(base_vault, system_program::id(), None),        // D1
+            create_mock_account_info(quote_vault, system_program::id(), None),       // D2
         ];
 
-        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &default_clock()).unwrap();
+        let meteora = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &default_clock(), &[]).unwrap();
 
         // Test ProgramMeta trait implementation
         let id = meteora.get_id();
@@ -1227,8 +1234,6 @@ mod tests {
         );
         let base_vault_account = fetch_account_info_from_rpc(&rpc_client, token_a_vault).await;
         let quote_vault_account = fetch_account_info_from_rpc(&rpc_client, token_b_vault).await;
-        let base_token_account = fetch_account_info_from_rpc(&rpc_client, token_a_mint).await;
-        let quote_token_account = fetch_account_info_from_rpc(&rpc_client, token_b_mint).await;
 
         // Create pool authority and event authority accounts
         let pool_authority = create_mock_account_info_with_data(
@@ -1247,20 +1252,19 @@ mod tests {
             None,
         );
 
+        // Static [0..4), Dynamic [4..7)
         let accounts = vec![
-            program_id_account,             // 0: program_id
-            pool_account_info.clone(),      // 1: pool_id
-            base_vault_account.clone(),     // 2: base_vault
-            quote_vault_account.clone(),    // 3: quote_vault
-            base_token_account.clone(),     // 4: base_token
-            quote_token_account.clone(),    // 5: quote_token
-            pool_authority.clone(),         // 6: pool_authority
-            event_authority.clone(),        // 7: event_authority
-            referral_token_account.clone(), // 8: referral_token_account
+            program_id_account,             // S0: program_id
+            pool_authority.clone(),         // S1: pool_authority
+            event_authority.clone(),        // S2: event_authority
+            referral_token_account.clone(), // S3: referral_token_account
+            pool_account_info.clone(),      // D0: pool
+            base_vault_account.clone(),     // D1: base_vault
+            quote_vault_account.clone(),    // D2: quote_vault
         ];
 
         let clock1 = get_clock(&rpc_client).await.unwrap();
-        let meteora_damm_v2 = MeteoraDammV2::new(accounts.as_slice(), 0, accounts.len(), &clock1).unwrap();
+        let mut meteora_damm_v2 = MeteoraDammV2::new(accounts.as_slice(), 0, 4, 7, &clock1, &[]).unwrap();
 
         let prices = meteora_damm_v2.get_prices().unwrap();
         let price = prices.0;

@@ -8,7 +8,7 @@ use self::states::{
     AmmConfigSimple, PoolStateSimple, TickArrayState, FEE_RATE_DENOMINATOR_VALUE, TICK_ARRAY_SIZE,
 };
 use crate::programs::ProgramMeta;
-use crate::utils::token::{get_transfer_fee, get_transfer_inverse_fee};
+use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, lookup_fee_rate};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
@@ -127,12 +127,16 @@ pub struct RaydiumCLMM<'info> {
     pub fee_rate: f64,
     pub price: f64,
     pub inverse_price: f64,
-    pub start_index: usize,
-    pub end_index: usize,
+    pub static_base: usize,
+    pub dyn_start: usize,
     pub buy_max_in: u64,
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
+    /// Whether max amounts have been lazily computed via tick array traversal
+    pub max_amounts_initialized: bool,
+    pub base_fee_rate: f64,
+    pub quote_fee_rate: f64,
     pub phantom: PhantomData<&'info ()>,
 }
 
@@ -157,59 +161,82 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
 
+    /// Virtual reserves from concentrated liquidity within the active tick range.
+    /// Within a single tick range (constant L), a CLMM swap is mathematically
+    /// equivalent to a constant-product AMM:
+    ///   v_0 = L / √P,  v_1 = L × √P
+    /// These are returned as (token_0_reserve, token_1_reserve).
+    fn get_vault_amounts(&self) -> Result<(u64, u64)> {
+        if self.liquidity == 0 || self.sqrt_price_x64 == 0 {
+            return Err(error!(crate::programs::SolarBError::InsufficientFunds));
+        }
+        let sqrt_p = self.sqrt_price_x64 as f64 / (1u128 << 64) as f64;
+        let l = self.liquidity as f64;
+        let v_0 = (l / sqrt_p).min(u64::MAX as f64) as u64;
+        let v_1 = (l * sqrt_p).min(u64::MAX as f64) as u64;
+        Ok((v_0, v_1))
+    }
+
     fn swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
         _clock: &Clock,
     ) -> Result<u64> {
-        let token_0_account = &accounts[self.start_index + Self::TOKEN_0_IDX];
-        let token_1_account = &accounts[self.start_index + Self::TOKEN_1_IDX];
+        // Lazily compute max amounts on first swap call
+        if !self.max_amounts_initialized {
+            if let Ok((mi, mo)) = self.calculate_swap_with_tick_arrays(accounts, u64::MAX, true, true) {
+                self.buy_max_in = mi;
+                self.buy_max_out = mo;
+            }
+            if let Ok((mi, mo)) = self.calculate_swap_with_tick_arrays(accounts, u64::MAX, false, true) {
+                self.sell_max_in = mi;
+                self.sell_max_out = mo;
+            }
+            self.max_amounts_initialized = true;
+        }
 
         let zero_for_one = input_mint == self.base_token_pk;
 
-        let (input_token_account, output_token_account) = if zero_for_one {
-            (token_0_account, token_1_account)
+        let (input_fee, output_fee) = if zero_for_one {
+            (self.base_fee_rate, self.quote_fee_rate)
         } else {
-            (token_1_account, token_0_account)
+            (self.quote_fee_rate, self.base_fee_rate)
         };
 
-        // Account for transfer fees
-        let transfer_fee = get_transfer_fee(input_token_account, amount_in)?;
+        // Account for transfer fees (cached)
+        let transfer_fee = apply_transfer_fee(amount_in, input_fee);
         let actual_amount_in = amount_in.saturating_sub(transfer_fee);
 
         // Calculate swap output - tick arrays parsed on-the-fly from account data (zero heap)
         let (_, amount_out) =
             self.calculate_swap_with_tick_arrays(accounts, actual_amount_in, zero_for_one, true)?;
 
-        // Account for output transfer fees
-        let out_transfer_fee = get_transfer_fee(output_token_account, amount_out)?;
+        // Account for output transfer fees (cached)
+        let out_transfer_fee = apply_transfer_fee(amount_out, output_fee);
         let final_amount_out = amount_out.saturating_sub(out_transfer_fee);
 
         Ok(final_amount_out)
     }
 
     fn swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
         _clock: &Clock,
     ) -> Result<u64> {
-        let token_0_account = &accounts[self.start_index + Self::TOKEN_0_IDX];
-        let token_1_account = &accounts[self.start_index + Self::TOKEN_1_IDX];
-
         let zero_for_one = output_mint == self.quote_token_pk;
 
-        let (input_token_account, output_token_account) = if zero_for_one {
-            (token_0_account, token_1_account)
+        let (input_fee, output_fee) = if zero_for_one {
+            (self.base_fee_rate, self.quote_fee_rate)
         } else {
-            (token_1_account, token_0_account)
+            (self.quote_fee_rate, self.base_fee_rate)
         };
 
-        // Account for output transfer fees
-        let out_transfer_fee = get_transfer_inverse_fee(output_token_account, amount_out)?;
+        // Account for output transfer fees (cached)
+        let out_transfer_fee = apply_transfer_inverse_fee(amount_out, output_fee);
         let amount_out_with_fee = amount_out
             .checked_add(out_transfer_fee)
             .ok_or(ErrorCode::AmountOverflow)?;
@@ -218,8 +245,8 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         let (_, amount_in) =
             self.calculate_swap_with_tick_arrays(accounts, amount_out_with_fee, zero_for_one, false)?;
 
-        // Account for input transfer fees
-        let in_transfer_fee = get_transfer_inverse_fee(input_token_account, amount_in)?;
+        // Account for input transfer fees (cached)
+        let in_transfer_fee = apply_transfer_inverse_fee(amount_in, input_fee);
         let final_amount_in = amount_in
             .checked_add(in_transfer_fee)
             .ok_or(ErrorCode::AmountOverflow)?;
@@ -228,7 +255,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
     }
 
     fn invoke_swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -241,12 +268,12 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         mint_1_token_program: AccountInfo<'a>,
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let amm_config = &accounts[self.start_index + Self::AMM_CONFIG_IDX];
-        let vault_0 = &accounts[self.start_index + Self::VAULT_0_IDX];
-        let vault_1 = &accounts[self.start_index + Self::VAULT_1_IDX];
-        let observation = &accounts[self.start_index + Self::OBSERVATION_IDX];
-        let bitmap_extension = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let amm_config = &accounts[self.dyn_start + Self::D_AMM_CONFIG];
+        let vault_0 = &accounts[self.dyn_start + Self::D_VAULT_0];
+        let vault_1 = &accounts[self.dyn_start + Self::D_VAULT_1];
+        let observation = &accounts[self.dyn_start + Self::D_OBSERVATION];
+        let bitmap_extension = &accounts[self.dyn_start + Self::D_BITMAP_EXT];
         let token_program_spl = &accounts[1];
         let token_program_2022: &AccountInfo<'a> = &accounts[2];
         let memo: &AccountInfo<'a> = &accounts[3];
@@ -300,21 +327,22 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
             metas.push(AccountMeta::new(*bitmap_extension.key, false));
         }
 
-        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
         for i in ta_from..ta_to {
             metas.push(AccountMeta::new(*accounts[i].key, false));
         }
 
-        let mut data: Vec<u8> = vec![43, 4, 237, 11, 26, 201, 30, 98]; // swap_v2 discriminator
-        data.extend_from_slice(&amount_in.to_le_bytes());
-        data.extend_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes());
-        data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit_x64 = 0
-        data.push(if zero_for_one { 1 } else { 0 }); // is_base_input = true
+        let mut data = [0u8; 41];
+        data[..8].copy_from_slice(&Self::SWAP_V2_DISC);
+        data[8..16].copy_from_slice(&amount_in.to_le_bytes());
+        data[16..24].copy_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes());
+        // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
+        data[40] = if zero_for_one { 1 } else { 0 }; // is_base_input
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
             accounts: metas,
-            data,
+            data: data.to_vec(),
         };
 
         let mut accounts_vec: Vec<AccountInfo<'a>> = Vec::with_capacity(20);
@@ -349,7 +377,7 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
     }
 
     fn invoke_swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
@@ -362,12 +390,12 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         mint_1_token_program: AccountInfo<'a>,
         mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let amm_config = &accounts[self.start_index + Self::AMM_CONFIG_IDX];
-        let vault_0 = &accounts[self.start_index + Self::VAULT_0_IDX];
-        let vault_1 = &accounts[self.start_index + Self::VAULT_1_IDX];
-        let observation = &accounts[self.start_index + Self::OBSERVATION_IDX];
-        let bitmap_extension = &accounts[self.start_index + Self::BITMAP_EXTENSION_IDX];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let amm_config = &accounts[self.dyn_start + Self::D_AMM_CONFIG];
+        let vault_0 = &accounts[self.dyn_start + Self::D_VAULT_0];
+        let vault_1 = &accounts[self.dyn_start + Self::D_VAULT_1];
+        let observation = &accounts[self.dyn_start + Self::D_OBSERVATION];
+        let bitmap_extension = &accounts[self.dyn_start + Self::D_BITMAP_EXT];
         let token_program_spl = &accounts[1];
         let token_program_2022 = &accounts[2];
         let memo: &AccountInfo<'a> = &accounts[3];
@@ -422,21 +450,22 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         }
 
         // Add tick array accounts for this swap direction
-        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
         for i in ta_from..ta_to {
             metas.push(AccountMeta::new(*accounts[i].key, false));
         }
 
-        let mut data = vec![43, 4, 237, 11, 26, 201, 30, 98]; // swap_v2 discriminator
-        data.extend_from_slice(&amount_out.unwrap_or(0).to_le_bytes());
-        data.extend_from_slice(&max_amount_in.to_le_bytes());
-        data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit_x64 = 0
-        data.push(if zero_for_one { 0 } else { 1 }); // is_base_input = false
+        let mut data = [0u8; 41];
+        data[..8].copy_from_slice(&Self::SWAP_V2_DISC);
+        data[8..16].copy_from_slice(&amount_out.unwrap_or(0).to_le_bytes());
+        data[16..24].copy_from_slice(&max_amount_in.to_le_bytes());
+        // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
+        data[40] = if zero_for_one { 0 } else { 1 }; // is_base_input = false
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
             accounts: metas,
-            data,
+            data: data.to_vec(),
         };
 
         let mut accounts_vec: Vec<AccountInfo<'a>> = Vec::with_capacity(20);
@@ -482,30 +511,24 @@ impl<'info> ProgramMeta for RaydiumCLMM<'info> {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
-        if input_mint == self.base_token_pk {
-            self.buy_max_out > 0
-        } else {
-            self.sell_max_out > 0
-        }
+    fn has_output_liquidity(&self, _input_mint: Pubkey) -> bool {
+        self.liquidity > 0
     }
 
+    #[cfg(any(test, feature = "debug"))]
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!("=== Raydium CLMM ===");
-        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
-        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
-        msg!("2 vault_0: {}", accounts[self.start_index + Self::VAULT_0_IDX].key);
-        msg!("3 vault_1: {}", accounts[self.start_index + Self::VAULT_1_IDX].key);
-        msg!("4 token_0: {}", accounts[self.start_index + Self::TOKEN_0_IDX].key);
-        msg!("5 token_1: {}", accounts[self.start_index + Self::TOKEN_1_IDX].key);
-        msg!("6 amm_config: {}", accounts[self.start_index + Self::AMM_CONFIG_IDX].key);
-        msg!("7 observation: {}", accounts[self.start_index + Self::OBSERVATION_IDX].key);
-        msg!("8 memo: {}", accounts[3].key);
-        msg!("8 bitmap_extension: {}", accounts[self.start_index + Self::BITMAP_EXTENSION_IDX].key);
-        msg!("9 tick_buy_1: {}", accounts[self.start_index + Self::TICK_BUY_1_IDX].key);
-        msg!("10 tick_buy_2: {}", accounts[self.start_index + Self::TICK_BUY_2_IDX].key);
-        msg!("11 tick_sell_1: {}", accounts[self.start_index + Self::TICK_SELL_1_IDX].key);
-        msg!("12 tick_sell_2: {}", accounts[self.start_index + Self::TICK_SELL_2_IDX].key);
+        msg!("S0 program_id: {}", accounts[self.static_base + Self::S_PROGRAM_ID].key);
+        msg!("D0 pool: {}", accounts[self.dyn_start + Self::D_POOL].key);
+        msg!("D1 vault_0: {}", accounts[self.dyn_start + Self::D_VAULT_0].key);
+        msg!("D2 vault_1: {}", accounts[self.dyn_start + Self::D_VAULT_1].key);
+        msg!("D3 amm_config: {}", accounts[self.dyn_start + Self::D_AMM_CONFIG].key);
+        msg!("D4 observation: {}", accounts[self.dyn_start + Self::D_OBSERVATION].key);
+        msg!("D5 bitmap_ext: {}", accounts[self.dyn_start + Self::D_BITMAP_EXT].key);
+        msg!("D6 tick_buy_0: {}", accounts[self.dyn_start + Self::D_TICK_BUY_0].key);
+        msg!("D7 tick_buy_1: {}", accounts[self.dyn_start + Self::D_TICK_BUY_1].key);
+        msg!("D8 tick_sell_0: {}", accounts[self.dyn_start + Self::D_TICK_SELL_0].key);
+        msg!("D9 tick_sell_1: {}", accounts[self.dyn_start + Self::D_TICK_SELL_1].key);
         Ok(())
     }
 }
@@ -514,42 +537,45 @@ impl<'info> RaydiumCLMM<'info> {
     /// Raydium CLMM Program ID
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
+    const SWAP_V2_DISC: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
 
-    // Account indices
-    pub const PROGRAM_ID_IDX: usize = 0;
-    pub const POOL_ID_IDX: usize = 1;
-    pub const VAULT_0_IDX: usize = 2;
-    pub const VAULT_1_IDX: usize = 3;
-    pub const TOKEN_0_IDX: usize = 4;
-    pub const TOKEN_1_IDX: usize = 5;
-    pub const AMM_CONFIG_IDX: usize = 6;
-    pub const OBSERVATION_IDX: usize = 7;
-    pub const BITMAP_EXTENSION_IDX: usize = 8;
+    // Static accounts (from static_base, 1 account)
+    pub const S_PROGRAM_ID: usize = 0;
+
+    // Dynamic accounts (from dyn_start, 10 accounts)
+    pub const D_POOL: usize = 0;
+    pub const D_VAULT_0: usize = 1;
+    pub const D_VAULT_1: usize = 2;
+    pub const D_AMM_CONFIG: usize = 3;
+    pub const D_OBSERVATION: usize = 4;
+    pub const D_BITMAP_EXT: usize = 5;
     // Buy direction tick arrays (zero_for_one: token_0 -> token_1)
-    pub const TICK_BUY_1_IDX: usize = 9;
-    pub const TICK_BUY_2_IDX: usize = 10;
+    pub const D_TICK_BUY_0: usize = 6;
+    pub const D_TICK_BUY_1: usize = 7;
     // Sell direction tick arrays (one_for_zero: token_1 -> token_0)
-    pub const TICK_SELL_1_IDX: usize = 11;
-    pub const TICK_SELL_2_IDX: usize = 12;
-    pub const ACCOUNT_COUNT: usize = 13;
+    pub const D_TICK_SELL_0: usize = 8;
+    pub const D_TICK_SELL_1: usize = 9;
+    pub const MIN_ACCOUNTS: usize = 10;
 
     /// Returns (from, to) absolute account indices for the tick arrays of a given swap direction.
     #[inline(always)]
-    fn tick_array_range(start_index: usize, zero_for_one: bool) -> (usize, usize) {
+    fn tick_array_range(dyn_start: usize, zero_for_one: bool) -> (usize, usize) {
         if zero_for_one {
-            (start_index + Self::TICK_BUY_1_IDX, start_index + Self::TICK_BUY_2_IDX + 1)
+            (dyn_start + Self::D_TICK_BUY_0, dyn_start + Self::D_TICK_BUY_1 + 1)
         } else {
-            (start_index + Self::TICK_SELL_1_IDX, start_index + Self::TICK_SELL_2_IDX + 1)
+            (dyn_start + Self::D_TICK_SELL_0, dyn_start + Self::D_TICK_SELL_1 + 1)
         }
     }
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
-        start_index: usize,
-        end_index: usize,
+        static_base: usize,
+        dyn_start: usize,
+        dyn_end: usize,
+        mint_fees: &[(Pubkey, f64)],
     ) -> Result<Self> {
-        let pool_id = &accounts[start_index + Self::POOL_ID_IDX];
-        let amm_config = &accounts[start_index + Self::AMM_CONFIG_IDX];
+        let pool_id = &accounts[dyn_start + Self::D_POOL];
+        let amm_config = &accounts[dyn_start + Self::D_AMM_CONFIG];
 
         // Parse pool state
         let pool_data = pool_id.try_borrow_data()?;
@@ -577,7 +603,7 @@ impl<'info> RaydiumCLMM<'info> {
 
         let inverse_price = if price > 0.0 { 1.0 / price } else { 0.0 };
 
-        let mut instance = RaydiumCLMM {
+        let instance = RaydiumCLMM {
             pool_id: *pool_id.key,
             amm_config_key: pool.amm_config,
             base_token_pk: pool.token_mint_0,
@@ -597,24 +623,30 @@ impl<'info> RaydiumCLMM<'info> {
             fee_rate: amm_config_parsed.trade_fee_rate as f64 / FEE_RATE_DENOMINATOR_VALUE as f64,
             price,
             inverse_price,
-            start_index,
-            end_index,
-            buy_max_in: 0,
-            buy_max_out: 0,
-            sell_max_in: 0,
-            sell_max_out: 0,
+            static_base,
+            dyn_start,
+            buy_max_in: u64::MAX,
+            buy_max_out: u64::MAX,
+            sell_max_in: u64::MAX,
+            sell_max_out: u64::MAX,
+            base_fee_rate: 0.0,
+            quote_fee_rate: 0.0,
+            max_amounts_initialized: false,
             phantom: PhantomData,
         };
-        // Cache max amounts via tick array traversal (expensive, done once)
-        if let Ok((mi, mo)) = instance.calculate_swap_with_tick_arrays(accounts, u64::MAX, true, true) {
-            instance.buy_max_in = mi;
-            instance.buy_max_out = mo;
-        }
-        if let Ok((mi, mo)) = instance.calculate_swap_with_tick_arrays(accounts, u64::MAX, false, true) {
-            instance.sell_max_in = mi;
-            instance.sell_max_out = mo;
-        }
+        // Max amounts are now lazily computed on first fast_quote/swap call
         Ok(instance)
+    }
+
+    /// Compute deferred fields: transfer fee rates.
+    /// Max amounts are already lazily initialized on first swap call.
+    pub fn prepare_for_execution(
+        &mut self,
+        _accounts: &[AccountInfo<'info>],
+        mint_fees: &[(Pubkey, f64)],
+    ) {
+        self.base_fee_rate = lookup_fee_rate(mint_fees, &self.base_token_pk);
+        self.quote_fee_rate = lookup_fee_rate(mint_fees, &self.quote_token_pk);
     }
 
     // ── Zero-copy tick array scanning ──────────────────────────────────
@@ -720,7 +752,7 @@ impl<'info> RaydiumCLMM<'info> {
         let ticks_in_array = TICK_ARRAY_SIZE * ts;
 
         // Select tick arrays for the swap direction
-        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
 
         // Pre-load direction-specific tick arrays ONCE — store raw data pointers
         let (ta, ta_count) = Self::preload_tick_arrays(
@@ -925,7 +957,7 @@ impl<'info> RaydiumCLMM<'info> {
     ) -> Result<Vec<LiquidityRange>> {
         let pool_id_bytes = self.pool_id.to_bytes();
 
-        let (ta_from, ta_to) = Self::tick_array_range(self.start_index, zero_for_one);
+        let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
         let (ta, ta_count) = Self::preload_tick_arrays(accounts, &pool_id_bytes, ta_from, ta_to);
 
         // Collect all initialized ticks across all arrays, sorted ascending
@@ -1240,8 +1272,8 @@ mod tests {
         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
         let vault_0 = account_to_account_info(pool.token_vault_0, vault_0_account);
         let vault_1 = account_to_account_info(pool.token_vault_1, vault_1_account);
-        let token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
-        let token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
+        let _token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
+        let _token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
         let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
         let observation = account_to_account_info(pool.observation_key, observation_account);
         let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
@@ -1253,8 +1285,9 @@ mod tests {
         let program_id_account =
             create_mock_account_info_with_data(program_id_key, system_program::id(), None);
 
-        // Account layout: [program_id, pool_id, vault_0, vault_1, token_0, token_1,
-        //                   amm_config, observation, bitmap_ext, buy_1, buy_2, sell_1, sell_2]
+        // Account layout: [program_id | pool_id, vault_0, vault_1, amm_config, observation,
+        //                   bitmap_ext, buy_1, buy_2, sell_1, sell_2]
+        // static_base=0 (1 account: program_id), dyn_start=1 (10 dynamic accounts)
         let bitmap_ext = create_mock_account_info_with_data(
             RaydiumCLMM::PROGRAM_ID, system_program::id(), None,
         );
@@ -1263,8 +1296,6 @@ mod tests {
             pool_id_account_info,
             vault_0.clone(),
             vault_1.clone(),
-            token_0.clone(),
-            token_1.clone(),
             amm_config,
             observation,
             bitmap_ext,
@@ -1274,7 +1305,7 @@ mod tests {
             tick_sell_2,
         ];
 
-        let raydium_clmm = match RaydiumCLMM::new(&accounts, 0, accounts.len()) {
+        let mut raydium_clmm = match RaydiumCLMM::new(&accounts, 0, 1, accounts.len(), &[]) {
             Ok(clmm) => clmm,
             Err(e) => {
                 eprintln!("Failed to create RaydiumCLMM: {:?}", e);
@@ -1293,7 +1324,7 @@ mod tests {
             raydium_clmm.trade_fee_rate,
             raydium_clmm.trade_fee_rate as f64 / 10000.0
         );
-        eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::ACCOUNT_COUNT - RaydiumCLMM::TICK_BUY_1_IDX);
+        eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::MIN_ACCOUNTS - RaydiumCLMM::D_TICK_BUY_0);
         let (max_in, max_out) = (raydium_clmm.buy_max_in, raydium_clmm.buy_max_out);
         eprintln!(
             "Max SOL IN: {} -> MAX TOKEN OUT: {}",
@@ -1436,8 +1467,8 @@ mod tests {
         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
         let vault_0 = account_to_account_info(pool.token_vault_0, vault_0_account);
         let vault_1 = account_to_account_info(pool.token_vault_1, vault_1_account);
-        let token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
-        let token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
+        let _token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
+        let _token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
         let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
         let observation = account_to_account_info(pool.observation_key, observation_account);
         let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
@@ -1451,11 +1482,11 @@ mod tests {
 
         let accounts = vec![
             program_id_account, pool_id_account_info, vault_0, vault_1,
-            token_0, token_1, amm_config, observation, bitmap_ext,
+            amm_config, observation, bitmap_ext,
             tick_buy_1, tick_buy_2, tick_sell_1, tick_sell_2,
         ];
 
-        let raydium_clmm = match RaydiumCLMM::new(&accounts, 0, accounts.len()) {
+        let mut raydium_clmm = match RaydiumCLMM::new(&accounts, 0, 1, accounts.len(), &[]) {
             Ok(clmm) => clmm,
             Err(e) => { eprintln!("Failed to create RaydiumCLMM: {:?}", e); return; }
         };

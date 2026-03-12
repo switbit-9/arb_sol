@@ -1,5 +1,5 @@
 use crate::arbitrage::base::{Edge, EdgeSide, Pool};
-use crate::programs::ProgramInstance;
+use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
 use std::collections::HashMap;
@@ -34,13 +34,14 @@ fn format_arb_path(edges: &[Edge], amount_in: u64, amount_out: u128) -> String {
     )
 }
 
-/// Build a pool_id -> &ProgramInstance lookup map.
-fn build_pool_lookup<'a, 'info>(
-    instances: &'a [ProgramInstance<'info>],
-) -> HashMap<Pubkey, &'a ProgramInstance<'info>> {
+/// Build a pool_id -> index lookup map.
+fn build_pool_index<'info>(
+    instances: &[ProgramInstance<'info>],
+) -> HashMap<Pubkey, usize> {
     instances
         .iter()
-        .map(|inst| (*inst.get_pool_id(), inst))
+        .enumerate()
+        .map(|(i, inst)| (*inst.get_pool_id(), i))
         .collect()
 }
 
@@ -50,11 +51,12 @@ fn build_pool_lookup<'a, 'info>(
 fn edge_fast_quote(
     edge: &Edge,
     amount_in: u64,
-    pool_lookup: &HashMap<Pubkey, &ProgramInstance>,
+    pool_index: &HashMap<Pubkey, usize>,
+    instances: &mut [ProgramInstance],
 ) -> (u64, u64) {
-    pool_lookup
+    pool_index
         .get(&edge.pool_id)
-        .and_then(|p| p.fast_quote(edge.left.mint_account, amount_in, 0.0).ok())
+        .and_then(|&idx| instances[idx].fast_quote(edge.left.mint_account, amount_in, 0.0).ok())
         .unwrap_or((0, 0))
 }
 
@@ -63,7 +65,7 @@ fn edge_fast_quote(
 /// Path: Start -> Token B -> Start
 pub fn find_cross_arbitrage_iterative<'info>(
     edges: &[&Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
@@ -80,7 +82,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
     let mut best_buy_fee = 0.0_f64;
     let mut best_sell_fee = 0.0_f64;
 
-    let pool_lookup = build_pool_lookup(instances);
+    let pool_index = build_pool_index(instances);
 
     // adjacency map: start -> edges
     let mut adj: HashMap<Pubkey, Vec<&Edge>> = HashMap::new();
@@ -100,7 +102,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
         if let Some(root_edges) = adj.get(&root) {
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_lookup);
+                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_index, instances);
 
                 if let Some(b_edges) = adj.get(&token_b) {
                     for edge2 in b_edges {
@@ -110,7 +112,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
                             continue;
                         }
 
-                        let (_, final_out) = edge_fast_quote(edge2, amount_b, &pool_lookup);
+                        let (_, final_out) = edge_fast_quote(edge2, amount_b, &pool_index, instances);
                         let final_amount = final_out as u128;
                         let profit = final_amount as i128 - start_amount as i128;
 
@@ -186,7 +188,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
 /// Path: Start -> Token B -> Token C -> Start
 pub fn find_triangular_arbitrage_iterative<'info>(
     edges: &[&Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
@@ -196,7 +198,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
     let mut best_path: Option<(Vec<Edge>, i128, u128)> = None;
     let mut max_profit = i128::MIN; // Start with minimum to allow tracking best path
 
-    let pool_lookup = build_pool_lookup(instances);
+    let pool_index = build_pool_index(instances);
 
     // 1. Build Adjacency List (Start -> [Edges])
     let mut adj: HashMap<Pubkey, Vec<&Edge>> = HashMap::new();
@@ -226,7 +228,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
             // Hop 1: Root -> B
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_lookup);
+                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_index, instances);
 
                 // Hop 2: B -> C (single lookup instead of contains_key + get)
                 if let Some(b_edges) = adj.get(&token_b) {
@@ -238,7 +240,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                             continue;
                         }
 
-                        let (_, amount_c) = edge_fast_quote(edge2, amount_b, &pool_lookup);
+                        let (_, amount_c) = edge_fast_quote(edge2, amount_b, &pool_index, instances);
 
                         // Hop 3: C -> Root (Optimized Lookup)
                         // Instead of iterating adj[token_c] and filtering for 'root',
@@ -246,7 +248,7 @@ pub fn find_triangular_arbitrage_iterative<'info>(
                         if let Some(third_leg_edges) = pair_map.get(&(token_c, root)) {
                             for edge3 in third_leg_edges {
                                 // Found 3-hop cycle
-                                let (_, final_out) = edge_fast_quote(edge3, amount_c, &pool_lookup);
+                                let (_, final_out) = edge_fast_quote(edge3, amount_c, &pool_index, instances);
                                 let final_amount = final_out as u128;
                                 let profit = final_amount as i128 - start_amount as i128;
 
@@ -402,7 +404,7 @@ pub fn get_edges<'info>(instances: &[ProgramInstance<'info>]) -> Result<Vec<Edge
 }
 
 pub fn check_arbitrage<'info>(
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let edges = get_edges(instances)?;

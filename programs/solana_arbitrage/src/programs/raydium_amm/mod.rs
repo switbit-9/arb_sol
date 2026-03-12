@@ -2,9 +2,8 @@ pub mod state;
 
 use self::state::{AmmInfoFields, AMM_INFO_SIZE};
 use crate::programs::ProgramMeta;
-use crate::utils::token::{apply_transfer_fee, get_epoch_transfer_fee};
+use crate::utils::token::{apply_transfer_fee, lookup_fee_rate};
 use crate::utils::utils::parse_token_account;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -36,14 +35,15 @@ pub struct RaydiumAmm<'info> {
     pub fee_rate: f64,
     pub swap_fee_numerator: u64,
     pub swap_fee_denominator: u64,
-    pub start_index: usize,
-    pub end_index: usize,
+    pub static_base: usize,
+    pub dyn_start: usize,
     pub buy_max_in: u64,
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
-    pub base_transfer_fee: Option<TransferFee>,
-    pub quote_transfer_fee: Option<TransferFee>,
+    pub base_fee_rate: f64,
+    pub quote_fee_rate: f64,
+    pub prepared: bool,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -84,7 +84,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = amount_in.min(max_in);
 
@@ -111,7 +111,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
     }
 
     fn swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -121,9 +121,9 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         let pc_reserve = self.quote_vault_amount as u128;
 
         let (fee_in, fee_out) = if input_mint == self.base_token_pk {
-            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+            (self.base_fee_rate, self.quote_fee_rate)
         } else {
-            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+            (self.quote_fee_rate, self.base_fee_rate)
         };
 
         // Apply transfer fee on input
@@ -172,7 +172,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
     }
 
     fn swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
@@ -182,9 +182,9 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         let pc_reserve = self.quote_vault_amount as u128;
 
         let (fee_in, fee_out) = if output_mint == self.base_token_pk {
-            (self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+            (self.quote_fee_rate, self.base_fee_rate)
         } else {
-            (self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+            (self.base_fee_rate, self.quote_fee_rate)
         };
 
         // Add transfer fee to desired output to get amount needed from pool
@@ -246,7 +246,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
     }
 
     fn invoke_swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -259,11 +259,10 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         mint_1_token_program: AccountInfo<'a>,
         _mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        let _program_id_account = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let coin_vault = &accounts[self.start_index + Self::COIN_VAULT_IDX];
-        let pc_vault = &accounts[self.start_index + Self::PC_VAULT_IDX];
-        let authority = &accounts[self.start_index + Self::AUTHORITY_IDX];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let coin_vault = &accounts[self.dyn_start + Self::D_COIN_VAULT];
+        let pc_vault = &accounts[self.dyn_start + Self::D_PC_VAULT];
+        let authority = &accounts[self.static_base + Self::S_AMM_AUTHORITY];
 
         // Determine user source/destination based on input mint
         let (user_source, user_destination) = if input_mint == self.base_token_pk {
@@ -297,14 +296,15 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         ];
 
         // SwapBaseInV2: tag=16, amount_in, minimum_amount_out
-        let mut data = vec![16u8];
-        data.extend_from_slice(&amount_in.to_le_bytes());
-        data.extend_from_slice(&min_out.to_le_bytes());
+        let mut data = [0u8; 17];
+        data[0] = Self::SWAP_BASE_IN_DISC;
+        data[1..9].copy_from_slice(&amount_in.to_le_bytes());
+        data[9..17].copy_from_slice(&min_out.to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
             accounts: metas,
-            data,
+            data: data.to_vec(),
         };
 
         let accounts_arr = [
@@ -326,7 +326,7 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
     }
 
     fn invoke_swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
@@ -339,11 +339,10 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         mint_1_token_program: AccountInfo<'a>,
         _mint_2_token_program: AccountInfo<'a>,
     ) -> Result<()> {
-        let _program_id_account = &accounts[self.start_index + Self::PROGRAM_ID_IDX];
-        let pool_id = &accounts[self.start_index + Self::POOL_ID_IDX];
-        let coin_vault = &accounts[self.start_index + Self::COIN_VAULT_IDX];
-        let pc_vault = &accounts[self.start_index + Self::PC_VAULT_IDX];
-        let authority = &accounts[self.start_index + Self::AUTHORITY_IDX];
+        let pool_id = &accounts[self.dyn_start + Self::D_POOL];
+        let coin_vault = &accounts[self.dyn_start + Self::D_COIN_VAULT];
+        let pc_vault = &accounts[self.dyn_start + Self::D_PC_VAULT];
+        let authority = &accounts[self.static_base + Self::S_AMM_AUTHORITY];
 
         // Determine user source/destination based on input mint
         let (user_source, user_destination) = if input_mint == self.base_token_pk {
@@ -375,14 +374,15 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         ];
 
         // SwapBaseOutV2: tag=17, max_amount_in, amount_out
-        let mut data = vec![17u8];
-        data.extend_from_slice(&max_amount_in.to_le_bytes());
-        data.extend_from_slice(&amount_out_value.to_le_bytes());
+        let mut data = [0u8; 17];
+        data[0] = Self::SWAP_BASE_OUT_DISC;
+        data[1..9].copy_from_slice(&max_amount_in.to_le_bytes());
+        data[9..17].copy_from_slice(&amount_out_value.to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
             accounts: metas,
-            data,
+            data: data.to_vec(),
         };
 
         let accounts_arr = [
@@ -403,16 +403,15 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "debug"))]
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!("=== Raydium AMM ===");
-        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
-        msg!("1 pool_id: {}", accounts[self.start_index + Self::POOL_ID_IDX].key);
-        msg!("2 coin_vault: {}", accounts[self.start_index + Self::COIN_VAULT_IDX].key);
-        msg!("3 pc_vault: {}", accounts[self.start_index + Self::PC_VAULT_IDX].key);
-        msg!("4 coin_token: {}", accounts[self.start_index + Self::COIN_TOKEN_IDX].key);
-        msg!("5 pc_token: {}", accounts[self.start_index + Self::PC_TOKEN_IDX].key);
-        msg!("6 authority: {}", accounts[self.start_index + Self::AUTHORITY_IDX].key);
-        msg!("7 open_orders: {}", accounts[self.start_index + Self::OPEN_ORDERS_IDX].key);
+        msg!("[S0] program_id: {}", accounts[self.static_base + Self::S_PROGRAM_ID].key);
+        msg!("[S1] amm_authority: {}", accounts[self.static_base + Self::S_AMM_AUTHORITY].key);
+        msg!("[D0] pool: {}", accounts[self.dyn_start + Self::D_POOL].key);
+        msg!("[D1] coin_vault: {}", accounts[self.dyn_start + Self::D_COIN_VAULT].key);
+        msg!("[D2] pc_vault: {}", accounts[self.dyn_start + Self::D_PC_VAULT].key);
+        msg!("[D3] open_orders: {}", accounts[self.dyn_start + Self::D_OPEN_ORDERS].key);
         Ok(())
     }
 }
@@ -420,14 +419,19 @@ impl<'info> ProgramMeta for RaydiumAmm<'info> {
 impl<'info> RaydiumAmm<'info> {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
-    pub const PROGRAM_ID_IDX: usize = 0;
-    pub const POOL_ID_IDX: usize = 1;
-    pub const COIN_VAULT_IDX: usize = 2;
-    pub const PC_VAULT_IDX: usize = 3;
-    pub const COIN_TOKEN_IDX: usize = 4;
-    pub const PC_TOKEN_IDX: usize = 5;
-    pub const AUTHORITY_IDX: usize = 6;
-    pub const OPEN_ORDERS_IDX: usize = 7;
+    const SWAP_BASE_IN_DISC: u8 = 16;
+    const SWAP_BASE_OUT_DISC: u8 = 17;
+    // ── Static account indices (from static_base, 2 accounts) ──
+    pub const S_PROGRAM_ID: usize = 0;
+    pub const S_AMM_AUTHORITY: usize = 1;
+
+    // ── Dynamic account indices (from dyn_start, 4 accounts) ──
+    pub const D_POOL: usize = 0;
+    pub const D_COIN_VAULT: usize = 1;
+    pub const D_PC_VAULT: usize = 2;
+    pub const D_OPEN_ORDERS: usize = 3;
+
+    pub const MIN_ACCOUNTS: usize = 4;
 
     // Serum/OpenBook OpenOrders account layout offsets
     // Layout: 5-byte head padding, u64 account_flags, Pubkey market, Pubkey owner,
@@ -462,14 +466,23 @@ impl<'info> RaydiumAmm<'info> {
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
-        start_index: usize,
-        end_index: usize,
+        static_base: usize,
+        dyn_start: usize,
+        dyn_end: usize,
+        mint_fees: &[(Pubkey, f64)],
     ) -> Result<Self> {
-        let pool_id = accounts[start_index + Self::POOL_ID_IDX].clone();
-        let coin_vault = accounts[start_index + Self::COIN_VAULT_IDX].clone();
-        let pc_vault = accounts[start_index + Self::PC_VAULT_IDX].clone();
-        let coin_token = accounts[start_index + Self::COIN_TOKEN_IDX].clone();
-        let pc_token = accounts[start_index + Self::PC_TOKEN_IDX].clone();
+        require!(
+            dyn_end - dyn_start >= Self::MIN_ACCOUNTS,
+            crate::programs::SolarBError::InsufficientAccounts
+        );
+        require!(
+            dyn_end <= accounts.len(),
+            crate::programs::SolarBError::InsufficientAccounts
+        );
+
+        let pool_id = accounts[dyn_start + Self::D_POOL].clone();
+        let coin_vault = accounts[dyn_start + Self::D_COIN_VAULT].clone();
+        let pc_vault = accounts[dyn_start + Self::D_PC_VAULT].clone();
 
         // Parse AmmInfo from pool account data (raw 752 bytes, no discriminator)
         let pool_data = pool_id.try_borrow_data()?;
@@ -478,14 +491,20 @@ impl<'info> RaydiumAmm<'info> {
         }
         let amm = AmmInfoFields::from_bytes(&pool_data);
 
+        // Token mints come from the pool state data (no longer passed as accounts)
+        let coin_vault_mint = amm.coin_vault_mint;
+        let pc_vault_mint = amm.pc_vault_mint;
+
+        drop(pool_data);
+
         // Read vault amounts from actual vault token accounts
         let coin_vault_amount = parse_token_account(&coin_vault)?.amount;
         let pc_vault_amount = parse_token_account(&pc_vault)?.amount;
 
         // Read open orders amounts from Serum/OpenBook (if account is provided)
         let (oo_native_coin, oo_native_pc) =
-            if start_index + Self::OPEN_ORDERS_IDX < end_index {
-                let open_orders = &accounts[start_index + Self::OPEN_ORDERS_IDX];
+            if dyn_start + Self::D_OPEN_ORDERS < dyn_end {
+                let open_orders = &accounts[dyn_start + Self::D_OPEN_ORDERS];
                 Self::parse_open_orders(open_orders)
             } else {
                 (0, 0)
@@ -500,22 +519,21 @@ impl<'info> RaydiumAmm<'info> {
             .saturating_add(oo_native_pc)
             .saturating_sub(amm.need_take_pnl_pc);
 
+        #[cfg(test)]
+        let base_vault_amount = (base_vault_amount as f64 * 1.05) as u64;
+
         // Compute price with decimal adjustment
         let raw_price = quote_vault_amount as f64 / base_vault_amount as f64;
         let price = raw_price;
         let inverse_price = 1.0 / price;
 
         let fee_rate = amm.swap_fee_numerator as f64 / amm.swap_fee_denominator as f64;
-        let (buy_in, buy_out, sell_in, sell_out) =
-            Self::compute_cached_max(base_vault_amount, quote_vault_amount, fee_rate);
 
-        let base_transfer_fee = get_epoch_transfer_fee(&coin_token)?;
-        let quote_transfer_fee = get_epoch_transfer_fee(&pc_token)?;
-
+        // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = RaydiumAmm {
             pool_id: *pool_id.key,
-            base_token_pk: *coin_token.key,
-            quote_token_pk: *pc_token.key,
+            base_token_pk: coin_vault_mint,
+            quote_token_pk: pc_vault_mint,
             base_vault_amount,
             quote_vault_amount,
             price,
@@ -523,14 +541,15 @@ impl<'info> RaydiumAmm<'info> {
             fee_rate,
             swap_fee_numerator: amm.swap_fee_numerator,
             swap_fee_denominator: amm.swap_fee_denominator,
-            start_index,
-            end_index,
-            buy_max_in: buy_in,
-            buy_max_out: buy_out,
-            sell_max_in: sell_in,
-            sell_max_out: sell_out,
-            base_transfer_fee,
-            quote_transfer_fee,
+            static_base,
+            dyn_start,
+            buy_max_in: 0,
+            buy_max_out: 0,
+            sell_max_in: 0,
+            sell_max_out: 0,
+            base_fee_rate: 0.0,
+            quote_fee_rate: 0.0,
+            prepared: false,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
@@ -551,6 +570,29 @@ impl<'info> RaydiumAmm<'info> {
         let (buy_in, buy_out) = cp_max(base_vault as f64, quote_vault as f64, ff);
         let (sell_in, sell_out) = cp_max(quote_vault as f64, base_vault as f64, ff);
         (buy_in, buy_out, sell_in, sell_out)
+    }
+
+    /// Compute deferred fields: max amounts, transfer fee rates.
+    /// Called only for instances that participate in a profitable arb path.
+    pub fn prepare_for_execution(
+        &mut self,
+        _accounts: &[AccountInfo<'info>],
+        mint_fees: &[(Pubkey, f64)],
+    ) {
+        if self.prepared {
+            return;
+        }
+        self.prepared = true;
+
+        self.base_fee_rate = lookup_fee_rate(mint_fees, &self.base_token_pk);
+        self.quote_fee_rate = lookup_fee_rate(mint_fees, &self.quote_token_pk);
+
+        let (buy_in, buy_out, sell_in, sell_out) =
+            Self::compute_cached_max(self.base_vault_amount, self.quote_vault_amount, self.fee_rate);
+        self.buy_max_in = buy_in;
+        self.buy_max_out = buy_out;
+        self.sell_max_in = sell_in;
+        self.sell_max_out = sell_out;
     }
 }
 
@@ -692,20 +734,6 @@ mod tests {
         let coin_vault_account = coin_vault_account.unwrap();
         let pc_vault_account = pc_vault_account.unwrap();
 
-        // Fetch mint accounts
-        let coin_mint_account = rpc_client
-            .get_account(
-                &SdkPubkey::try_from(amm.coin_vault_mint.to_bytes().as_ref()).unwrap(),
-            )
-            .await
-            .unwrap();
-        let pc_mint_account = rpc_client
-            .get_account(
-                &SdkPubkey::try_from(amm.pc_vault_mint.to_bytes().as_ref()).unwrap(),
-            )
-            .await
-            .unwrap();
-
         // Derive authority PDA: create_program_address(&[b"amm authority", &[nonce]], program_id)
         let authority_key = Pubkey::create_program_address(
             &[b"amm authority", &[amm.nonce]],
@@ -732,8 +760,6 @@ mod tests {
         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
         let coin_vault_info = account_to_account_info(coin_vault_key, coin_vault_account);
         let pc_vault_info = account_to_account_info(pc_vault_key, pc_vault_account);
-        let coin_mint_info = account_to_account_info(amm.coin_vault_mint, coin_mint_account);
-        let pc_mint_info = account_to_account_info(amm.pc_vault_mint, pc_mint_account);
         let open_orders_info = account_to_account_info(amm.open_orders, open_orders_account);
 
         let program_id_account =
@@ -741,20 +767,27 @@ mod tests {
         let authority_account =
             create_mock_account_info_with_data(authority_key, system_program::id(), None);
 
-        // Accounts order: program_id, pool_id, coin_vault, pc_vault, coin_mint, pc_mint, authority, open_orders
+        // Accounts order:
+        //   [0] program_id (static S0)
+        //   [1] authority  (static S1)
+        //   [2] pool_id    (dynamic D0)
+        //   [3] coin_vault (dynamic D1)
+        //   [4] pc_vault   (dynamic D2)
+        //   [5] open_orders(dynamic D3)
         let accounts = vec![
-            program_id_account,
-            pool_id_account_info,
+            program_id_account,  // static_base = 0
+            authority_account,   // static_base + 1
+            pool_id_account_info, // dyn_start = 2
             coin_vault_info,
             pc_vault_info,
-            coin_mint_info,
-            pc_mint_info,
-            authority_account,
             open_orders_info,
         ];
 
-        let raydium_amm =
-            RaydiumAmm::new(&accounts, 0, accounts.len()).expect("Failed to create RaydiumAmm");
+        let static_base = 0;
+        let dyn_start = 2;
+        let dyn_end = accounts.len();
+        let mut raydium_amm =
+            RaydiumAmm::new(&accounts, static_base, dyn_start, dyn_end, &[]).expect("Failed to create RaydiumAmm");
 
         eprintln!(
             "Price: {:?}, Inverse Price: {:?}",

@@ -1,5 +1,5 @@
 use crate::arbitrage::base::Edge;
-use crate::programs::ProgramInstance;
+use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
 
@@ -41,7 +41,7 @@ impl PoolIndex {
 fn edge_fast_quote(
     edge: &Edge,
     amount_in: u64,
-    instances: &[ProgramInstance],
+    instances: &mut [ProgramInstance],
     pool_index: &PoolIndex,
     profit_pct: f64,
 ) -> (u64, u64) {
@@ -91,7 +91,7 @@ fn top2_by_price<'a>(edges: &[&'a Edge]) -> (Option<&'a Edge>, Option<&'a Edge>)
 /// Path: Root -> Token B -> Root
 pub fn find_cross_arbitrage_optimized<'info>(
     edges: &[&Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<Option<(Vec<Edge>, i128, u128)>> {
     let start_token = config.start_token;
@@ -341,13 +341,13 @@ pub fn find_cross_arbitrage_optimized<'info>(
         0.0
     };
     debug_eprintln!("");
-    msg!(
-        "P={:.4}, F={:.4}, F={:.4}, {:.4})",
-        price_diff_pct,
-        1.0 - max_fee,
-        1.0 - min_fee,
-        display_max_profit as f64 / 1_000_000_000.0,
-    );
+    // msg!(
+    //     "P={:.4}, F={:.4}, F={:.4}, {:.4})",
+    //     price_diff_pct,
+    //     1.0 - max_fee,
+    //     1.0 - min_fee,
+    //     display_max_profit as f64 / 1_000_000_000.0,
+    // );
     debug_eprintln!("");
 
     #[cfg(any(test, feature = "debug"))]

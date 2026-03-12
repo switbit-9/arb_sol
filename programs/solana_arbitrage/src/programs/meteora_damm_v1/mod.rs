@@ -1,7 +1,6 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::{apply_transfer_fee, get_epoch_transfer_fee};
+use crate::utils::token::{apply_transfer_fee, lookup_fee_rate};
 use crate::utils::utils::parse_token_account;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -88,14 +87,15 @@ pub struct MeteoraDammV1<'info> {
     pub trade_fee_denominator: u64,
     pub protocol_fee_numerator: u64,
     pub protocol_fee_denominator: u64,
-    pub start_index: usize,
-    pub end_index: usize,
+    pub static_base: usize,
+    pub dyn_start: usize,
     pub buy_max_in: u64,
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
-    pub base_transfer_fee: Option<TransferFee>,
-    pub quote_transfer_fee: Option<TransferFee>,
+    pub base_fee_rate: f64,
+    pub quote_fee_rate: f64,
+    pub prepared: bool,
     _phantom: PhantomData<&'info ()>,
 }
 
@@ -140,7 +140,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn fast_quote(&self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = amount_in.min(max_in);
 
@@ -183,7 +183,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -191,10 +191,10 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     ) -> Result<u64> {
         let (reserve_in, reserve_out, fee_in, fee_out) = if input_mint == self.base_token_pk {
             (self.base_vault_amount as u128, self.quote_vault_amount as u128,
-             self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+             self.base_fee_rate, self.quote_fee_rate)
         } else {
             (self.quote_vault_amount as u128, self.base_vault_amount as u128,
-             self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+             self.quote_fee_rate, self.base_fee_rate)
         };
 
         // Apply transfer fee on input
@@ -241,7 +241,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
@@ -250,11 +250,11 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         let (reserve_in, reserve_out, fee_in, fee_out) = if output_mint == self.base_token_pk {
             // Output is A, input is B
             (self.quote_vault_amount as u128, self.base_vault_amount as u128,
-             self.quote_transfer_fee.as_ref(), self.base_transfer_fee.as_ref())
+             self.quote_fee_rate, self.base_fee_rate)
         } else {
             // Output is B, input is A
             (self.base_vault_amount as u128, self.quote_vault_amount as u128,
-             self.base_transfer_fee.as_ref(), self.quote_transfer_fee.as_ref())
+             self.base_fee_rate, self.quote_fee_rate)
         };
 
         // Add transfer fee to desired output
@@ -303,7 +303,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn invoke_swap_base_in<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         max_amount_in: u64,
@@ -325,27 +325,27 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
         // Protocol fee account depends on input token direction
         let protocol_token_fee = if input_mint == self.base_token_pk {
-            &accounts[self.start_index + Self::PROTOCOL_TOKEN_A_FEE_IDX]
+            &accounts[self.dyn_start + Self::D_PROTO_FEE_A]
         } else {
-            &accounts[self.start_index + Self::PROTOCOL_TOKEN_B_FEE_IDX]
+            &accounts[self.dyn_start + Self::D_PROTO_FEE_B]
         };
 
-        let pool = &accounts[self.start_index + Self::POOL_IDX];
-        let a_vault = &accounts[self.start_index + Self::A_VAULT_IDX];
-        let b_vault = &accounts[self.start_index + Self::B_VAULT_IDX];
-        let a_token_vault = &accounts[self.start_index + Self::A_TOKEN_VAULT_IDX];
-        let b_token_vault = &accounts[self.start_index + Self::B_TOKEN_VAULT_IDX];
-        let a_vault_lp_mint = &accounts[self.start_index + Self::A_VAULT_LP_MINT_IDX];
-        let b_vault_lp_mint = &accounts[self.start_index + Self::B_VAULT_LP_MINT_IDX];
-        let a_vault_lp = &accounts[self.start_index + Self::A_VAULT_LP_IDX];
-        let b_vault_lp = &accounts[self.start_index + Self::B_VAULT_LP_IDX];
-        let vault_program = &accounts[self.start_index + Self::VAULT_PROGRAM_IDX];
-        let token_program = &accounts[self.start_index + Self::TOKEN_PROGRAM_IDX];
+        let pool = &accounts[self.dyn_start + Self::D_POOL];
+        let a_vault = &accounts[self.dyn_start + Self::D_A_VAULT];
+        let b_vault = &accounts[self.dyn_start + Self::D_B_VAULT];
+        let a_token_vault = &accounts[self.dyn_start + Self::D_A_TOKEN_VAULT];
+        let b_token_vault = &accounts[self.dyn_start + Self::D_B_TOKEN_VAULT];
+        let a_vault_lp_mint = &accounts[self.dyn_start + Self::D_A_VAULT_LP_MINT];
+        let b_vault_lp_mint = &accounts[self.dyn_start + Self::D_B_VAULT_LP_MINT];
+        let a_vault_lp = &accounts[self.dyn_start + Self::D_A_VAULT_LP];
+        let b_vault_lp = &accounts[self.dyn_start + Self::D_B_VAULT_LP];
+        let vault_program = &accounts[self.dyn_start + Self::D_VAULT_PROGRAM];
+        let token_program = &accounts[self.dyn_start + Self::D_TOKEN_PROGRAM];
 
         let minimum_out = amount_out.unwrap_or(0);
 
         // Swap instruction account layout (from SDK swap.rs)
-        let metas = [
+        let metas = vec![
             AccountMeta::new(*pool.key, false),                  // pool
             AccountMeta::new(*user_source_token.key, false),     // user_source_token
             AccountMeta::new(*user_destination_token.key, false),// user_destination_token
@@ -364,14 +364,15 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         ];
 
         // Anchor swap discriminator: sha256("global:swap")[..8]
-        let mut data = vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
-        data.extend_from_slice(&max_amount_in.to_le_bytes());
-        data.extend_from_slice(&minimum_out.to_le_bytes());
+        let mut data = [0u8; 24];
+        data[..8].copy_from_slice(&Self::SWAP_DISC);
+        data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
+        data[16..24].copy_from_slice(&minimum_out.to_le_bytes());
 
         let swap_ix = Instruction {
             program_id: Self::PROGRAM_ID,
-            accounts: metas.to_vec(),
-            data,
+            accounts: metas,
+            data: data.to_vec(),
         };
 
         let accounts_arr = [
@@ -400,7 +401,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn invoke_swap_base_out<'a>(
-        &self,
+        &mut self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
@@ -429,24 +430,25 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         )
     }
 
+    #[cfg(any(test, feature = "debug"))]
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
         msg!("=== Meteora DAMM V1 ===");
-        msg!("0 program_id: {}", accounts[self.start_index + Self::PROGRAM_ID_IDX].key);
-        msg!("1 pool: {}", accounts[self.start_index + Self::POOL_IDX].key);
-        msg!("2 a_vault: {}", accounts[self.start_index + Self::A_VAULT_IDX].key);
-        msg!("3 b_vault: {}", accounts[self.start_index + Self::B_VAULT_IDX].key);
-        msg!("4 a_token_vault: {}", accounts[self.start_index + Self::A_TOKEN_VAULT_IDX].key);
-        msg!("5 b_token_vault: {}", accounts[self.start_index + Self::B_TOKEN_VAULT_IDX].key);
-        msg!("6 a_vault_lp_mint: {}", accounts[self.start_index + Self::A_VAULT_LP_MINT_IDX].key);
-        msg!("7 b_vault_lp_mint: {}", accounts[self.start_index + Self::B_VAULT_LP_MINT_IDX].key);
-        msg!("8 a_vault_lp: {}", accounts[self.start_index + Self::A_VAULT_LP_IDX].key);
-        msg!("9 b_vault_lp: {}", accounts[self.start_index + Self::B_VAULT_LP_IDX].key);
-        msg!("10 token_a_mint: {}", accounts[self.start_index + Self::TOKEN_A_MINT_IDX].key);
-        msg!("11 token_b_mint: {}", accounts[self.start_index + Self::TOKEN_B_MINT_IDX].key);
-        msg!("12 protocol_token_a_fee: {}", accounts[self.start_index + Self::PROTOCOL_TOKEN_A_FEE_IDX].key);
-        msg!("13 protocol_token_b_fee: {}", accounts[self.start_index + Self::PROTOCOL_TOKEN_B_FEE_IDX].key);
-        msg!("14 vault_program: {}", accounts[self.start_index + Self::VAULT_PROGRAM_IDX].key);
-        msg!("15 token_program: {}", accounts[self.start_index + Self::TOKEN_PROGRAM_IDX].key);
+        msg!("[S] 0 program_id: {}", accounts[self.static_base + Self::S_PROGRAM_ID].key);
+        msg!("[D] 0 pool: {}", accounts[self.dyn_start + Self::D_POOL].key);
+        msg!("[D] 1 a_vault: {}", accounts[self.dyn_start + Self::D_A_VAULT].key);
+        msg!("[D] 2 b_vault: {}", accounts[self.dyn_start + Self::D_B_VAULT].key);
+        msg!("[D] 3 a_token_vault: {}", accounts[self.dyn_start + Self::D_A_TOKEN_VAULT].key);
+        msg!("[D] 4 b_token_vault: {}", accounts[self.dyn_start + Self::D_B_TOKEN_VAULT].key);
+        msg!("[D] 5 a_vault_lp_mint: {}", accounts[self.dyn_start + Self::D_A_VAULT_LP_MINT].key);
+        msg!("[D] 6 b_vault_lp_mint: {}", accounts[self.dyn_start + Self::D_B_VAULT_LP_MINT].key);
+        msg!("[D] 7 a_vault_lp: {}", accounts[self.dyn_start + Self::D_A_VAULT_LP].key);
+        msg!("[D] 8 b_vault_lp: {}", accounts[self.dyn_start + Self::D_B_VAULT_LP].key);
+        msg!("[D] 9 proto_fee_a: {}", accounts[self.dyn_start + Self::D_PROTO_FEE_A].key);
+        msg!("[D] 10 proto_fee_b: {}", accounts[self.dyn_start + Self::D_PROTO_FEE_B].key);
+        msg!("[D] 11 vault_program: {}", accounts[self.dyn_start + Self::D_VAULT_PROGRAM].key);
+        msg!("[D] 12 token_program: {}", accounts[self.dyn_start + Self::D_TOKEN_PROGRAM].key);
+        msg!("token_a_mint (from pool): {}", self.base_token_pk);
+        msg!("token_b_mint (from pool): {}", self.quote_token_pk);
         Ok(())
     }
 }
@@ -454,43 +456,46 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 impl<'info> MeteoraDammV1<'info> {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB");
+    const SWAP_DISC: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
 
-    // Account indices
-    pub const PROGRAM_ID_IDX: usize = 0;
-    pub const POOL_IDX: usize = 1;
-    pub const A_VAULT_IDX: usize = 2;
-    pub const B_VAULT_IDX: usize = 3;
-    pub const A_TOKEN_VAULT_IDX: usize = 4;
-    pub const B_TOKEN_VAULT_IDX: usize = 5;
-    pub const A_VAULT_LP_MINT_IDX: usize = 6;
-    pub const B_VAULT_LP_MINT_IDX: usize = 7;
-    pub const A_VAULT_LP_IDX: usize = 8;
-    pub const B_VAULT_LP_IDX: usize = 9;
-    pub const TOKEN_A_MINT_IDX: usize = 10;
-    pub const TOKEN_B_MINT_IDX: usize = 11;
-    pub const PROTOCOL_TOKEN_A_FEE_IDX: usize = 12;
-    pub const PROTOCOL_TOKEN_B_FEE_IDX: usize = 13;
-    pub const VAULT_PROGRAM_IDX: usize = 14;
-    pub const TOKEN_PROGRAM_IDX: usize = 15;
+    // ── Static account indices (from static_base, 1 account) ──
+    pub const S_PROGRAM_ID: usize = 0;
 
-    pub const MIN_ACCOUNTS: usize = 16;
+    // ── Dynamic account indices (from dyn_start, 13 accounts) ──
+    pub const D_POOL: usize = 0;
+    pub const D_A_VAULT: usize = 1;
+    pub const D_B_VAULT: usize = 2;
+    pub const D_A_TOKEN_VAULT: usize = 3;
+    pub const D_B_TOKEN_VAULT: usize = 4;
+    pub const D_A_VAULT_LP_MINT: usize = 5;
+    pub const D_B_VAULT_LP_MINT: usize = 6;
+    pub const D_A_VAULT_LP: usize = 7;
+    pub const D_B_VAULT_LP: usize = 8;
+    pub const D_PROTO_FEE_A: usize = 9;
+    pub const D_PROTO_FEE_B: usize = 10;
+    pub const D_VAULT_PROGRAM: usize = 11;
+    pub const D_TOKEN_PROGRAM: usize = 12;
+
+    pub const MIN_ACCOUNTS: usize = 13;
 
     pub fn new(
         accounts: &[AccountInfo<'info>],
-        start_index: usize,
-        end_index: usize,
+        static_base: usize,
+        dyn_start: usize,
+        dyn_end: usize,
         clock: &Clock,
+        mint_fees: &[(Pubkey, f64)],
     ) -> Result<Self> {
         require!(
-            end_index - start_index >= Self::MIN_ACCOUNTS,
+            dyn_end - dyn_start >= Self::MIN_ACCOUNTS,
             crate::programs::SolarBError::InsufficientAccounts
         );
         require!(
-            end_index <= accounts.len(),
+            dyn_end <= accounts.len(),
             crate::programs::SolarBError::InsufficientAccounts
         );
 
-        let pool_account = &accounts[start_index + Self::POOL_IDX];
+        let pool_account = &accounts[dyn_start + Self::D_POOL];
         let pool_data = pool_account.try_borrow_data()?;
 
         // Parse Pool state from Borsh-serialized data (after 8-byte Anchor discriminator)
@@ -507,12 +512,12 @@ impl<'info> MeteoraDammV1<'info> {
 
         // Compute effective reserves using vault unlocked amount (total_amount - locked_profit):
         // effective_amount = vault_unlocked_amount * pool_vault_lp_amount / vault_lp_supply
-        let a_vault = &accounts[start_index + Self::A_VAULT_IDX];
-        let b_vault = &accounts[start_index + Self::B_VAULT_IDX];
-        let a_vault_lp_mint = &accounts[start_index + Self::A_VAULT_LP_MINT_IDX];
-        let b_vault_lp_mint = &accounts[start_index + Self::B_VAULT_LP_MINT_IDX];
-        let a_vault_lp = &accounts[start_index + Self::A_VAULT_LP_IDX];
-        let b_vault_lp = &accounts[start_index + Self::B_VAULT_LP_IDX];
+        let a_vault = &accounts[dyn_start + Self::D_A_VAULT];
+        let b_vault = &accounts[dyn_start + Self::D_B_VAULT];
+        let a_vault_lp_mint = &accounts[dyn_start + Self::D_A_VAULT_LP_MINT];
+        let b_vault_lp_mint = &accounts[dyn_start + Self::D_B_VAULT_LP_MINT];
+        let a_vault_lp = &accounts[dyn_start + Self::D_A_VAULT_LP];
+        let b_vault_lp = &accounts[dyn_start + Self::D_B_VAULT_LP];
 
         let current_time: u64 = clock.unix_timestamp as u64;
         let vault_a_unlocked = read_vault_unlocked_amount(a_vault, current_time)?;
@@ -555,14 +560,7 @@ impl<'info> MeteoraDammV1<'info> {
             (0.0, 0.0)
         };
 
-        let (buy_max_in, buy_max_out, sell_max_in, sell_max_out) =
-            Self::compute_cached_max(base_vault_amount, quote_vault_amount, fee_rate);
-
-        let token_a_mint_acc = &accounts[start_index + Self::TOKEN_A_MINT_IDX];
-        let token_b_mint_acc = &accounts[start_index + Self::TOKEN_B_MINT_IDX];
-        let base_transfer_fee = get_epoch_transfer_fee(token_a_mint_acc)?;
-        let quote_transfer_fee = get_epoch_transfer_fee(token_b_mint_acc)?;
-
+        // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV1 {
             pool_id: *pool_account.key,
             base_token_pk: token_a_mint,
@@ -576,14 +574,15 @@ impl<'info> MeteoraDammV1<'info> {
             trade_fee_denominator,
             protocol_fee_numerator,
             protocol_fee_denominator,
-            start_index,
-            end_index,
-            buy_max_in,
-            buy_max_out,
-            sell_max_in,
-            sell_max_out,
-            base_transfer_fee,
-            quote_transfer_fee,
+            static_base,
+            dyn_start,
+            buy_max_in: 0,
+            buy_max_out: 0,
+            sell_max_in: 0,
+            sell_max_out: 0,
+            base_fee_rate: 0.0,
+            quote_fee_rate: 0.0,
+            prepared: false,
             _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
@@ -633,22 +632,34 @@ impl<'info> MeteoraDammV1<'info> {
             .ok_or(ProgramError::InvalidArgument)?;
         Ok(if fee == 0 { 1 } else { fee })
     }
+
+    /// Compute deferred fields: max amounts, transfer fee rates.
+    /// Called only for instances that participate in a profitable arb path.
+    pub fn prepare_for_execution(
+        &mut self,
+        _accounts: &[AccountInfo<'info>],
+        mint_fees: &[(Pubkey, f64)],
+    ) {
+        if self.prepared {
+            return;
+        }
+        self.prepared = true;
+
+        self.base_fee_rate = lookup_fee_rate(mint_fees, &self.base_token_pk);
+        self.quote_fee_rate = lookup_fee_rate(mint_fees, &self.quote_token_pk);
+
+        let (buy_in, buy_out, sell_in, sell_out) =
+            Self::compute_cached_max(self.base_vault_amount, self.quote_vault_amount, self.fee_rate);
+        self.buy_max_in = buy_in;
+        self.buy_max_out = buy_out;
+        self.sell_max_in = sell_in;
+        self.sell_max_out = sell_out;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anchor_spl::token::Token;
-
-    /// Create a mock mint AccountInfo owned by the SPL Token program (no transfer fee).
-    fn mock_spl_mint(key: &'static mut Pubkey, owner: &'static mut Pubkey) -> AccountInfo<'static> {
-        // Minimal SPL Token mint: 82 bytes
-        let data = Box::leak(Box::new(vec![0u8; 82]));
-        let lamports = Box::leak(Box::new(1_000_000u64));
-        *owner = Token::id();
-        AccountInfo::new(key, false, false, lamports, data, owner, false, 0)
-    }
-
     fn make_damm_v1(
         base_vault: u64,
         quote_vault: u64,
@@ -680,22 +691,24 @@ mod tests {
             trade_fee_denominator: fee_den,
             protocol_fee_numerator: proto_num,
             protocol_fee_denominator: proto_den,
-            start_index: 0,
-            end_index: 16,
+            static_base: 0,
+            dyn_start: 1,
             buy_max_in,
             buy_max_out,
             sell_max_in,
             sell_max_out,
-            base_transfer_fee: None,
-            quote_transfer_fee: None,
+            base_fee_rate: 0.0,
+            quote_fee_rate: 0.0,
+            prepared: true,
             _phantom: PhantomData,
         }
     }
 
-    /// Build a mock accounts slice with SPL Token mints at TOKEN_A_MINT_IDX and TOKEN_B_MINT_IDX.
+    /// Build a mock accounts slice: 1 static (program_id) + 13 dynamic accounts.
     fn build_mock_accounts() -> Vec<AccountInfo<'static>> {
         let mut accounts = Vec::new();
-        for _ in 0..MeteoraDammV1::MIN_ACCOUNTS {
+        // 1 static + MIN_ACCOUNTS(13) dynamic = 14 total
+        for _ in 0..(1 + MeteoraDammV1::MIN_ACCOUNTS) {
             let key = Box::leak(Box::new(Pubkey::new_unique()));
             let owner = Box::leak(Box::new(Pubkey::default()));
             let data = Box::leak(Box::new(vec![0u8; 8]));
@@ -704,15 +717,6 @@ mod tests {
                 key, false, false, lamports, data, owner, false, 0,
             ));
         }
-        // Replace mint slots with SPL Token-owned mints (transfer fee = 0)
-        let key_a = Box::leak(Box::new(Pubkey::new_unique()));
-        let owner_a = Box::leak(Box::new(Pubkey::default()));
-        accounts[MeteoraDammV1::TOKEN_A_MINT_IDX] = mock_spl_mint(key_a, owner_a);
-
-        let key_b = Box::leak(Box::new(Pubkey::new_unique()));
-        let owner_b = Box::leak(Box::new(Pubkey::default()));
-        accounts[MeteoraDammV1::TOKEN_B_MINT_IDX] = mock_spl_mint(key_b, owner_b);
-
         accounts
     }
 
@@ -730,7 +734,7 @@ mod tests {
     /// X' should be >= X (swap_base_out rounds up).
     #[test]
     fn test_round_trip_base_to_quote() {
-        let damm = make_damm_v1(
+        let mut damm = make_damm_v1(
             1_000_000_000, // 1B base
             2_000_000_000, // 2B quote
             25,            // 0.25% fee
@@ -773,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_round_trip_quote_to_base() {
-        let damm = make_damm_v1(
+        let mut damm = make_damm_v1(
             1_000_000_000,
             2_000_000_000,
             25,
@@ -819,7 +823,7 @@ mod tests {
     /// Y' should be >= Y (we over-estimate the input).
     #[test]
     fn test_round_trip_out_then_in_base_to_quote() {
-        let damm = make_damm_v1(
+        let mut damm = make_damm_v1(
             500_000_000,
             1_000_000_000,
             30,
@@ -855,7 +859,7 @@ mod tests {
     /// Zero-fee pool round-trip should be tighter.
     #[test]
     fn test_round_trip_zero_fee() {
-        let damm = make_damm_v1(
+        let mut damm = make_damm_v1(
             1_000_000_000,
             1_000_000_000,
             0, // no fee
@@ -888,7 +892,7 @@ mod tests {
     /// Verify fee calculation helpers.
     #[test]
     fn test_calculate_trade_fee() {
-        let damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 0, 1);
+        let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 0, 1);
         // 25/10000 = 0.25%
         assert_eq!(damm.calculate_trade_fee(10_000).unwrap(), 25);
         assert_eq!(damm.calculate_trade_fee(0).unwrap(), 0);
@@ -898,7 +902,7 @@ mod tests {
 
     #[test]
     fn test_calculate_protocol_fee() {
-        let damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 1, 5);
+        let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 1, 5);
         // protocol = 1/5 = 20% of trade fee
         assert_eq!(damm.calculate_protocol_fee(100).unwrap(), 20);
         assert_eq!(damm.calculate_protocol_fee(0).unwrap(), 0);
@@ -909,7 +913,7 @@ mod tests {
     /// Constant product invariant: after swap, k' >= k (fees mean k grows).
     #[test]
     fn test_constant_product_invariant() {
-        let damm = make_damm_v1(1_000_000_000, 2_000_000_000, 25, 10_000, 1, 5);
+        let mut damm = make_damm_v1(1_000_000_000, 2_000_000_000, 25, 10_000, 1, 5);
         let accounts = build_mock_accounts();
         let clock = dummy_clock();
 

@@ -2,7 +2,7 @@
 
 
     // fn build_test_scenario_meteora_dlmm_mock() -> Vec<AccountInfo<'static>> {
-    //     use dlmm::pda;
+    //     use crate::programs::meteora_dlmm::dlmm_lib::pda;
 
     //     fn decode_hex(data: &str) -> Vec<u8> {
     //         assert!(
@@ -77,7 +77,7 @@
     //         Some(decode_hex(bitmap_extension_data)),
     //     );
 
-    //     let left_bin_array_pubkeys = dlmm::quote::get_bin_array_pubkeys_for_swap(
+    //     let left_bin_array_pubkeys = crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(
     //         pool_id_pk,
     //         &lb_pair,
     //         None,
@@ -86,7 +86,7 @@
     //     )
     //     .expect("failed to derive left bin array pubkeys");
 
-    //     let right_bin_array_pubkeys = dlmm::quote::get_bin_array_pubkeys_for_swap(
+    //     let right_bin_array_pubkeys = crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(
     //         pool_id_pk,
     //         &lb_pair,
     //         None,

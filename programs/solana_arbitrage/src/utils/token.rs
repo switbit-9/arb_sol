@@ -1,5 +1,6 @@
 use crate::programs::SolarBError;
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::{
     TransferFee, TransferFeeConfig, MAX_FEE_BASIS_POINTS,
 };
@@ -117,6 +118,33 @@ pub fn get_epoch_transfer_fee(token_mint: &AccountInfo) -> Result<Option<Transfe
     Ok(None)
 }
 
+/// Extract fee rate from a mint account as a f64 (basis_points / 10_000).
+/// Returns 0.0 for standard SPL Token mints or mints without transfer fee extension.
+pub fn extract_fee_rate(token_mint: &AccountInfo, epoch: u64) -> Result<f64> {
+    if *token_mint.owner == Token::id() {
+        return Ok(0.0);
+    }
+
+    let token_mint_data = token_mint.try_borrow_data()?;
+    let token_mint_unpacked =
+        StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&token_mint_data)?;
+    if let Ok(transfer_fee_config) =
+        token_mint_unpacked.get_extension::<extension::transfer_fee::TransferFeeConfig>()
+    {
+        let fee = transfer_fee_config.get_epoch_fee(epoch);
+        let basis_points = u16::from(fee.transfer_fee_basis_points);
+        return Ok(basis_points as f64 / 10_000.0);
+    }
+
+    Ok(0.0)
+}
+
+/// Look up a cached fee rate by mint pubkey. Returns 0.0 if not found.
+#[inline(always)]
+pub fn lookup_fee_rate(mint_fees: &[(Pubkey, f64)], mint: &Pubkey) -> f64 {
+    mint_fees.iter().find(|(k, _)| k == mint).map(|(_, f)| *f).unwrap_or(0.0)
+}
+
 /// Calculate the fee for output amount
 pub fn get_transfer_inverse_fee(mint_info: &AccountInfo, post_fee_amount: u64) -> Result<u64> {
     if *mint_info.owner == Token::id() {
@@ -174,48 +202,24 @@ pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64) -> Result<
     Ok(fee)
 }
 
-/// Apply forward transfer fee using a pre-computed TransferFee.
+/// Apply forward transfer fee using a pre-computed fee rate.
 /// Returns the fee amount to subtract from `pre_fee_amount`.
-/// If `fee` is None (SPL Token, no transfer fee extension), returns 0.
 #[inline(always)]
-pub fn apply_transfer_fee(pre_fee_amount: u64, fee: Option<&TransferFee>) -> u64 {
-    match fee {
-        Some(tf) => tf.calculate_fee(pre_fee_amount).unwrap_or(0),
-        None => 0,
+pub fn apply_transfer_fee(pre_fee_amount: u64, fee_rate: f64) -> u64 {
+    if fee_rate == 0.0 {
+        return 0;
     }
+    (pre_fee_amount as f64 * fee_rate) as u64
 }
 
-/// Apply inverse transfer fee using a pre-computed TransferFee.
+/// Apply inverse transfer fee using a pre-computed fee rate.
 /// Returns the fee amount to add to `post_fee_amount` to get the pre-fee amount.
-/// If `fee` is None (SPL Token, no transfer fee extension), returns 0.
 #[inline(always)]
-pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee: Option<&TransferFee>) -> Result<u64> {
-    match fee {
-        Some(tf) => {
-            if post_fee_amount == 0 {
-                return Ok(0);
-            }
-            if u16::from(tf.transfer_fee_basis_points) == MAX_FEE_BASIS_POINTS {
-                Ok(u64::from(tf.maximum_fee))
-            } else {
-                let inverse_fee = tf
-                    .calculate_inverse_fee(post_fee_amount)
-                    .ok_or(SolarBError::TransferFeeCalculationError)?;
-                let check = tf
-                    .calculate_fee(
-                        post_fee_amount
-                            .checked_add(inverse_fee)
-                            .ok_or(SolarBError::TransferFeeCalculationError)?,
-                    )
-                    .unwrap_or(0);
-                if check != inverse_fee {
-                    return Err(error!(SolarBError::TransferFeeCalculationError));
-                }
-                Ok(inverse_fee)
-            }
-        }
-        None => Ok(0),
+pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee_rate: f64) -> u64 {
+    if fee_rate == 0.0 || post_fee_amount == 0 {
+        return 0;
     }
+    (post_fee_amount as f64 * fee_rate / (1.0 - fee_rate)).ceil() as u64
 }
 
 pub fn get_transfer_fee_config(mint_info: &AccountInfo) -> Result<Option<TransferFeeConfig>> {

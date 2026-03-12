@@ -1,5 +1,5 @@
 use crate::arbitrage::base::Edge;
-use crate::arbitrage::utils::find_instance_by_pool_id;
+use crate::arbitrage::utils::find_instance_index_by_pool_id;
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use anchor_lang::prelude::*;
@@ -17,15 +17,16 @@ const MIN_PROFIT_THRESHOLD: i128 = 50_000; // 0.00005 SOL - skip refinement if b
 #[inline]
 fn simulate_path<'info>(
     accounts: &[AccountInfo<'info>],
-    program_1: &Box<dyn ProgramMeta + 'info>,
-    program_2: &Box<dyn ProgramMeta + 'info>,
+    instances: &mut [ProgramInstance<'info>],
+    idx_1: usize,
+    idx_2: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     amount_in: u64,
     clock: &Clock,
 ) -> Result<i128> {
-    let token_out = program_1.swap_base_in(accounts, input_mint, amount_in, clock)?;
-    let sol_out = program_2.swap_base_in(accounts, middle_mint, token_out, clock)?;
+    let token_out = instances[idx_1].swap_base_in(accounts, input_mint, amount_in, clock)?;
+    let sol_out = instances[idx_2].swap_base_in(accounts, middle_mint, token_out, clock)?;
 
     Ok(sol_out as i128 - amount_in as i128)
 }
@@ -34,8 +35,9 @@ fn simulate_path<'info>(
 /// Optimized for low CU usage
 fn golden_section_search<'info>(
     accounts: &[AccountInfo<'info>],
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    instances: &mut [ProgramInstance<'info>],
+    idx_1: usize,
+    idx_2: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     min_amount: u64,
@@ -56,8 +58,9 @@ fn golden_section_search<'info>(
     // Evaluate at initial points
     let mut fc = simulate_path(
         accounts,
-        program_1,
-        program_2,
+        instances,
+        idx_1,
+        idx_2,
         input_mint,
         middle_mint,
         c,
@@ -67,8 +70,9 @@ fn golden_section_search<'info>(
 
     let mut fd = simulate_path(
         accounts,
-        program_1,
-        program_2,
+        instances,
+        idx_1,
+        idx_2,
         input_mint,
         middle_mint,
         d,
@@ -107,8 +111,9 @@ fn golden_section_search<'info>(
             c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
             fc = simulate_path(
                 accounts,
-                program_1,
-                program_2,
+                instances,
+                idx_1,
+                idx_2,
                 input_mint,
                 middle_mint,
                 c,
@@ -123,8 +128,9 @@ fn golden_section_search<'info>(
             d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
             fd = simulate_path(
                 accounts,
-                program_1,
-                program_2,
+                instances,
+                idx_1,
+                idx_2,
                 input_mint,
                 middle_mint,
                 d,
@@ -151,8 +157,9 @@ fn golden_section_search<'info>(
     let optimal = (a + b) / 2;
     let profit = simulate_path(
         accounts,
-        program_1,
-        program_2,
+        instances,
+        idx_1,
+        idx_2,
         input_mint,
         middle_mint,
         optimal,
@@ -177,8 +184,9 @@ fn golden_section_search<'info>(
 /// Reduced grid points and conditional golden section refinement
 fn hybrid_search<'info>(
     accounts: &[AccountInfo<'info>],
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    instances: &mut [ProgramInstance<'info>],
+    idx_1: usize,
+    idx_2: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     min_amount: u64,
@@ -226,8 +234,9 @@ fn hybrid_search<'info>(
         let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
         let profit = simulate_path(
             accounts,
-            program_1,
-            program_2,
+            instances,
+            idx_1,
+            idx_2,
             input_mint,
             middle_mint,
             amount,
@@ -309,8 +318,9 @@ fn hybrid_search<'info>(
     // Run golden section in the refined region
     let (refined_amount, refined_profit) = golden_section_search(
         accounts,
-        program_1,
-        program_2,
+        instances,
+        idx_1,
+        idx_2,
         input_mint,
         middle_mint,
         lower_bound,
@@ -427,22 +437,23 @@ fn analytical_hint_amm_dlmm(
 
 /// Find optimal amount for 2-hop path using hybrid search
 pub fn find_optimal_amount<'info>(
-    program_1: &ProgramInstance<'info>,
-    program_2: &ProgramInstance<'info>,
+    instances: &mut [ProgramInstance<'info>],
+    idx_1: usize,
+    idx_2: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     accounts: &[AccountInfo<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
 
-    let program_1_max_in = program_1.get_max_amount_in(accounts, input_mint).unwrap_or(0);
-    let program_1_max_out = program_1.get_max_amount_out(accounts, input_mint).unwrap_or(0);
-    let program_2_max_in = program_2.get_max_amount_in(accounts, middle_mint).unwrap_or(0);
-    let program_2_max_out = program_2.get_max_amount_out(accounts, middle_mint).unwrap_or(0);
+    let program_1_max_in = instances[idx_1].get_max_amount_in(accounts, input_mint).unwrap_or(0);
+    let program_1_max_out = instances[idx_1].get_max_amount_out(accounts, input_mint).unwrap_or(0);
+    let program_2_max_in = instances[idx_2].get_max_amount_in(accounts, middle_mint).unwrap_or(0);
+    let program_2_max_out = instances[idx_2].get_max_amount_out(accounts, middle_mint).unwrap_or(0);
 
     // If program_1 can't produce any output tokens, the path is dead
     if program_1_max_out == 0 {
-        msg!("OptAmt: p1 max_out=0, dead");
+        // msg!("OptAmt: p1 max_out=0, dead");
         return Ok((0, 0));
     }
 
@@ -451,9 +462,9 @@ pub fn find_optimal_amount<'info>(
         .min(program_2_max_out);
     let min_amount = MIN_SEARCH_AMOUNT;
 
-    msg!("OpAm: max_in={}, p1_in={}, p1_out={}, p2_in={}, p2_out={}, eff_max={}",
-        config.max_amount_in, program_1_max_in, program_1_max_out,
-        program_2_max_in, program_2_max_out, max_amount);
+    // msg!("OpAm: max_in={}, p1_in={}, p1_out={}, p2_in={}, p2_out={}, eff_max={}",
+    //     config.max_amount_in, program_1_max_in, program_1_max_out,
+    //     program_2_max_in, program_2_max_out, max_amount);
 
     #[cfg(test)]
     {
@@ -471,21 +482,22 @@ pub fn find_optimal_amount<'info>(
     }
 
     if max_amount <= min_amount {
-        msg!("OptAmt: max {} <= min {}, skip", max_amount, min_amount);
+        // msg!("OptAmt: max {} <= min {}, skip", max_amount, min_amount);
         return Ok((0, 0));
     }
 
     let (optimal_amount, profit) = hybrid_search(
         accounts,
-        program_1,
-        program_2,
+        instances,
+        idx_1,
+        idx_2,
         input_mint,
         middle_mint,
         min_amount,
         max_amount,
         &config.clock,
     )?;
-    msg!("OptAmt: result in={}, profit={}", optimal_amount, profit);
+    // msg!("OptAmt: result in={}, profit={}", optimal_amount, profit);
     debug_eprintln!("optimal_amount: {:?}", optimal_amount as f64 / 1_000_000_000.0);
     Ok((optimal_amount, profit))
 }
@@ -496,15 +508,15 @@ pub fn find_optimal_amount<'info>(
 fn simulate_n_hop_path<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     amount_in: u64,
     clock: &Clock,
 ) -> Result<i128> {
     let mut current_amount = amount_in;
 
     for edge in edges.iter() {
-        let instance = find_instance_by_pool_id(instances, &edge.pool_id)?;
-        current_amount = instance.swap_base_in(
+        let idx = find_instance_index_by_pool_id(instances, &edge.pool_id)?;
+        current_amount = instances[idx].swap_base_in(
             accounts,
             edge.left.mint_account,
             current_amount,
@@ -519,7 +531,7 @@ fn simulate_n_hop_path<'info>(
 fn quick_profit_check_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -547,7 +559,7 @@ fn quick_profit_check_n_hop<'info>(
 fn golden_section_search_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -617,7 +629,7 @@ fn golden_section_search_n_hop<'info>(
 fn hybrid_search_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -693,7 +705,7 @@ fn hybrid_search_n_hop<'info>(
 fn find_optimal_amount_n_hop<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &BotConfig,
 ) -> Result<(u64, i128)> {
     if edges.is_empty() {
@@ -701,9 +713,9 @@ fn find_optimal_amount_n_hop<'info>(
     }
 
     // Get max input from first program
-    let first_instance = find_instance_by_pool_id(instances, &edges[0].pool_id)?;
+    let first_idx = find_instance_index_by_pool_id(instances, &edges[0].pool_id)?;
     let input_mint = edges[0].left.mint_account;
-    let first_max_in = first_instance
+    let first_max_in = instances[first_idx]
         .get_max_amount_in(accounts, input_mint)
         .unwrap_or(0);
 
@@ -724,7 +736,7 @@ fn find_optimal_amount_n_hop<'info>(
 pub fn find_optimal_amount_in_v2<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     if edges.len() < 2 {
@@ -738,12 +750,13 @@ pub fn find_optimal_amount_in_v2<'info>(
         let input_mint = edges[0].left.mint_account;
         let middle_mint = edges[0].right.mint_account;
 
-        let first_instance = find_instance_by_pool_id(instances, &first_pool_id)?;
-        let second_instance = find_instance_by_pool_id(instances, &second_pool_id)?;
+        let idx_1 = find_instance_index_by_pool_id(instances, &first_pool_id)?;
+        let idx_2 = find_instance_index_by_pool_id(instances, &second_pool_id)?;
 
         return find_optimal_amount(
-            first_instance,
-            second_instance,
+            instances,
+            idx_1,
+            idx_2,
             input_mint,
             middle_mint,
             accounts,
@@ -759,7 +772,7 @@ pub fn find_optimal_amount_in_v2<'info>(
 pub fn find_optimal_amount_in_v3<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &[ProgramInstance<'info>],
+    instances: &mut [ProgramInstance<'info>],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     find_optimal_amount_in_v2(edges, accounts, instances, config)

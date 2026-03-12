@@ -340,7 +340,7 @@ impl U256 {
         let s = divisor.get_word(num_divisor_words - 1).leading_zeros();
         let b = dividend.get_word(num_dividend_words - 1).leading_zeros();
 
-        let mut divisor_normalized = divisor.shift_left(s);
+        let divisor_normalized = divisor.shift_left(s);
         let mut dividend_carry_space: u64 = 0;
         if num_dividend_words == NUM_WORDS && b < s {
             dividend_carry_space = dividend.0[num_dividend_words - 1] >> (U64_RESOLUTION - s);

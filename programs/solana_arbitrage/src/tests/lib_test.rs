@@ -18,7 +18,7 @@ mod tests {
     };
     use crate::{InstructionData};
     use anchor_lang::prelude::Clock;
-    use dlmm::dlmm::accounts::{BinArray, LbPair};
+    use crate::programs::meteora_dlmm::dlmm_lib::dlmm::accounts::{BinArray, LbPair};
     use solana_client::nonblocking::rpc_client::RpcClient;
     use std::collections::HashMap;
 
@@ -2672,7 +2672,7 @@ mod tests {
     }
 
     fn build_test_scenario_meteora_dlmm_mock() -> Vec<AccountInfo<'static>> {
-        use dlmm::pda;
+        use crate::programs::meteora_dlmm::dlmm_lib::pda;
 
         fn decode_hex(data: &str) -> Vec<u8> {
             let trimmed = data.trim();
@@ -2786,10 +2786,10 @@ mod tests {
         let right_len = right_bin_arrays.len() as u8;
 
         let left_bin_array_pubkeys =
-            dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id_pk, &lb_pair, None, true, left_len)
+            crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(pool_id_pk, &lb_pair, None, true, left_len)
                 .expect("failed to derive left bin array pubkeys");
 
-        let right_bin_array_pubkeys = dlmm::quote::get_bin_array_pubkeys_for_swap(
+        let right_bin_array_pubkeys = crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(
             pool_id_pk, &lb_pair, None, false, right_len,
         )
         .expect("failed to derive right bin array pubkeys");
@@ -2949,7 +2949,7 @@ mod tests {
         pool_id: Pubkey,
     ) -> Vec<AccountInfo<'static>> {
         use bytemuck;
-        use dlmm::pda;
+        use crate::programs::meteora_dlmm::dlmm_lib::pda;
         use solana_sdk::pubkey::Pubkey as SdkPubkey;
         use std::collections::HashMap;
 
@@ -2977,11 +2977,11 @@ mod tests {
         let (bitmap_extension_key, _) = pda::derive_bin_array_bitmap_extension(pool_id);
 
         let left_bin_array_pubkeys =
-            dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, true, 3).unwrap();
+            crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, true, 3).unwrap();
 
         // Get more bin arrays to the right (sell arrays) - increase from 5 to handle larger swaps
         let right_bin_array_pubkeys =
-            dlmm::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, false, 3).unwrap();
+            crate::programs::meteora_dlmm::dlmm_lib::quote::get_bin_array_pubkeys_for_swap(pool_id, &lb_pair, None, false, 3).unwrap();
 
 
         // Fetch bin arrays separately to maintain order
