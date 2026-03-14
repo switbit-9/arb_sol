@@ -296,7 +296,7 @@ impl ProgramMeta for RaydiumCLMM {
         // Build swap instruction
         let mut metas = vec![
             AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(self.amm_config_key, false),
+            AccountMeta::new_readonly(*amm_config.key, false),
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*user_input_account.key, false),
             AccountMeta::new(*user_output_account.key, false),
@@ -419,7 +419,7 @@ impl ProgramMeta for RaydiumCLMM {
 
         let mut metas = vec![
             AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(self.amm_config_key, false),
+            AccountMeta::new_readonly(*amm_config.key, false),
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new(*user_input_account.key, false),
             AccountMeta::new(*user_output_account.key, false),
@@ -592,9 +592,10 @@ impl RaydiumCLMM {
             tick_current: pool.tick_current,
             liquidity: pool.liquidity,
             tick_spacing: pool.tick_spacing,
+            trade_fee_rate: pool_fees[0],
             protocol_fee_rate: protocol_fee_rate,
             fund_fee_rate: fund_fee_rate,
-            fee_rate: trade_fee_rate ,
+            fee_rate: trade_fee_rate,
             price,
             static_base,
             dyn_start,
@@ -1037,462 +1038,288 @@ impl RaydiumCLMM {
 
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use anchor_lang::prelude::Clock;
-//     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
-//     use solana_client::nonblocking::rpc_client::RpcClient;
-//     use solana_sdk::pubkey::Pubkey as SdkPubkey;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::token::MintFee;
+    use solana_client::nonblocking::rpc_client::RpcClient;
+    use solana_sdk::pubkey::Pubkey as SdkPubkey;
 
-//     fn create_mock_account_info_with_data(
-//         key: Pubkey,
-//         owner: Pubkey,
-//         data: Option<Vec<u8>>,
-//     ) -> AccountInfo<'static> {
-//         let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
-//         let data_vec = Box::leak(Box::new(data_vec));
-//         let lamports = Box::leak(Box::new(0u64));
-//         let owner_static = Box::leak(Box::new(owner));
-//         let key_static = Box::leak(Box::new(key));
+    fn create_mock_account_info_with_data(
+        key: Pubkey,
+        owner: Pubkey,
+        data: Option<Vec<u8>>,
+    ) -> AccountInfo<'static> {
+        let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
+        let data_vec = Box::leak(Box::new(data_vec));
+        let lamports = Box::leak(Box::new(0u64));
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, true, lamports, data_vec, owner_static, false, 0,
+        )
+    }
 
-//         AccountInfo::new(
-//             key_static,
-//             false,
-//             true,
-//             lamports,
-//             data_vec,
-//             owner_static,
-//             false,
-//             0,
-//         )
-//     }
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, false, lamports, data, owner_static,
+            account.executable, account.rent_epoch,
+        )
+    }
 
-//     fn account_to_account_info(
-//         key: Pubkey,
-//         account: solana_sdk::account::Account,
-//     ) -> AccountInfo<'static> {
-//         let data = Box::leak(Box::new(account.data));
-//         let lamports = Box::leak(Box::new(account.lamports));
-//         let owner_bytes: [u8; 32] = account.owner.to_bytes();
-//         let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-//         let owner_static = Box::leak(Box::new(owner));
-//         let key_static = Box::leak(Box::new(key));
-//         AccountInfo::new(
-//             key_static,
-//             false,
-//             false,
-//             lamports,
-//             data,
-//             owner_static,
-//             account.executable,
-//             account.rent_epoch,
-//         )
-//     }
+    fn to_sdk(key: Pubkey) -> SdkPubkey {
+        SdkPubkey::try_from(key.to_bytes().as_ref()).unwrap()
+    }
 
-//     async fn get_clock(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-//         use anchor_client::solana_sdk::sysvar;
+    fn get_rpc_client() -> RpcClient {
+        let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
+        RpcClient::new(format!("https://mainnet.helius-rpc.com/?api-key={}", api_key))
+    }
 
-//         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await?;
+    async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
+        use anchor_client::solana_sdk::sysvar;
+        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
+            .expect("Failed to fetch clock");
+        let data = &clock_account.data;
+        assert!(data.len() >= 40, "Clock account data too short");
+        Clock {
+            slot: u64::from_le_bytes(data[0..8].try_into().unwrap()),
+            epoch_start_timestamp: i64::from_le_bytes(data[8..16].try_into().unwrap()),
+            epoch: u64::from_le_bytes(data[16..24].try_into().unwrap()),
+            leader_schedule_epoch: u64::from_le_bytes(data[24..32].try_into().unwrap()),
+            unix_timestamp: i64::from_le_bytes(data[32..40].try_into().unwrap()),
+        }
+    }
 
-//         if clock_account.data.len() < 40 {
-//             return Err(anyhow::anyhow!(
-//                 "Clock account data too short: {} bytes",
-//                 clock_account.data.len()
-//             ));
-//         }
+    async fn build_from_pool_id(
+        pool_id: Pubkey,
+    ) -> (RaydiumCLMM, Vec<AccountInfo<'static>>, Clock) {
+        let rpc_client = get_rpc_client();
 
-//         let data = &clock_account.data;
-//         let slot = u64::from_le_bytes(data[0..8].try_into()?);
-//         let epoch_start_timestamp = i64::from_le_bytes(data[8..16].try_into()?);
-//         let epoch = u64::from_le_bytes(data[16..24].try_into()?);
-//         let leader_schedule_epoch = u64::from_le_bytes(data[24..32].try_into()?);
-//         let unix_timestamp = i64::from_le_bytes(data[32..40].try_into()?);
+        // Fetch pool account and parse PoolStateSimple
+        let pool_account = rpc_client.get_account(&to_sdk(pool_id)).await
+            .unwrap_or_else(|e| panic!("Failed to fetch pool {}: {}", pool_id, e));
+        let pool_state_size = std::mem::size_of::<PoolStateSimple>();
+        let pool: PoolStateSimple =
+            bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
 
-//         Ok(Clock {
-//             slot,
-//             epoch_start_timestamp,
-//             epoch,
-//             leader_schedule_epoch,
-//             unix_timestamp,
-//         })
-//     }
+        eprintln!("Pool: {}", pool_id);
+        eprintln!("  token_0 (base): {}", pool.token_mint_0);
+        eprintln!("  token_1 (quote): {}", pool.token_mint_1);
+        let tick_current = pool.tick_current;
+        let tick_spacing = pool.tick_spacing;
+        eprintln!("  tick_current: {}, tick_spacing: {}", tick_current, tick_spacing);
 
-//     #[tokio::test]
-//     async fn test_raydium_clmm_round_trip_swap() {
-//         use anchor_client::Cluster;
+        if pool.liquidity == 0 {
+            panic!("Pool has no liquidity");
+        }
 
-//         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
-//         let pool_id_key = Pubkey::from_str_const("AFT2PaCYfy93g47aTyG3wKu4KDEg2YMhUmwbdPDdcmCG");
+        // Fetch AMM config to get fee rates
+        let amm_config_raw = rpc_client.get_account(&to_sdk(pool.amm_config)).await
+            .expect("Failed to fetch AMM config");
+        let amm_config: AmmConfigSimple = AmmConfigSimple::try_from_bytes(&amm_config_raw.data)
+            .expect("Failed to parse AmmConfig");
 
-//         eprintln!(
-//             "Testing Raydium CLMM round trip swap for pool: {}",
-//             pool_id_key
-//         );
+        // Fetch vault and observation accounts
+        let vault_0_account = rpc_client.get_account(&to_sdk(pool.token_vault_0)).await
+            .expect("Failed to fetch vault 0");
+        let vault_1_account = rpc_client.get_account(&to_sdk(pool.token_vault_1)).await
+            .expect("Failed to fetch vault 1");
+        let observation_raw = rpc_client.get_account(&to_sdk(pool.observation_key)).await
+            .expect("Failed to fetch observation");
 
-//         let pool_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acc) => acc,
-//             Err(e) => {
-//                 eprintln!("Warning: Could not fetch pool account: {:?}", e);
-//                 return;
-//             }
-//         };
+        // Derive tick array PDAs
+        let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
+        let current_start_index =
+            TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
 
-//         let pool_state_size = std::mem::size_of::<PoolStateSimple>();
-//         let pool: PoolStateSimple =
-//             bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
+        let tick_array_start_indices = [
+            current_start_index,                        // buy_0
+            current_start_index - ticks_in_array,       // buy_1
+            current_start_index,                        // sell_0
+            current_start_index + ticks_in_array,       // sell_1
+        ];
 
-//         eprintln!("\n=== Pool State ===");
-//         eprintln!("Token Mint 0: {}", pool.token_mint_0);
-//         eprintln!("Token Mint 1: {}", pool.token_mint_1);
-//         eprintln!(
-//             "Decimals 0: {}, Decimals 1: {}",
-//             pool.mint_decimals_0, pool.mint_decimals_1
-//         );
+        // Minimum valid tick array size: discriminator(8) + pool_id(32) + start_tick_index(4) + ticks(60 * 168)
+        let min_ta_len = 8 + 32 + 4 + 60 * 168;
 
-//         if pool.liquidity == 0 {
-//             eprintln!("Warning: Pool has no liquidity. Skipping test.");
-//             return;
-//         }
+        let mut tick_keys_and_accounts = Vec::new();
+        for &start_index in &tick_array_start_indices {
+            let (tick_array_pda, _) = Pubkey::find_program_address(
+                &[
+                    b"tick_array",
+                    pool_id.as_ref(),
+                    &start_index.to_be_bytes(),
+                ],
+                &RaydiumCLMM::PROGRAM_ID,
+            );
+            eprintln!("  tick_array start_index {}: {}", start_index, tick_array_pda);
+            match rpc_client.get_account(&to_sdk(tick_array_pda)).await {
+                Ok(acc) => tick_keys_and_accounts.push((tick_array_pda, Some(acc))),
+                Err(_) => {
+                    eprintln!("    (not found, using empty mock)");
+                    tick_keys_and_accounts.push((tick_array_pda, None));
+                }
+            }
+        }
 
-//         let vault_0_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_vault_0.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acc) => acc,
-//             Err(_) => return,
-//         };
-//         let vault_1_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_vault_1.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acc) => acc,
-//             Err(_) => return,
-//         };
-//         let mint_0_account = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_mint_0.to_bytes().as_ref()).unwrap())
-//             .await
-//             .unwrap();
-//         let mint_1_account = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_mint_1.to_bytes().as_ref()).unwrap())
-//             .await
-//             .unwrap();
-//         let amm_config_account = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.amm_config.to_bytes().as_ref()).unwrap())
-//             .await
-//             .unwrap();
-//         let observation_account = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.observation_key.to_bytes().as_ref()).unwrap())
-//             .await
-//             .unwrap();
+        let (buy_0_key, buy_0_acc) = tick_keys_and_accounts.remove(0);
+        let (buy_1_key, buy_1_acc) = tick_keys_and_accounts.remove(0);
+        let (sell_0_key, sell_0_acc) = tick_keys_and_accounts.remove(0);
+        let (sell_1_key, sell_1_acc) = tick_keys_and_accounts.remove(0);
 
-//         // Derive tick array PDAs for buy (zero_for_one) and sell (one_for_zero) directions
-//         let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
-//         let current_start_index =
-//             TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
+        // Build AccountInfo array
+        let pool_id_info = account_to_account_info(pool_id, pool_account);
+        let vault_0_info = account_to_account_info(pool.token_vault_0, vault_0_account);
+        let vault_1_info = account_to_account_info(pool.token_vault_1, vault_1_account);
+        let amm_config_info = account_to_account_info(pool.amm_config, amm_config_raw);
+        let observation_info = account_to_account_info(pool.observation_key, observation_raw);
 
-//         // Buy direction: current + below (price goes down)
-//         // Sell direction: current + above (price goes up)
-//         let tick_array_start_indices = [
-//             current_start_index,                        // buy_1
-//             current_start_index - ticks_in_array,       // buy_2
-//             current_start_index,                        // sell_1
-//             current_start_index + ticks_in_array,       // sell_2
-//         ];
+        let program_id_info = create_mock_account_info_with_data(
+            RaydiumCLMM::PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+        );
+        let bitmap_ext_info = create_mock_account_info_with_data(
+            RaydiumCLMM::PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+        );
 
-//         let mut tick_array_keys_and_accounts = Vec::new();
-//         for &start_index in &tick_array_start_indices {
-//             let (tick_array_pda, _) = Pubkey::find_program_address(
-//                 &[
-//                     b"tick_array",
-//                     pool_id_key.as_ref(),
-//                     &start_index.to_be_bytes(),
-//                 ],
-//                 &RaydiumCLMM::PROGRAM_ID,
-//             );
-//             eprintln!(
-//                 "Fetching tick array PDA for start_index {}: {}",
-//                 start_index, tick_array_pda
-//             );
-//             let tick_array_account = rpc_client
-//                 .get_account(&SdkPubkey::try_from(tick_array_pda.to_bytes().as_ref()).unwrap())
-//                 .await
-//                 .unwrap();
-//             tick_array_keys_and_accounts.push((tick_array_pda, tick_array_account));
-//         }
+        let make_tick_info = |key: Pubkey, acc: Option<solana_sdk::account::Account>| -> AccountInfo<'static> {
+            match acc {
+                Some(a) => account_to_account_info(key, a),
+                None => create_mock_account_info_with_data(
+                    key, anchor_lang::solana_program::system_program::id(),
+                    Some(vec![0u8; min_ta_len]),
+                ),
+            }
+        };
+        let tick_buy_0 = make_tick_info(buy_0_key, buy_0_acc);
+        let tick_buy_1 = make_tick_info(buy_1_key, buy_1_acc);
+        let tick_sell_0 = make_tick_info(sell_0_key, sell_0_acc);
+        let tick_sell_1 = make_tick_info(sell_1_key, sell_1_acc);
 
-//         let (buy_1_key, buy_1_account) = tick_array_keys_and_accounts.remove(0);
-//         let (buy_2_key, buy_2_account) = tick_array_keys_and_accounts.remove(0);
-//         let (sell_1_key, sell_1_account) = tick_array_keys_and_accounts.remove(0);
-//         let (sell_2_key, sell_2_account) = tick_array_keys_and_accounts.remove(0);
+        // Layout:
+        // Static (static_base=0): [program_id]
+        // Dynamic (dyn_start=1): [pool, vault_0, vault_1, amm_config, observation, bitmap_ext, tick_buy_0, tick_buy_1, tick_sell_0, tick_sell_1]
+        let accounts = vec![
+            program_id_info,         // S0
+            pool_id_info,            // D0
+            vault_0_info,            // D1
+            vault_1_info,            // D2
+            amm_config_info,         // D3
+            observation_info,        // D4
+            bitmap_ext_info,         // D5
+            tick_buy_0,              // D6
+            tick_buy_1,              // D7
+            tick_sell_0,             // D8
+            tick_sell_1,             // D9
+        ];
 
-// //         eprintln!("Buy Tick Array 1: {}", buy_1_key);
-// //         eprintln!("Buy Tick Array 2: {}", buy_2_key);
-// //         eprintln!("Sell Tick Array 1: {}", sell_1_key);
-// //         eprintln!("Sell Tick Array 2: {}", sell_2_key);
+        let static_base: usize = 0;
+        let dyn_start: usize = 1;
+        let dyn_end: usize = accounts.len();
 
-//         let clock = get_clock(&rpc_client).await.unwrap();
+        let pool_fees = [
+            amm_config.trade_fee_rate,
+            amm_config.protocol_fee_rate,
+            amm_config.fund_fee_rate,
+        ];
 
-//         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
-//         let vault_0 = account_to_account_info(pool.token_vault_0, vault_0_account);
-//         let vault_1 = account_to_account_info(pool.token_vault_1, vault_1_account);
-//         let _token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
-//         let _token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
-//         let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
-//         let observation = account_to_account_info(pool.observation_key, observation_account);
-//         let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
-//         let tick_buy_2 = account_to_account_info(buy_2_key, buy_2_account);
-//         let tick_sell_1 = account_to_account_info(sell_1_key, sell_1_account);
-//         let tick_sell_2 = account_to_account_info(sell_2_key, sell_2_account);
+        let mut clmm = RaydiumCLMM::new(&accounts, static_base, dyn_start, dyn_end, &pool_fees)
+            .expect("RaydiumCLMM::new failed");
 
-//         let program_id_key = RaydiumCLMM::PROGRAM_ID;
-//         let program_id_account =
-//             create_mock_account_info_with_data(program_id_key, system_program::id(), None);
+        clmm.prepare_for_execution(&accounts);
 
-//         // Account layout: [program_id | pool_id, vault_0, vault_1, amm_config, observation,
-//         //                   bitmap_ext, buy_1, buy_2, sell_1, sell_2]
-//         // static_base=0 (1 account: program_id), dyn_start=1 (10 dynamic accounts)
-//         let bitmap_ext = create_mock_account_info_with_data(
-//             RaydiumCLMM::PROGRAM_ID, system_program::id(), None,
-//         );
-//         let accounts = vec![
-//             program_id_account,
-//             pool_id_account_info,
-//             vault_0.clone(),
-//             vault_1.clone(),
-//             amm_config,
-//             observation,
-//             bitmap_ext,
-//             tick_buy_1,
-//             tick_buy_2,
-//             tick_sell_1,
-//             tick_sell_2,
-//         ];
+        let clock = get_clock_from_rpc(&rpc_client).await;
 
-//         let mut raydium_clmm = match RaydiumCLMM::new(&accounts, 0, 1, accounts.len(), &[], &[0]) {
-//             Ok(clmm) => clmm,
-//             Err(e) => {
-//                 eprintln!("Failed to create RaydiumCLMM: {:?}", e);
-//                 return;
-//             }
-//         };
+        eprintln!("  price: {}", clmm.price);
+        eprintln!("  trade_fee_rate: {}", clmm.trade_fee_rate);
 
-//         eprintln!("\n=== Prices ===");
-//         let price_f64 = raydium_clmm.price;
-//         eprintln!("Price (token_1/token_0): {:.10}", price_f64);
-//         eprintln!(
-//             "Inverse Price (token_0/token_1): {:.10}",
-//             1.0 / price_f64
-//         );
-//         eprintln!(
-//             "Trade Fee Rate: {} ({}%)",
-//             raydium_clmm.trade_fee_rate,
-//             raydium_clmm.trade_fee_rate as f64 / 10000.0
-//         );
-//         eprintln!("Tick array accounts: {} (2 buy + 2 sell)", RaydiumCLMM::MIN_ACCOUNTS - RaydiumCLMM::D_TICK_BUY_0);
-//         let (max_in, max_out) = (raydium_clmm.buy_max_in, raydium_clmm.buy_max_out);
-//         eprintln!(
-//             "Max SOL IN: {} -> MAX TOKEN OUT: {}",
-//             max_in as f64 / 1_000_000_000.0,
-//             max_out as f64 / 1_000_000.0
-//         );
+        (clmm, accounts, clock)
+    }
 
-//         let input_mint = raydium_clmm.base_token_pk;
-//         let output_mint = raydium_clmm.quote_token_pk;
-//         let amount_in = 100_000_000_000u64; // 1 token (assuming 9 decimals)
+    #[tokio::test]
+    async fn test_clmm_round_trip() {
+        let pool_id = Pubkey::from_str_const("AFT2PaCYfy93g47aTyG3wKu4KDEg2YMhUmwbdPDdcmCG");
+        let (mut clmm, accounts, clock) = build_from_pool_id(pool_id).await;
 
-//         eprintln!("================================================");
-//         // Step 1: Swap token_0 -> token_1
-//         let token_out =
-//             match raydium_clmm.swap_base_in(&accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, &clock) {
-//                 Ok(out) => out,
-//                 Err(e) => {
-//                     eprintln!("swap_base_in failed: {:?}", e);
-//                     return;
-//                 }
-//             };
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let no_fee = MintFee::ZERO;
 
-//         eprintln!(
-//             "Step 1 (swap_base_in): {} SOL -> {} TOKEN",
-//             amount_in as f64 / 1_000_000_000.0,
-//             token_out as f64 / 1_000_000.0,
-//         );
+        // 1. Print all account pubkeys
+        eprintln!("\n=== Account Pubkeys ===");
+        eprintln!("base_mint        : {}", clmm.base_token_pk);
+        eprintln!("quote_mint       : {}", clmm.quote_token_pk);
+        eprintln!("pool_id          : {}", accounts[1 + RaydiumCLMM::D_POOL].key);
+        eprintln!("vault_0          : {}", accounts[1 + RaydiumCLMM::D_VAULT_0].key);
+        eprintln!("vault_1          : {}", accounts[1 + RaydiumCLMM::D_VAULT_1].key);
+        eprintln!("amm_config       : {}", accounts[1 + RaydiumCLMM::D_AMM_CONFIG].key);
+        eprintln!("observation      : {}", accounts[1 + RaydiumCLMM::D_OBSERVATION].key);
+        eprintln!("bitmap_ext       : {}", accounts[1 + RaydiumCLMM::D_BITMAP_EXT].key);
+        eprintln!("program_id       : {}", accounts[RaydiumCLMM::S_PROGRAM_ID].key);
 
-//         let max_sol_in =
-//             match raydium_clmm.swap_base_out(&accounts, output_mint, token_out, MintFee::ZERO, MintFee::ZERO, &clock) {
-//                 Ok(max_in) => max_in,
-//                 Err(e) => {
-//                     eprintln!("swap_base_out failed: {:?}", e);
-//                     return;
-//                 }
-//             };
+        // 2. Prices
+        let (price, inverse_price) = clmm.get_prices().unwrap();
+        eprintln!("\n=== Prices ===");
+        eprintln!("price            : {}", price);
+        eprintln!("inverse_price    : {}", inverse_price);
 
-//         eprintln!(
-//             "Step 1 (swap_base_out): MAX SOL IN {} -> {} TOKEN OUT",
-//             max_sol_in as f64 / 1_000_000_000.0,
-//             token_out as f64 / 1_000_000.0,
-//         );
+        // 3. Fees
+        let (fee_factor, fee_factor_2) = clmm.get_fee_factor().unwrap();
+        eprintln!("\n=== Fees ===");
+        eprintln!("trade_fee_rate   : {}", clmm.trade_fee_rate);
+        eprintln!("fee_factor       : {}", fee_factor);
+        eprintln!("fee_factor_2     : {}", fee_factor_2);
 
-//         eprintln!("================================================");
+        // 4. Max amounts
+        eprintln!("\n=== After prepare_for_execution ===");
+        eprintln!("buy_max_in       : {}", clmm.buy_max_in);
+        eprintln!("buy_max_out      : {}", clmm.buy_max_out);
+        eprintln!("sell_max_in      : {}", clmm.sell_max_in);
+        eprintln!("sell_max_out     : {}", clmm.sell_max_out);
 
-//         // Step 2: Swap token_1 -> token_0
-//         let sol_out =
-//             match raydium_clmm.swap_base_in(&accounts, output_mint, token_out, MintFee::ZERO, MintFee::ZERO, &clock) {
-//                 Ok(back) => back,
-//                 Err(e) => {
-//                     eprintln!("reverse swap_base_in failed: {:?}", e);
-//                     return;
-//                 }
-//             };
+        // 5. Round-trip with start_amount = 1 WSOL
+        let start_amount: u64 = 1_000_000_000;
 
-//         eprintln!(
-//             "Step 2 (swap_base_in): {} TOKEN -> {} SOL",
-//             token_out as f64 / 1_000_000.0,
-//             sol_out as f64 / 1_000_000_000.0,
-//         );
+        let other_mint = if clmm.base_token_pk == sol_mint {
+            clmm.quote_token_pk
+        } else {
+            clmm.base_token_pk
+        };
 
-//         let max_token_in =
-//             match raydium_clmm.swap_base_out(&accounts, input_mint, sol_out, MintFee::ZERO, MintFee::ZERO, &clock) {
-//                 Ok(max_in) => max_in,
-//                 Err(e) => {
-//                     eprintln!("reverse swap_base_out failed: {:?}", e);
-//                     return;
-//                 }
-//             };
+        let rpc = get_rpc_client();
+        let other_mint_account = rpc.get_account(
+            &SdkPubkey::try_from(other_mint.to_bytes().as_ref()).unwrap()
+        ).await.unwrap();
+        let token_decimals = other_mint_account.data[44] as i32;
+        let sol_div = 10f64.powi(9);
+        let tok_div = 10f64.powi(token_decimals);
 
-//         eprintln!(
-//             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",
-//             max_token_in as f64 / 1_000_000.0,
-//             sol_out as f64 / 1_000_000_000.0
-//         );
+        // Direction 1: SOL -> TOKEN -> SOL
+        eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
+        let token_out = clmm.swap_base_in(
+            &accounts, sol_mint, start_amount, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_sol_in = clmm.swap_base_out(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount as f64 / sol_div, token_out as f64 / tok_div, max_sol_in as f64 / sol_div);
 
-//         eprintln!("================================================");
-//         eprintln!("Round trip completed!");
-//     }
-
-//     #[tokio::test]
-//     async fn test_raydium_clmm_liquidity_distribution() {
-//         use anchor_client::Cluster;
-
-//         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
-//         let pool_id_key = Pubkey::from_str_const("AFT2PaCYfy93g47aTyG3wKu4KDEg2YMhUmwbdPDdcmCG");
-
-//         eprintln!("Testing liquidity distribution for pool: {}", pool_id_key);
-
-//         let pool_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acc) => acc,
-//             Err(e) => { eprintln!("Could not fetch pool: {:?}", e); return; }
-//         };
-
-//         let pool_state_size = std::mem::size_of::<PoolStateSimple>();
-//         let pool: PoolStateSimple =
-//             bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
-
-//         if pool.liquidity == 0 {
-//             eprintln!("Pool has no liquidity"); return;
-//         }
-
-//         let vault_0_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_vault_0.to_bytes().as_ref()).unwrap()).await.unwrap();
-//         let vault_1_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_vault_1.to_bytes().as_ref()).unwrap()).await.unwrap();
-//         let mint_0_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_mint_0.to_bytes().as_ref()).unwrap()).await.unwrap();
-//         let mint_1_account = rpc_client.get_account(&SdkPubkey::try_from(pool.token_mint_1.to_bytes().as_ref()).unwrap()).await.unwrap();
-//         let amm_config_account = rpc_client.get_account(&SdkPubkey::try_from(pool.amm_config.to_bytes().as_ref()).unwrap()).await.unwrap();
-//         let observation_account = rpc_client.get_account(&SdkPubkey::try_from(pool.observation_key.to_bytes().as_ref()).unwrap()).await.unwrap();
-
-//         let ticks_in_array = TICK_ARRAY_SIZE * i32::from(pool.tick_spacing);
-//         let current_start_index = TickArrayState::get_array_start_index(pool.tick_current, pool.tick_spacing);
-
-//         let tick_array_start_indices = [
-//             current_start_index,
-//             current_start_index - ticks_in_array,
-//             current_start_index,
-//             current_start_index + ticks_in_array,
-//         ];
-
-//         let mut tick_array_keys_and_accounts = Vec::new();
-//         for &start_index in &tick_array_start_indices {
-//             let (tick_array_pda, _) = Pubkey::find_program_address(
-//                 &[b"tick_array", pool_id_key.as_ref(), &start_index.to_be_bytes()],
-//                 &RaydiumCLMM::PROGRAM_ID,
-//             );
-//             let tick_array_account = rpc_client
-//                 .get_account(&SdkPubkey::try_from(tick_array_pda.to_bytes().as_ref()).unwrap())
-//                 .await.unwrap();
-//             tick_array_keys_and_accounts.push((tick_array_pda, tick_array_account));
-//         }
-
-//         let (buy_1_key, buy_1_account) = tick_array_keys_and_accounts.remove(0);
-//         let (buy_2_key, buy_2_account) = tick_array_keys_and_accounts.remove(0);
-//         let (sell_1_key, sell_1_account) = tick_array_keys_and_accounts.remove(0);
-//         let (sell_2_key, sell_2_account) = tick_array_keys_and_accounts.remove(0);
-
-//         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
-//         let vault_0 = account_to_account_info(pool.token_vault_0, vault_0_account);
-//         let vault_1 = account_to_account_info(pool.token_vault_1, vault_1_account);
-//         let _token_0 = account_to_account_info(pool.token_mint_0, mint_0_account);
-//         let _token_1 = account_to_account_info(pool.token_mint_1, mint_1_account);
-//         let amm_config = account_to_account_info(pool.amm_config, amm_config_account);
-//         let observation = account_to_account_info(pool.observation_key, observation_account);
-//         let tick_buy_1 = account_to_account_info(buy_1_key, buy_1_account);
-//         let tick_buy_2 = account_to_account_info(buy_2_key, buy_2_account);
-//         let tick_sell_1 = account_to_account_info(sell_1_key, sell_1_account);
-//         let tick_sell_2 = account_to_account_info(sell_2_key, sell_2_account);
-
-//         let program_id_key = RaydiumCLMM::PROGRAM_ID;
-//         let program_id_account = create_mock_account_info_with_data(program_id_key, system_program::id(), None);
-//         let bitmap_ext = create_mock_account_info_with_data(RaydiumCLMM::PROGRAM_ID, system_program::id(), None);
-
-//         let accounts = vec![
-//             program_id_account, pool_id_account_info, vault_0, vault_1,
-//             amm_config, observation, bitmap_ext,
-//             tick_buy_1, tick_buy_2, tick_sell_1, tick_sell_2,
-//         ];
-
-//         let mut raydium_clmm = match RaydiumCLMM::new(&accounts, 0, 1, accounts.len(), &[], &[0]) {
-//             Ok(clmm) => clmm,
-//             Err(e) => { eprintln!("Failed to create RaydiumCLMM: {:?}", e); return; }
-//         };
-
-//         eprintln!("\n=== Pool Info ===");
-//         eprintln!("Current tick: {}", raydium_clmm.tick_current);
-//         eprintln!("Current liquidity: {}", raydium_clmm.liquidity);
-//         eprintln!("Tick spacing: {}", raydium_clmm.tick_spacing);
-//         eprintln!("Price: {:.10}", raydium_clmm.price);
-
-//         // Buy direction (zero_for_one): price goes down
-//         eprintln!("\n=== Buy Direction (zero_for_one) - Liquidity Distribution ===");
-//         let buy_ranges = raydium_clmm.get_liquidity_distribution(&accounts, true).unwrap();
-//         for (i, r) in buy_ranges.iter().enumerate() {
-//             let price_lower = sqrt_price_to_price(r.sqrt_price_lower_x64);
-//             let price_upper = sqrt_price_to_price(r.sqrt_price_upper_x64);
-//             eprintln!(
-//                 "  Range {}: ticks [{}, {}) | liquidity: {} | price: [{:.10}, {:.10}) | token_0 capacity: {} | token_1 capacity: {}",
-//                 i, r.tick_lower, r.tick_upper, r.liquidity,
-//                 price_lower, price_upper,
-//                 r.token_0_capacity(), r.token_1_capacity(),
-//             );
-//         }
-
-//         // Sell direction (one_for_zero): price goes up
-//         eprintln!("\n=== Sell Direction (one_for_zero) - Liquidity Distribution ===");
-//         let sell_ranges = raydium_clmm.get_liquidity_distribution(&accounts, false).unwrap();
-//         for (i, r) in sell_ranges.iter().enumerate() {
-//             let price_lower = sqrt_price_to_price(r.sqrt_price_lower_x64);
-//             let price_upper = sqrt_price_to_price(r.sqrt_price_upper_x64);
-//             eprintln!(
-//                 "  Range {}: ticks [{}, {}) | liquidity: {} | price: [{:.10}, {:.10}) | token_0 capacity: {} | token_1 capacity: {}",
-//                 i, r.tick_lower, r.tick_upper, r.liquidity,
-//                 price_lower, price_upper,
-//                 r.token_0_capacity(), r.token_1_capacity(),
-//             );
-//         }
-
-//         eprintln!("\nTotal buy ranges: {}, sell ranges: {}", buy_ranges.len(), sell_ranges.len());
-//     }
-// }
+        // Direction 2: TOKEN -> SOL -> TOKEN
+        eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
+        let sol_out = clmm.swap_base_in(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_token_in = clmm.swap_base_out(
+            &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out as f64 / tok_div, sol_out as f64 / sol_div, max_token_in as f64 / tok_div);
+    }
+}

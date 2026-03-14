@@ -13,13 +13,13 @@ use super::raydium_cpmm::RaydiumCPMM;
 
 /// Enum dispatch replaces Box<dyn ProgramMeta> — eliminates heap allocation + vtable overhead.
 pub enum ProgramInstance<'info> {
-    PumpAmm(PumpAmm<'info>),
-    RaydiumAmm(RaydiumAmm<'info>),
-    RaydiumCLMM(RaydiumCLMM<'info>),
-    RaydiumCPMM(RaydiumCPMM<'info>),
-    MeteoraDammV1(MeteoraDammV1<'info>),
+    PumpAmm(PumpAmm),
+    RaydiumAmm(RaydiumAmm),
+    RaydiumCLMM(RaydiumCLMM),
+    RaydiumCPMM(RaydiumCPMM),
+    MeteoraDammV1(MeteoraDammV1),
     MeteoraDammV2(MeteoraDammV2<'info>),
-    OrcaWhirlpool(OrcaWhirlpool<'info>),
+    OrcaWhirlpool(OrcaWhirlpool),
     MeteoraDlmm(MeteoraDlmm),
 }
 

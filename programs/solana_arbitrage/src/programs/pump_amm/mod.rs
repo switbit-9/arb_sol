@@ -947,229 +947,198 @@ impl PumpAmm {
 
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use anchor_client::Cluster;
-//     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
-//     use solana_client::nonblocking::rpc_client::RpcClient;
-//     use solana_sdk::pubkey::Pubkey as SdkPubkey;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::token::MintFee;
+    use crate::utils::utils::read_token_amount;
+    use anchor_lang::solana_program::system_program;
+    use solana_client::nonblocking::rpc_client::RpcClient;
 
-//     // Pool data offsets for decoding
-//     const POOL_BASE_MINT_OFFSET: usize = 43;
-//     const POOL_QUOTE_MINT_OFFSET: usize = 75;
-//     const POOL_BASE_VAULT_OFFSET: usize = 107;
-//     const POOL_QUOTE_VAULT_OFFSET: usize = 139;
+    const POOL_BASE_MINT_OFFSET: usize = 43;
+    const POOL_QUOTE_MINT_OFFSET: usize = 75;
+    const POOL_BASE_VAULT_OFFSET: usize = 139;
+    const POOL_QUOTE_VAULT_OFFSET: usize = 171;
 
-//     fn account_to_account_info(
-//         key: Pubkey,
-//         account: solana_sdk::account::Account,
-//     ) -> AccountInfo<'static> {
-//         let data = Box::leak(Box::new(account.data));
-//         let lamports = Box::leak(Box::new(account.lamports));
-//         let owner_bytes: [u8; 32] = account.owner.to_bytes();
-//         let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-//         let owner_static = Box::leak(Box::new(owner));
-//         let key_static = Box::leak(Box::new(key));
-//         AccountInfo::new(
-//             key_static, false, false, lamports, data, owner_static,
-//             account.executable, account.rent_epoch,
-//         )
-//     }
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, false, lamports, data, owner_static,
+            account.executable, account.rent_epoch,
+        )
+    }
 
-//     async fn fetch_account_info_from_rpc(
-//         rpc_client: &RpcClient,
-//         key: Pubkey,
-//     ) -> AccountInfo<'static> {
-//         let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref()).unwrap();
-//         let account = rpc_client
-//             .get_account(&sdk_pubkey)
-//             .await
-//             .expect(&format!("Failed to fetch account {}", key));
-//         account_to_account_info(key, account)
-//     }
+    async fn fetch_account_info_from_rpc(
+        rpc_client: &RpcClient,
+        key: Pubkey,
+    ) -> AccountInfo<'static> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+        let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref()).unwrap();
+        let account = rpc_client
+            .get_account(&sdk_pubkey)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to fetch account {}: {}", key, e));
+        account_to_account_info(key, account)
+    }
 
-//     fn create_mock_account_info(key: Pubkey) -> AccountInfo<'static> {
-//         let data = Box::leak(Box::new(Vec::new()));
-//         let lamports = Box::leak(Box::new(0u64));
-//         let owner_static = Box::leak(Box::new(system_program::id()));
-//         let key_static = Box::leak(Box::new(key));
-//         AccountInfo::new(key_static, false, false, lamports, data, owner_static, false, 0)
-//     }
+    fn create_mock_account_info(key: Pubkey) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(Vec::new()));
+        let lamports = Box::leak(Box::new(0u64));
+        let owner_static = Box::leak(Box::new(system_program::id()));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(key_static, false, false, lamports, data, owner_static, false, 0)
+    }
 
-//     /// Build a full test scenario from just a pool_id by fetching and decoding the pool account.
-//     /// Decodes base_mint, quote_mint, base_vault, quote_vault from pool data,
-//     /// then fetches vault accounts from RPC.
-//     async fn build_from_pool_id(pool_id_key: Pubkey) -> (PumpAmm, Vec<AccountInfo<'static>>) {
-//         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+    fn get_rpc_client() -> RpcClient {
+        let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
+        RpcClient::new(format!("https://mainnet.helius-rpc.com/?api-key={}", api_key))
+    }
 
-//         // Fetch pool account and decode all needed pubkeys
-//         let pool_account_info = fetch_account_info_from_rpc(&rpc_client, pool_id_key).await;
-//         let pool_data = pool_account_info.try_borrow_data().unwrap();
+    async fn build_from_pool_id(pool_id_key: Pubkey) -> (PumpAmm, Vec<AccountInfo<'static>>) {
+        let rpc_client = get_rpc_client();
 
-//         let base_mint = Pubkey::try_from(&pool_data[POOL_BASE_MINT_OFFSET..POOL_BASE_MINT_OFFSET + 32]).unwrap();
-//         let quote_mint = Pubkey::try_from(&pool_data[POOL_QUOTE_MINT_OFFSET..POOL_QUOTE_MINT_OFFSET + 32]).unwrap();
-//         let base_vault_key = Pubkey::try_from(&pool_data[POOL_BASE_VAULT_OFFSET..POOL_BASE_VAULT_OFFSET + 32]).unwrap();
-//         let quote_vault_key = Pubkey::try_from(&pool_data[POOL_QUOTE_VAULT_OFFSET..POOL_QUOTE_VAULT_OFFSET + 32]).unwrap();
-//         drop(pool_data);
+        // Fetch pool account and decode all needed pubkeys
+        let pool_account_info = fetch_account_info_from_rpc(&rpc_client, pool_id_key).await;
+        let pool_data = pool_account_info.try_borrow_data().unwrap();
 
-//         eprintln!("Pool ID:     {}", pool_id_key);
-//         eprintln!("Base mint:   {}", base_mint);
-//         eprintln!("Quote mint:  {}", quote_mint);
-//         eprintln!("Base vault:  {}", base_vault_key);
-//         eprintln!("Quote vault: {}", quote_vault_key);
+        let base_mint = Pubkey::try_from(&pool_data[POOL_BASE_MINT_OFFSET..POOL_BASE_MINT_OFFSET + 32]).unwrap();
+        let quote_mint = Pubkey::try_from(&pool_data[POOL_QUOTE_MINT_OFFSET..POOL_QUOTE_MINT_OFFSET + 32]).unwrap();
+        let base_vault_key = Pubkey::try_from(&pool_data[POOL_BASE_VAULT_OFFSET..POOL_BASE_VAULT_OFFSET + 32]).unwrap();
+        let quote_vault_key = Pubkey::try_from(&pool_data[POOL_QUOTE_VAULT_OFFSET..POOL_QUOTE_VAULT_OFFSET + 32]).unwrap();
+        drop(pool_data);
 
-//         // Fetch vault accounts from RPC
-//         let base_vault_account = fetch_account_info_from_rpc(&rpc_client, base_vault_key).await;
-//         let quote_vault_account = fetch_account_info_from_rpc(&rpc_client, quote_vault_key).await;
+        eprintln!("Pool ID:     {}", pool_id_key);
+        eprintln!("Base mint:   {}", base_mint);
+        eprintln!("Quote mint:  {}", quote_mint);
+        eprintln!("Base vault:  {}", base_vault_key);
+        eprintln!("Quote vault: {}", quote_vault_key);
 
-//         // Compute fee from vault amounts
-//         let base_vault_amount = read_token_amount(&base_vault_account).unwrap();
-//         let quote_vault_amount = read_token_amount(&quote_vault_account).unwrap();
-//         let fee = get_fees_int(base_vault_amount, quote_vault_amount);
-//         eprintln!("Fee: {} ({}%)", fee, fee as f64 / 10_000.0);
+        // Fetch vault accounts from RPC
+        let base_vault_account = fetch_account_info_from_rpc(&rpc_client, base_vault_key).await;
+        let quote_vault_account = fetch_account_info_from_rpc(&rpc_client, quote_vault_key).await;
 
-//         // Static accounts (10) — mock with real keys
-//         let static_base = 0;
-//         let dyn_start = 10;
-//         let accounts = vec![
-//             create_mock_account_info(PROGRAM_ID),                                                              // S0
-//             create_mock_account_info(Pubkey::from_str_const("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")), // S1: protocol_fee_recipient
-//             create_mock_account_info(Pubkey::from_str_const("94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb")), // S2: protocol_fee_token_acc
-//             create_mock_account_info(Pubkey::from_str_const("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR")), // S3: event_authority
-//             create_mock_account_info(Pubkey::from_str_const("5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx")), // S4: fee_config
-//             create_mock_account_info(Pubkey::from_str_const("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")),  // S5: fee_program
-//             create_mock_account_info(Pubkey::from_str_const("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw")), // S6: pump_amm_global
-//             create_mock_account_info(system_program::id()),                                                     // S7: system_program
-//             create_mock_account_info(Pubkey::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")), // S8: assoc_token_prog
-//             create_mock_account_info(Pubkey::from_str_const("C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw")), // S9: global_vol_acc
-//             // Dynamic accounts (indices 10-18)
-//             pool_account_info,                                     // D0: pool
-//             base_vault_account,                                    // D1: base_vault
-//             quote_vault_account,                                   // D2: quote_vault
-//             create_mock_account_info(Pubkey::new_unique()),        // D3: user_vol_acc
-//             create_mock_account_info(Pubkey::new_unique()),        // D4: pool_v2
-//             create_mock_account_info(Pubkey::new_unique()),        // D5: user_vol_wsol_ata
-//             create_mock_account_info(Pubkey::new_unique()),        // D6: vault_ata
-//             create_mock_account_info(Pubkey::new_unique()),        // D7: vault_authority
-//             create_mock_account_info(Pubkey::new_unique()),        // D8: cashback_pool_id
-//         ];
+        // Compute fee from vault amounts
+        let base_vault_amount = read_token_amount(&base_vault_account).unwrap();
+        let quote_vault_amount = read_token_amount(&quote_vault_account).unwrap();
+        let fee = get_fees_int(base_vault_amount, quote_vault_amount);
+        eprintln!("Fee: {} ({}%)", fee, fee as f64 / 10_000.0);
 
-//         let dyn_end = accounts.len();
-//         let pump_amm = PumpAmm::new(accounts.as_slice(), static_base, dyn_start, dyn_end, &[], &[fee as u32]).unwrap();
+        // Static accounts (10) — mock with real keys
+        let static_base = 0;
+        let dyn_start = 10;
+        let accounts = vec![
+            create_mock_account_info(PROGRAM_ID),                                                              // S0
+            create_mock_account_info(Pubkey::from_str_const("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")), // S1: protocol_fee_recipient
+            create_mock_account_info(Pubkey::from_str_const("94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb")), // S2: protocol_fee_token_acc
+            create_mock_account_info(Pubkey::from_str_const("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR")), // S3: event_authority
+            create_mock_account_info(Pubkey::from_str_const("5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx")), // S4: fee_config
+            create_mock_account_info(Pubkey::from_str_const("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")),  // S5: fee_program
+            create_mock_account_info(Pubkey::from_str_const("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw")), // S6: pump_amm_global
+            create_mock_account_info(system_program::id()),                                                     // S7: system_program
+            create_mock_account_info(Pubkey::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")), // S8: assoc_token_prog
+            create_mock_account_info(Pubkey::from_str_const("C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw")), // S9: global_vol_acc
+            // Dynamic accounts (indices 10-18)
+            pool_account_info,                                     // D0: pool
+            base_vault_account,                                    // D1: base_vault
+            quote_vault_account,                                   // D2: quote_vault
+            create_mock_account_info(Pubkey::new_unique()),        // D3: user_vol_acc
+            create_mock_account_info(Pubkey::new_unique()),        // D4: pool_v2
+            create_mock_account_info(Pubkey::new_unique()),        // D5: user_vol_wsol_ata
+            create_mock_account_info(Pubkey::new_unique()),        // D6: vault_ata
+            create_mock_account_info(Pubkey::new_unique()),        // D7: vault_authority
+            create_mock_account_info(Pubkey::new_unique()),        // D8: cashback_pool_id
+        ];
 
-//         (pump_amm, accounts)
-//     }
+        let dyn_end = accounts.len();
+        let pump_amm = PumpAmm::new(accounts.as_slice(), static_base, dyn_start, dyn_end, &[fee as u32]).unwrap();
 
-//     #[tokio::test]
-//     async fn test_pump_amm_from_pool_id() {
-//         let pool_id_key = Pubkey::from_str_const("AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x");
-//         let (mut pump_amm, accounts) = build_from_pool_id(pool_id_key).await;
+        (pump_amm, accounts)
+    }
 
-//         let price = pump_amm.price;
-//         let inverse_price = 1.0 / price;
-//         eprintln!("Price: {:?}, Inverse: {:?}", price, inverse_price);
+    #[tokio::test]
+    async fn test_pump_amm_round_trip() {
+        let pool_id = Pubkey::from_str_const("BM7Qw7JbGtyLoZw3canKF6Q6EJDp1Q3PYuHQhTNwoq2D");
+        let (mut pump_amm, accounts) = build_from_pool_id(pool_id).await;
+        eprintln!("{}", pump_amm.base_vault_amount);
+        eprintln!("{}", pump_amm.quote_vault_amount);
 
-//         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
-//         let token_mint = if pump_amm.base_token_pk == sol_mint {
-//             pump_amm.quote_token_pk
-//         } else {
-//             pump_amm.base_token_pk
-//         };
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let no_fee = MintFee::ZERO;
 
-//         // Test buy: SOL -> TOKEN
-//         let sol_in: u64 = 1_000_000_000; // 1 SOL
-//         let clock = Clock::default();
-//         let token_out = pump_amm
-//             .swap_base_in(accounts.as_slice(), sol_mint, sol_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//             .unwrap();
-//         eprintln!(
-//             "BUY:  {:.9} SOL -> {:.6} TOKEN",
-//             sol_in as f64 / 1e9,
-//             token_out as f64 / 1e6,
-//         );
+        // 1. Print all account pubkeys
+        eprintln!("\n=== Account Pubkeys ===");
+        eprintln!("base_mint        : {}", pump_amm.base_token_pk);
+        eprintln!("quote_mint       : {}", pump_amm.quote_token_pk);
+        eprintln!("pool_id          : {}", accounts[10 + D_POOL].key);
+        eprintln!("base_vault       : {}", accounts[10 + D_BASE_VAULT].key);
+        eprintln!("quote_vault      : {}", accounts[10 + D_QUOTE_VAULT].key);
+        eprintln!("program_id       : {}", accounts[S_PROGRAM_ID].key);
 
-//         // Test sell: TOKEN -> SOL
-//         let sol_out = pump_amm
-//             .swap_base_in(accounts.as_slice(), token_mint, token_out, MintFee::ZERO, MintFee::ZERO, &clock)
-//             .unwrap();
-//         eprintln!(
-//             "SELL: {:.6} TOKEN -> {:.9} SOL",
-//             token_out as f64 / 1e6,
-//             sol_out as f64 / 1e9,
-//         );
+        // 2. Prices
+        let (price, inverse_price) = pump_amm.get_prices().unwrap();
+        eprintln!("\n=== Prices ===");
+        eprintln!("price            : {}", price);
+        eprintln!("inverse_price    : {}", inverse_price);
 
-//         // Round-trip loss should be within fee range
-//         let loss_pct = (1.0 - sol_out as f64 / sol_in as f64) * 100.0;
-//         eprintln!("Round-trip loss: {:.4}%", loss_pct);
-//         assert!(loss_pct > 0.0, "Should lose some to fees");
-//         assert!(loss_pct < 5.0, "Loss should be reasonable (< 5%)");
+        // 3. Fees
+        let (fee_factor, fee_factor_2) = pump_amm.get_fee_factor().unwrap();
+        eprintln!("\n=== Fees ===");
+        eprintln!("fee_numerator    : {}", pump_amm.fee_numerator);
+        eprintln!("fee_factor       : {}", fee_factor);
+        eprintln!("fee_factor_2     : {}", fee_factor_2);
 
-//         // Test swap_base_out (inverse): how much SOL to get `token_out` tokens?
-//         let sol_needed = pump_amm
-//             .swap_base_out_impl(accounts.as_slice(), token_mint, token_out, MintFee::ZERO, MintFee::ZERO)
-//             .unwrap();
-//         eprintln!(
-//             "BASE_OUT: need {:.9} SOL to get {:.6} TOKEN",
-//             sol_needed as f64 / 1e9,
-//             token_out as f64 / 1e6,
-//         );
-//         // Should need at least as much as we put in (due to rounding)
-//         assert!(sol_needed >= sol_in, "swap_base_out should require >= original input");
-//     }
+        // 4. prepare_for_execution
+        pump_amm.prepare_for_execution(&accounts);
+        eprintln!("\n=== After prepare_for_execution ===");
+        eprintln!("buy_max_in       : {}", pump_amm.buy_max_in);
+        eprintln!("buy_max_out      : {}", pump_amm.buy_max_out);
+        eprintln!("sell_max_in      : {}", pump_amm.sell_max_in);
+        eprintln!("sell_max_out     : {}", pump_amm.sell_max_out);
 
-//     #[tokio::test]
-//     async fn test_pump_amm_swap() {
-//         let pool_id_key = Pubkey::from_str_const("AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x");
-//         let (mut pump_amm, accounts) = build_from_pool_id(pool_id_key).await;
+        // 5. Round-trip with start_amount = 1 WSOL
+        let start_amount: u64 = 1_000_000_000; // 1 SOL
+        let clock = Clock::default();
 
-//         let price = pump_amm.price;
-//         let inverse_price = 1.0 / price;
-//         eprintln!("Price: {:?}", price);
-//         eprintln!("Inverse price: {:?}", inverse_price);
+        let other_mint = if pump_amm.base_token_pk == sol_mint {
+            pump_amm.quote_token_pk
+        } else {
+            pump_amm.base_token_pk
+        };
 
-//         let quote_amount_in: u64 = 1_000_000_000;
-//         let clock = Clock::default();
-//         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let rpc = get_rpc_client();
+        let other_mint_account = rpc.get_account(
+            &solana_sdk::pubkey::Pubkey::try_from(other_mint.to_bytes().as_ref()).unwrap()
+        ).await.unwrap();
+        let token_decimals = other_mint_account.data[44] as i32;
+        let sol_div = 10f64.powi(9);
+        let tok_div = 10f64.powi(token_decimals);
 
-//         eprintln!("================================================");
-//         let amount_out_1 = pump_amm
-//             .swap_base_in(accounts.as_slice(), sol_mint, quote_amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//             .unwrap();
-//         let (sol_price, inverse_sol_price) = if pump_amm.base_token_pk == sol_mint {
-//             (price, inverse_price)
-//         } else {
-//             (inverse_price, price)
-//         };
-//         let amount_out_1_v2 = quote_amount_in as f64 * sol_price;
-//         eprintln!(
-//             "SOL {:?} -> TOKEN {:?} TOKEN V2: {:?}",
-//             quote_amount_in as f64 / 1_000_000_000.0,
-//             amount_out_1 as f64 / 1_000_000.0,
-//             amount_out_1_v2 as f64 / 1_000_000.0
-//         );
+        // Direction 1: SOL -> TOKEN -> SOL
+        eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
+        let token_out = pump_amm.swap_base_in(
+            &accounts, sol_mint, start_amount, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_sol_in = pump_amm.swap_base_out(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount as f64 / sol_div, token_out as f64 / tok_div, max_sol_in as f64 / sol_div);
 
-//         eprintln!("================================================");
-//         let token_mint = if pump_amm.base_token_pk == sol_mint {
-//             pump_amm.quote_token_pk
-//         } else {
-//             pump_amm.base_token_pk
-//         };
-//         let amount_out_2 = pump_amm
-//             .swap_base_out_impl(
-//                 accounts.as_slice(),
-//                 token_mint,
-//                 amount_out_1_v2 as u64,
-//                 MintFee::ZERO,
-//                 MintFee::ZERO,
-//             )
-//             .unwrap();
-//         let amount_received_v2_2 = amount_out_1_v2 as f64 * inverse_sol_price;
-//         eprintln!(
-//             "TOKEN {:?} -> SOL {:?} SOL V2: {:?}",
-//             amount_out_1 as f64 / 1_000_000.0,
-//             amount_out_2 as f64 / 1_000_000_000.0,
-//             amount_received_v2_2 as f64 / 1_000_000_000.0
-//         );
-//     }
-// }
+        // Direction 2: TOKEN -> SOL -> TOKEN
+        eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
+        let sol_out = pump_amm.swap_base_in(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_token_in = pump_amm.swap_base_out(
+            &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out as f64 / tok_div, sol_out as f64 / sol_div, max_token_in as f64 / tok_div);
+    }
+}

@@ -2,6 +2,7 @@ use crate::arbitrage::base::Edge;
 use crate::arbitrage::utils::find_instance_index_by_pool_id;
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
+use crate::utils::token::MintFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
 
@@ -31,8 +32,8 @@ fn simulate_path<'info>(
     amount_in: u64,
     clock: &Clock,
 ) -> Result<i128> {
-    let token_out = instances[idx_1].swap_base_in(accounts, input_mint, amount_in, clock)?;
-    let sol_out = instances[idx_2].swap_base_in(accounts, middle_mint, token_out, clock)?;
+    let token_out = instances[idx_1].swap_base_in(accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, clock)?;
+    let sol_out = instances[idx_2].swap_base_in(accounts, middle_mint, token_out, MintFee::ZERO, MintFee::ZERO, clock)?;
 
     Ok(sol_out as i128 - amount_in as i128)
 }
@@ -532,6 +533,8 @@ fn simulate_n_hop_path<'info>(
             accounts,
             edge.left.mint_account,
             current_amount,
+            MintFee::ZERO,
+            MintFee::ZERO,
             clock,
         )?;
     }

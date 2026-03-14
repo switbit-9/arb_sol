@@ -8,7 +8,7 @@ use anchor_lang::prelude::*;
 pub fn find_instance_by_pool_id<'a>(
     instances: &'a [ProgramInstance],
     pool_id: &Pubkey,
-) -> Result<&'a ProgramInstance> {
+) -> Result<&'a ProgramInstance<'a>> {
     instances
         .iter()
         .find(|instance| instance.get_pool_id() == pool_id)

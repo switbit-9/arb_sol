@@ -803,448 +803,292 @@ impl OrcaWhirlpool {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::programs::orca::states::{get_tick_array_start_index, TICK_ARRAY_SIZE};
-//     use crate::utils::utils::get_mint_decimals;
-//     use anchor_lang::prelude::Clock;
-//     use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
-//     use solana_client::nonblocking::rpc_client::RpcClient;
-//     use solana_sdk::pubkey::Pubkey as SdkPubkey;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::programs::orca::states::{get_tick_array_start_index, TICK_ARRAY_SIZE};
+    use crate::utils::token::MintFee;
+    use anchor_lang::prelude::Clock;
+    use anchor_lang::solana_program::pubkey::Pubkey;
+    use solana_client::nonblocking::rpc_client::RpcClient;
 
-//     fn create_mock_account_info_with_data(
-//         key: Pubkey,
-//         owner: Pubkey,
-//         data: Option<Vec<u8>>,
-//     ) -> AccountInfo<'static> {
-//         let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
-//         let data_vec = Box::leak(Box::new(data_vec));
-//         let lamports = Box::leak(Box::new(0u64));
-//         let owner_static = Box::leak(Box::new(owner));
-//         let key_static = Box::leak(Box::new(key));
+    fn create_mock_account_info_with_data(
+        key: Pubkey,
+        owner: Pubkey,
+        data: Option<Vec<u8>>,
+    ) -> AccountInfo<'static> {
+        let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
+        let data_vec = Box::leak(Box::new(data_vec));
+        let lamports = Box::leak(Box::new(0u64));
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, true, lamports, data_vec, owner_static, false, 0,
+        )
+    }
 
-//         AccountInfo::new(
-//             key_static,
-//             false,
-//             true,
-//             lamports,
-//             data_vec,
-//             owner_static,
-//             false,
-//             0,
-//         )
-//     }
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, false, lamports, data, owner_static,
+            account.executable, account.rent_epoch,
+        )
+    }
 
-//     fn account_to_account_info(
-//         key: Pubkey,
-//         account: solana_sdk::account::Account,
-//     ) -> AccountInfo<'static> {
-//         let data = Box::leak(Box::new(account.data));
-//         let lamports = Box::leak(Box::new(account.lamports));
-//         let owner_bytes: [u8; 32] = account.owner.to_bytes();
-//         let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-//         let owner_static = Box::leak(Box::new(owner));
-//         let key_static = Box::leak(Box::new(key));
-//         AccountInfo::new(
-//             key_static,
-//             false,
-//             false,
-//             lamports,
-//             data,
-//             owner_static,
-//             account.executable,
-//             account.rent_epoch,
-//         )
-//     }
+    async fn fetch_account_info_from_rpc(
+        rpc_client: &RpcClient,
+        key: Pubkey,
+    ) -> AccountInfo<'static> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+        let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref())
+            .expect("Failed to convert Pubkey");
+        let account = rpc_client.get_account(&sdk_pubkey).await
+            .unwrap_or_else(|e| panic!("Failed to fetch account {}: {}", key, e));
+        account_to_account_info(key, account)
+    }
 
-//     async fn get_clock(rpc_client: &RpcClient) -> anyhow::Result<Clock> {
-//         use anchor_client::solana_sdk::sysvar;
+    async fn try_fetch_account_info_from_rpc(
+        rpc_client: &RpcClient,
+        key: Pubkey,
+    ) -> Option<AccountInfo<'static>> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+        let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref()).ok()?;
+        let account = rpc_client.get_account(&sdk_pubkey).await.ok()?;
+        Some(account_to_account_info(key, account))
+    }
 
-//         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await?;
+    async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
+        use anchor_client::solana_sdk::sysvar;
+        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
+            .expect("Failed to fetch clock");
+        let data = &clock_account.data;
+        assert!(data.len() >= 40, "Clock account data too short");
+        Clock {
+            slot: u64::from_le_bytes(data[0..8].try_into().unwrap()),
+            epoch_start_timestamp: i64::from_le_bytes(data[8..16].try_into().unwrap()),
+            epoch: u64::from_le_bytes(data[16..24].try_into().unwrap()),
+            leader_schedule_epoch: u64::from_le_bytes(data[24..32].try_into().unwrap()),
+            unix_timestamp: i64::from_le_bytes(data[32..40].try_into().unwrap()),
+        }
+    }
 
-//         if clock_account.data.len() < 40 {
-//             return Err(anyhow::anyhow!(
-//                 "Clock account data too short: {} bytes",
-//                 clock_account.data.len()
-//             ));
-//         }
+    fn get_rpc_client() -> RpcClient {
+        let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
+        RpcClient::new(format!("https://mainnet.helius-rpc.com/?api-key={}", api_key))
+    }
 
-//         let data = &clock_account.data;
-//         let slot = u64::from_le_bytes(data[0..8].try_into()?);
-//         let epoch_start_timestamp = i64::from_le_bytes(data[8..16].try_into()?);
-//         let epoch = u64::from_le_bytes(data[16..24].try_into()?);
-//         let leader_schedule_epoch = u64::from_le_bytes(data[24..32].try_into()?);
-//         let unix_timestamp = i64::from_le_bytes(data[32..40].try_into()?);
+    /// Build an OrcaWhirlpool instance from a pool_id by fetching all needed accounts from RPC.
+    /// Returns (instance, accounts_vec, clock) ready for testing.
+    async fn build_from_pool_id(
+        pool_id: Pubkey,
+    ) -> (OrcaWhirlpool, Vec<AccountInfo<'static>>, Clock) {
+        let rpc_client = get_rpc_client();
 
-//         Ok(Clock {
-//             slot,
-//             epoch_start_timestamp,
-//             epoch,
-//             leader_schedule_epoch,
-//             unix_timestamp,
-//         })
-//     }
+        // Fetch pool account and parse WhirlpoolSimple
+        let pool_account = fetch_account_info_from_rpc(&rpc_client, pool_id).await;
+        let pool = {
+            let data = pool_account.try_borrow_data().unwrap();
+            WhirlpoolSimple::try_from_bytes(&data)
+                .expect("Failed to parse WhirlpoolSimple")
+        };
 
-//     #[tokio::test]
-//     async fn test_orca_whirlpool_pool_parsing() {
-//         use anchor_client::Cluster;
+        eprintln!("Pool: {}", pool_id);
+        eprintln!("  token_a (base): {}", pool.token_mint_a);
+        eprintln!("  token_b (quote): {}", pool.token_mint_b);
+        let tick_current = pool.tick_current_index;
+        let tick_spacing = pool.tick_spacing;
+        eprintln!("  tick_current: {}, tick_spacing: {}", tick_current, tick_spacing);
 
-//         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+        // Fetch vault accounts
+        let vault_a_info = fetch_account_info_from_rpc(&rpc_client, pool.token_vault_a).await;
+        let vault_b_info = fetch_account_info_from_rpc(&rpc_client, pool.token_vault_b).await;
 
-//         // SOL/USDC Whirlpool on mainnet
-//         let pool_id_key = Pubkey::from_str_const("HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ");
+        // Derive oracle PDA
+        let (oracle_key, _) = Pubkey::find_program_address(
+            &[b"oracle", pool_id.as_ref()],
+            &PROGRAM_ID,
+        );
+        let oracle_info = try_fetch_account_info_from_rpc(&rpc_client, oracle_key)
+            .await
+            .unwrap_or_else(|| create_mock_account_info_with_data(
+                oracle_key, anchor_lang::solana_program::system_program::id(), None,
+            ));
 
-//         eprintln!("Testing Orca Whirlpool pool parsing: {}", pool_id_key);
+        // Derive tick array PDAs based on current tick and tick spacing
+        let ticks_in_array = TICK_ARRAY_SIZE * pool.tick_spacing as i32;
+        let start_tick_index_0 = get_tick_array_start_index(pool.tick_current_index, pool.tick_spacing);
+        let start_tick_index_1 = start_tick_index_0 - ticks_in_array;
+        let start_tick_index_2 = start_tick_index_0 + ticks_in_array;
 
-//         let pool_account_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
-//             .await;
+        let (tick_array_0_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_0.to_string().as_bytes()],
+            &PROGRAM_ID,
+        );
+        let (tick_array_1_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_1.to_string().as_bytes()],
+            &PROGRAM_ID,
+        );
+        let (tick_array_2_key, _) = Pubkey::find_program_address(
+            &[b"tick_array", pool_id.as_ref(), start_tick_index_2.to_string().as_bytes()],
+            &PROGRAM_ID,
+        );
 
-//         let pool_account = match pool_account_result {
-//             Ok(acc) => acc,
-//             Err(e) => {
-//                 eprintln!("Warning: Could not fetch pool account: {:?}", e);
-//                 return;
-//             }
-//         };
+        eprintln!("  tick_array_0 (start={}): {}", start_tick_index_0, tick_array_0_key);
+        eprintln!("  tick_array_1 (start={}): {}", start_tick_index_1, tick_array_1_key);
+        eprintln!("  tick_array_2 (start={}): {}", start_tick_index_2, tick_array_2_key);
+        eprintln!("  oracle: {}", oracle_key);
 
-//         // Debug: print actual discriminator
-//         if pool_account.data.len() >= 8 {
-//             eprintln!("Actual discriminator: {:02x?}", &pool_account.data[0..8]);
-//             eprintln!(
-//                 "Expected discriminator: {:02x?}",
-//                 states::whirlpool::WHIRLPOOL_DISCRIMINATOR
-//             );
-//         }
+        // Fetch tick array accounts (may not exist on-chain)
+        let tick_array_0_info = try_fetch_account_info_from_rpc(&rpc_client, tick_array_0_key)
+            .await
+            .unwrap_or_else(|| create_mock_account_info_with_data(
+                tick_array_0_key, PROGRAM_ID, Some(vec![0u8; 1000]),
+            ));
+        let tick_array_1_info = try_fetch_account_info_from_rpc(&rpc_client, tick_array_1_key)
+            .await
+            .unwrap_or_else(|| create_mock_account_info_with_data(
+                tick_array_1_key, PROGRAM_ID, Some(vec![0u8; 1000]),
+            ));
+        let tick_array_2_info = try_fetch_account_info_from_rpc(&rpc_client, tick_array_2_key)
+            .await
+            .unwrap_or_else(|| create_mock_account_info_with_data(
+                tick_array_2_key, PROGRAM_ID, Some(vec![0u8; 1000]),
+            ));
 
-//         // Parse pool state
-//         let pool = match WhirlpoolSimple::try_from_bytes(&pool_account.data) {
-//             Ok(p) => p,
-//             Err(e) => {
-//                 eprintln!("Failed to parse pool state: {:?}", e);
-//                 return;
-//             }
-//         };
+        // Compute total fee rate (static + adaptive from oracle)
+        let total_fee_rate = {
+            let oracle_data = oracle_info.try_borrow_data().ok();
+            compute_total_fee_rate(
+                pool.fee_rate,
+                oracle_data.as_ref().map(|d| d.as_ref()),
+            )
+        };
+        let static_fee_rate = pool.fee_rate;
+        eprintln!("  fee_rate (static): {}, total_fee_rate: {}", static_fee_rate, total_fee_rate);
 
-//         // Copy packed struct fields to avoid unaligned reference errors
-//         let liquidity = pool.liquidity;
-//         let sqrt_price = pool.sqrt_price;
-//         let tick_current_index = pool.tick_current_index;
-//         let tick_spacing = pool.tick_spacing;
-//         let fee_rate = pool.fee_rate;
+        let program_id_info = create_mock_account_info_with_data(
+            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+        );
 
-//         eprintln!("\n=== Pool State ===");
-//         eprintln!("Token Mint A: {}", pool.token_mint_a);
-//         eprintln!("Token Mint B: {}", pool.token_mint_b);
-//         eprintln!("Liquidity: {}", liquidity);
-//         eprintln!("Sqrt Price: {}", sqrt_price);
-//         eprintln!("Current Tick: {}", tick_current_index);
-//         eprintln!("Tick Spacing: {}", tick_spacing);
-//         eprintln!("Fee Rate: {} ({}%)", fee_rate, fee_rate as f64 / 10000.0); // 1_000_000 denominator, displayed as %
+        // Layout:
+        // Static (static_base=0): [program_id]
+        // Dynamic (dyn_start=1): [pool, vault_a, vault_b, oracle, tick0, tick1, tick2]
+        let accounts = vec![
+            program_id_info,        // S0
+            pool_account,           // D0
+            vault_a_info,           // D1
+            vault_b_info,           // D2
+            oracle_info,            // D3
+            tick_array_0_info,      // D4
+            tick_array_1_info,      // D5
+            tick_array_2_info,      // D6
+        ];
 
-//         eprintln!("\n✓ Pool parsing test passed!");
-//     }
+        let static_base: usize = 0;
+        let dyn_start: usize = 1;
+        let dyn_end: usize = accounts.len();
 
-//     #[tokio::test]
-//     async fn test_orca_whirlpool_round_trip_swap() {
-//         use anchor_client::Cluster;
+        let pool_fees = [total_fee_rate];
 
-//         let rpc_client = RpcClient::new(Cluster::Mainnet.url().to_string());
+        let mut orca = OrcaWhirlpool::new(&accounts, static_base, dyn_start, dyn_end, &pool_fees)
+            .expect("OrcaWhirlpool::new failed");
 
-//         // SOL/USDC Whirlpool on mainnet
-//         let pool_id_key = Pubkey::from_str_const("HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF");
+        orca.prepare_for_execution(&accounts);
 
-//         // let pool_id_key = Pubkey::from_str_const("Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE");
-//         // let pool_id_key = Pubkey::from_str_const("6jwmmjnx3mDbA6QauSZ7DY8Z1B8wZncxXM1tJd2unpuS");
+        let clock = get_clock_from_rpc(&rpc_client).await;
 
-//         eprintln!("Testing Orca Whirlpool round trip swap: {}", pool_id_key);
+        eprintln!("  price: {}", orca.price);
+        eprintln!("  fee_rate: {}", orca.fee_rate);
 
-//         // Fetch pool account
-//         let pool_account_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool_id_key.to_bytes().as_ref()).unwrap())
-//             .await;
+        (orca, accounts, clock)
+    }
 
-//         let pool_account = match pool_account_result {
-//             Ok(acc) => acc,
-//             Err(e) => {
-//                 eprintln!("Warning: Could not fetch pool account: {:?}", e);
-//                 return;
-//             }
-//         };
+    // ---- Tests ----
 
-//         // Parse pool state
-//         let pool = match WhirlpoolSimple::try_from_bytes(&pool_account.data) {
-//             Ok(p) => p,
-//             Err(e) => {
-//                 eprintln!("Failed to parse pool state: {:?}", e);
-//                 return;
-//             }
-//         };
+    #[tokio::test]
+    async fn test_orca_whirlpool_round_trip() {
+        let pool_id = Pubkey::from_str_const("HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF");
+        let (mut orca, accounts, clock) = build_from_pool_id(pool_id).await;
 
-//         // Copy packed struct fields to avoid unaligned reference errors
-//         let liquidity = pool.liquidity;
-//         let sqrt_price = pool.sqrt_price;
-//         let tick_current_index = pool.tick_current_index;
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let no_fee = MintFee::ZERO;
 
-//         eprintln!("Pool state parsed successfully");
-//         eprintln!("Token Mint A: {}", pool.token_mint_a);
-//         eprintln!("Token Mint B: {}", pool.token_mint_b);
-//         eprintln!("Liquidity: {}", liquidity);
-//         eprintln!("Sqrt Price: {}", sqrt_price);
-//         eprintln!("Current Tick: {}", tick_current_index);
+        // 1. Print all account pubkeys
+        eprintln!("\n=== Account Pubkeys ===");
+        eprintln!("base_mint        : {}", orca.base_token_pk);
+        eprintln!("quote_mint       : {}", orca.quote_token_pk);
+        eprintln!("pool_id          : {}", accounts[1 + D_POOL].key);
+        eprintln!("vault_a          : {}", accounts[1 + D_VAULT_A].key);
+        eprintln!("vault_b          : {}", accounts[1 + D_VAULT_B].key);
+        eprintln!("oracle           : {}", accounts[1 + D_ORACLE].key);
+        eprintln!("tick_array_0     : {}", accounts[1 + D_TICK_ARRAY_0].key);
+        eprintln!("tick_array_1     : {}", accounts[1 + D_TICK_ARRAY_1].key);
+        eprintln!("tick_array_2     : {}", accounts[1 + D_TICK_ARRAY_2].key);
+        eprintln!("program_id       : {}", accounts[S_PROGRAM_ID].key);
 
-//         // Fetch vault accounts
-//         let vault_a_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_vault_a.to_bytes().as_ref()).unwrap())
-//             .await;
-//         let vault_b_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_vault_b.to_bytes().as_ref()).unwrap())
-//             .await;
+        // 2. Prices
+        let (price, inverse_price) = orca.get_prices().unwrap();
+        eprintln!("\n=== Prices ===");
+        eprintln!("price            : {}", price);
+        eprintln!("inverse_price    : {}", inverse_price);
 
-//         if vault_a_result.is_err() || vault_b_result.is_err() {
-//             eprintln!("Warning: Could not fetch vault accounts");
-//             eprintln!("Vault A fetch: {:?}", vault_a_result.as_ref().err());
-//             eprintln!("Vault B fetch: {:?}", vault_b_result.as_ref().err());
-//             return;
-//         }
+        // 3. Fees
+        let (fee_factor, fee_factor_2) = orca.get_fee_factor().unwrap();
+        eprintln!("\n=== Fees ===");
+        eprintln!("fee_rate         : {}", orca.fee_rate);
+        eprintln!("fee_factor       : {}", fee_factor);
+        eprintln!("fee_factor_2     : {}", fee_factor_2);
 
-//         let vault_a_account = vault_a_result.unwrap();
-//         let vault_b_account = vault_b_result.unwrap();
+        // 4. Max amounts
+        eprintln!("\n=== After prepare_for_execution ===");
+        eprintln!("buy_max_in       : {}", orca.buy_max_in);
+        eprintln!("buy_max_out      : {}", orca.buy_max_out);
+        eprintln!("sell_max_in      : {}", orca.sell_max_in);
+        eprintln!("sell_max_out     : {}", orca.sell_max_out);
 
-//         // Fetch token mint accounts
-//         let token_a_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_mint_a.to_bytes().as_ref()).unwrap())
-//             .await;
-//         let token_b_result = rpc_client
-//             .get_account(&SdkPubkey::try_from(pool.token_mint_b.to_bytes().as_ref()).unwrap())
-//             .await;
+        // 5. Round-trip with start_amount = 1 WSOL
+        let start_amount: u64 = 1_000_000_000;
 
-//         if token_a_result.is_err() || token_b_result.is_err() {
-//             eprintln!("Warning: Could not fetch token mint accounts");
-//             return;
-//         }
+        let other_mint = if orca.base_token_pk == sol_mint {
+            orca.quote_token_pk
+        } else {
+            orca.base_token_pk
+        };
 
-//         let token_a_account = token_a_result.unwrap();
-//         let token_b_account = token_b_result.unwrap();
+        let rpc = get_rpc_client();
+        let other_mint_account = rpc.get_account(
+            &solana_sdk::pubkey::Pubkey::try_from(other_mint.to_bytes().as_ref()).unwrap()
+        ).await.unwrap();
+        let token_decimals = other_mint_account.data[44] as i32;
+        let sol_div = 10f64.powi(9);
+        let tok_div = 10f64.powi(token_decimals);
 
-//         // Derive tick array PDAs based on current tick and tick spacing
-//         let tick_spacing = pool.tick_spacing;
-//         let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
+        // Direction 1: SOL -> TOKEN -> SOL
+        eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
+        let token_out = orca.swap_base_in(
+            &accounts, sol_mint, start_amount, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_sol_in = orca.swap_base_out(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount as f64 / sol_div, token_out as f64 / tok_div, max_sol_in as f64 / sol_div);
 
-//         let start_tick_index_0 = get_tick_array_start_index(pool.tick_current_index, tick_spacing);
-//         let start_tick_index_1 = start_tick_index_0 - ticks_in_array;
-//         let start_tick_index_2 = start_tick_index_0 + ticks_in_array;
-
-//         let (tick_array_0_key, _) = Pubkey::find_program_address(
-//             &[
-//                 b"tick_array",
-//                 pool_id_key.as_ref(),
-//                 start_tick_index_0.to_string().as_bytes(),
-//             ],
-//             &OrcaWhirlpool::PROGRAM_ID,
-//         );
-//         let (tick_array_1_key, _) = Pubkey::find_program_address(
-//             &[
-//                 b"tick_array",
-//                 pool_id_key.as_ref(),
-//                 start_tick_index_1.to_string().as_bytes(),
-//             ],
-//             &OrcaWhirlpool::PROGRAM_ID,
-//         );
-//         let (tick_array_2_key, _) = Pubkey::find_program_address(
-//             &[
-//                 b"tick_array",
-//                 pool_id_key.as_ref(),
-//                 start_tick_index_2.to_string().as_bytes(),
-//             ],
-//             &OrcaWhirlpool::PROGRAM_ID,
-//         );
-
-//         // Derive oracle PDA
-//         let (oracle_key, _) = Pubkey::find_program_address(
-//             &[b"oracle", pool_id_key.as_ref()],
-//             &OrcaWhirlpool::PROGRAM_ID,
-//         );
-
-//         eprintln!(
-//             "Tick array 0 (start={}): {}",
-//             start_tick_index_0, tick_array_0_key
-//         );
-//         eprintln!(
-//             "Tick array 1 (start={}): {}",
-//             start_tick_index_1, tick_array_1_key
-//         );
-//         eprintln!(
-//             "Tick array 2 (start={}): {}",
-//             start_tick_index_2, tick_array_2_key
-//         );
-//         eprintln!("Oracle: {}", oracle_key);
-
-//         // Fetch tick array and oracle accounts from RPC
-//         // Some tick arrays may not exist on-chain (no positions in that range), use empty mock as fallback
-//         let program_id_key = OrcaWhirlpool::PROGRAM_ID;
-
-//         let tick_array_0_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(tick_array_0_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acct) => account_to_account_info(tick_array_0_key, acct),
-//             Err(e) => {
-//                 eprintln!("Tick array 0 not found ({}), using empty mock", e);
-//                 create_mock_account_info_with_data(
-//                     tick_array_0_key,
-//                     program_id_key,
-//                     Some(vec![0u8; 1000]),
-//                 )
-//             }
-//         };
-//         let tick_array_1_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(tick_array_1_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acct) => account_to_account_info(tick_array_1_key, acct),
-//             Err(e) => {
-//                 eprintln!("Tick array 1 not found ({}), using empty mock", e);
-//                 create_mock_account_info_with_data(
-//                     tick_array_1_key,
-//                     program_id_key,
-//                     Some(vec![0u8; 1000]),
-//                 )
-//             }
-//         };
-//         let tick_array_2_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(tick_array_2_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acct) => account_to_account_info(tick_array_2_key, acct),
-//             Err(e) => {
-//                 eprintln!("Tick array 2 not found ({}), using empty mock", e);
-//                 create_mock_account_info_with_data(
-//                     tick_array_2_key,
-//                     program_id_key,
-//                     Some(vec![0u8; 1000]),
-//                 )
-//             }
-//         };
-//         let oracle_account = match rpc_client
-//             .get_account(&SdkPubkey::try_from(oracle_key.to_bytes().as_ref()).unwrap())
-//             .await
-//         {
-//             Ok(acct) => account_to_account_info(oracle_key, acct),
-//             Err(e) => {
-//                 eprintln!("Oracle not found ({}), using empty mock", e);
-//                 create_mock_account_info_with_data(
-//                     oracle_key,
-//                     program_id_key,
-//                     Some(vec![0u8; 1000]),
-//                 )
-//             }
-//         };
-
-//         // Create AccountInfo instances
-//         let program_id_account =
-//             create_mock_account_info_with_data(program_id_key, system_program::id(), None);
-
-//         let pool_id_account_info = account_to_account_info(pool_id_key, pool_account);
-//         let vault_a_account_info = account_to_account_info(pool.token_vault_a, vault_a_account);
-//         let vault_b_account_info = account_to_account_info(pool.token_vault_b, vault_b_account);
-//         let token_a_account_info = account_to_account_info(pool.token_mint_a, token_a_account);
-//         let token_b_account_info = account_to_account_info(pool.token_mint_b, token_b_account);
-
-//         // New layout: static_base=0 (program_id), dyn_start=1 (pool, vault_a, vault_b, oracle, tick0, tick1, tick2)
-//         let accounts = vec![
-//             program_id_account,         // static_base + S_PROGRAM_ID = 0
-//             pool_id_account_info.clone(),   // dyn_start + D_POOL = 1
-//             vault_a_account_info.clone(),   // dyn_start + D_VAULT_A = 2
-//             vault_b_account_info.clone(),   // dyn_start + D_VAULT_B = 3
-//             oracle_account.clone(),         // dyn_start + D_ORACLE = 4
-//             tick_array_0_account.clone(),   // dyn_start + D_TICK_ARRAY_0 = 5
-//             tick_array_1_account.clone(),   // dyn_start + D_TICK_ARRAY_1 = 6
-//             tick_array_2_account.clone(),   // dyn_start + D_TICK_ARRAY_2 = 7
-//         ];
-
-//         let mut orca_whirlpool = OrcaWhirlpool::new(&accounts, 0, 1, accounts.len(), &[], &[0])
-//             .expect("Failed to create OrcaWhirlpool");
-
-//         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
-
-//         eprintln!(
-//             "Price: {:?}, Inverse Price: {:?}",
-//             orca_whirlpool.price,
-//             1.0 / orca_whirlpool.price
-//         );
-
-//         // Mints are now read from pool state, use the fetched mint accounts directly
-//         let mint_decimals_a = get_mint_decimals(&token_a_account_info);
-//         let mint_decimals_b = get_mint_decimals(&token_b_account_info);
-//         eprintln!(
-//             "Mint decimals A: {:?}, B: {:?}",
-//             mint_decimals_a, mint_decimals_b
-//         );
-
-//         // Test round trip: SOL -> TOKEN -> SOL
-//         let sol_in = 1_000_000_000; // 1 SOL
-
-//         let token_mint = if orca_whirlpool.base_token_pk == sol_mint {
-//             orca_whirlpool.quote_token_pk
-//         } else if orca_whirlpool.quote_token_pk == sol_mint {
-//             orca_whirlpool.base_token_pk
-//         } else {
-//             eprintln!("Warning: Pool does not contain SOL, skipping round trip test");
-//             return;
-//         };
-
-//         let (max_sol_in, max_token_out) = (orca_whirlpool.buy_max_in, orca_whirlpool.buy_max_out);
-//         eprintln!(
-//             "Max SOL IN: {:?} -> MAX TOKEN OUT: {:?}",
-//             max_sol_in as f64 / 1_000_000_000.0,
-//             max_token_out as f64 / 1_000_000.0
-//         );
-
-//         eprintln!("================================================");
-//         // Step 1: Swap SOL -> TOKEN
-//         let clock1 = get_clock(&rpc_client).await.unwrap();
-//         let token_out = orca_whirlpool
-//             .swap_base_in(&accounts, sol_mint, sol_in, MintFee::ZERO, MintFee::ZERO, &clock1)
-//             .expect("swap_base_in failed");
-//         eprintln!(
-//             "Step 1 (swap_base_in): {} SOL -> {} TOKEN",
-//             sol_in as f64 / 1_000_000_000.0,
-//             token_out as f64 / 1_000_000.0,
-//         );
-
-//         let max_sol_in = orca_whirlpool
-//             .swap_base_out(&accounts, token_mint, token_out, MintFee::ZERO, MintFee::ZERO, &clock1)
-//             .expect("swap_base_out failed");
-//         eprintln!(
-//             "Step 1 (swap_base_out): MAX SOL IN {} -> {} TOKEN OUT",
-//             max_sol_in as f64 / 1_000_000_000.0,
-//             token_out as f64 / 1_000_000.0,
-//         );
-
-//         eprintln!("================================================");
-
-//         // Step 2: Swap TOKEN -> SOL
-//         let sol_out = orca_whirlpool
-//             .swap_base_in(&accounts, token_mint, token_out, MintFee::ZERO, MintFee::ZERO, &clock1)
-//             .expect("second swap_base_in failed");
-//         eprintln!(
-//             "Step 2 (swap_base_in): {} TOKEN -> {} SOL",
-//             token_out as f64 / 1_000_000.0,
-//             sol_out as f64 / 1_000_000_000.0,
-//         );
-
-//         let max_token_in = orca_whirlpool
-//             .swap_base_out(&accounts, sol_mint, sol_out, MintFee::ZERO, MintFee::ZERO, &clock1)
-//             .expect("second swap_base_out failed");
-//         eprintln!(
-//             "Step 2 (swap_base_out): {} MAX TOKEN IN -> {} SOL OUT",
-//             max_token_in as f64 / 1_000_000.0,
-//             sol_out as f64 / 1_000_000_000.0
-//         );
-
-//         eprintln!("================================================");
-//         eprintln!("Round trip completed!");
-//     }
-// }
+        // Direction 2: TOKEN -> SOL -> TOKEN
+        eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
+        let sol_out = orca.swap_base_in(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_token_in = orca.swap_base_out(
+            &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out as f64 / tok_div, sol_out as f64 / sol_div, max_token_in as f64 / tok_div);
+    }
+}

@@ -628,271 +628,278 @@ impl MeteoraDammV1 {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     fn make_damm_v1(
-//         base_vault: u64,
-//         quote_vault: u64,
-//         fee_num: u64,
-//         fee_den: u64,
-//         proto_num: u64,
-//         proto_den: u64,
-//     ) -> MeteoraDammV1 {
-//         let base_token_pk = Pubkey::new_unique();
-//         let quote_token_pk = Pubkey::new_unique();
-//         let (buy_max_in, buy_max_out, sell_max_in, sell_max_out) =
-//             MeteoraDammV1::compute_cached_max(base_vault, quote_vault, fee_num, fee_den);
-//         MeteoraDammV1 {
-//             pool_id: Pubkey::new_unique(),
-//             base_token_pk,
-//             quote_token_pk,
-//             base_vault_amount: base_vault,
-//             quote_vault_amount: quote_vault,
-//             price: quote_vault as f64 / base_vault as f64,
-//             trade_fee_numerator: fee_num,
-//             trade_fee_denominator: fee_den,
-//             protocol_fee_numerator: proto_num,
-//             protocol_fee_denominator: proto_den,
-//             static_base: 0,
-//             dyn_start: 1,
-//             buy_max_in,
-//             buy_max_out,
-//             sell_max_in,
-//             sell_max_out,
-//             prepared: true,
-//         }
-//     }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::token::MintFee;
+    use solana_client::nonblocking::rpc_client::RpcClient;
 
-//     /// Build a mock accounts slice: 1 static (program_id) + 13 dynamic accounts.
-//     fn build_mock_accounts() -> Vec<AccountInfo<'static>> {
-//         let mut accounts = Vec::new();
-//         // 1 static + MIN_ACCOUNTS(13) dynamic = 14 total
-//         for _ in 0..(1 + MeteoraDammV1::MIN_ACCOUNTS) {
-//             let key = Box::leak(Box::new(Pubkey::new_unique()));
-//             let owner = Box::leak(Box::new(Pubkey::default()));
-//             let data = Box::leak(Box::new(vec![0u8; 8]));
-//             let lamports = Box::leak(Box::new(0u64));
-//             accounts.push(AccountInfo::new(
-//                 key, false, false, lamports, data, owner, false, 0,
-//             ));
-//         }
-//         accounts
-//     }
+    fn create_mock_account_info_with_data(
+        key: Pubkey,
+        owner: Pubkey,
+        data: Option<Vec<u8>>,
+    ) -> AccountInfo<'static> {
+        let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
+        let data_vec = Box::leak(Box::new(data_vec));
+        let lamports = Box::leak(Box::new(0u64));
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, true, lamports, data_vec, owner_static, false, 0,
+        )
+    }
 
-//     fn dummy_clock() -> Clock {
-//         Clock {
-//             slot: 0,
-//             epoch_start_timestamp: 0,
-//             epoch: 0,
-//             leader_schedule_epoch: 0,
-//             unix_timestamp: 0,
-//         }
-//     }
+    fn account_to_account_info(
+        key: Pubkey,
+        account: solana_sdk::account::Account,
+    ) -> AccountInfo<'static> {
+        let data = Box::leak(Box::new(account.data));
+        let lamports = Box::leak(Box::new(account.lamports));
+        let owner_bytes: [u8; 32] = account.owner.to_bytes();
+        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
+        let owner_static = Box::leak(Box::new(owner));
+        let key_static = Box::leak(Box::new(key));
+        AccountInfo::new(
+            key_static, false, false, lamports, data, owner_static,
+            account.executable, account.rent_epoch,
+        )
+    }
 
-//     /// Round-trip: swap_base_in(X) → Y, then swap_base_out(Y) → X'
-//     /// X' should be >= X (swap_base_out rounds up).
-//     #[test]
-//     fn test_round_trip_base_to_quote() {
-//         let mut damm = make_damm_v1(
-//             1_000_000_000, // 1B base
-//             2_000_000_000, // 2B quote
-//             25,            // 0.25% fee
-//             10_000,
-//             1, // 20% protocol fee
-//             5,
-//         );
-//         let accounts = build_mock_accounts();
-//         let clock = dummy_clock();
-//         let input_mint = damm.base_token_pk;
+    async fn fetch_account_info_from_rpc(
+        rpc_client: &RpcClient,
+        key: Pubkey,
+    ) -> AccountInfo<'static> {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
+        let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref())
+            .expect("Failed to convert Pubkey");
+        let account = rpc_client.get_account(&sdk_pubkey).await
+            .unwrap_or_else(|e| panic!("Failed to fetch account {}: {}", key, e));
+        account_to_account_info(key, account)
+    }
 
-//         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
-//             let amount_out = damm
-//                 .swap_base_in(&accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
-//             assert!(amount_out > 0, "swap_base_in should produce non-zero output");
+    async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
+        use anchor_client::solana_sdk::sysvar;
+        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
+            .expect("Failed to fetch clock");
+        let data = &clock_account.data;
+        assert!(data.len() >= 40, "Clock account data too short");
+        Clock {
+            slot: u64::from_le_bytes(data[0..8].try_into().unwrap()),
+            epoch_start_timestamp: i64::from_le_bytes(data[8..16].try_into().unwrap()),
+            epoch: u64::from_le_bytes(data[16..24].try_into().unwrap()),
+            leader_schedule_epoch: u64::from_le_bytes(data[24..32].try_into().unwrap()),
+            unix_timestamp: i64::from_le_bytes(data[32..40].try_into().unwrap()),
+        }
+    }
 
-//             // Reverse: how much input is needed to get `amount_out` of quote?
-//             let needed_in = damm
-//                 .swap_base_out(&accounts, damm.quote_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
+    fn get_rpc_client() -> RpcClient {
+        let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
+        RpcClient::new(format!("https://mainnet.helius-rpc.com/?api-key={}", api_key))
+    }
 
-//             // swap_base_in floors the output, so reversing may differ by ±tolerance
-//             let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
-//             let diff = if needed_in >= amount_in {
-//                 needed_in - amount_in
-//             } else {
-//                 amount_in - needed_in
-//             };
-//             assert!(
-//                 diff <= tolerance,
-//                 "Round-trip (base→quote): needed_in={}, amount_in={}, diff={}, tolerance={}",
-//                 needed_in,
-//                 amount_in,
-//                 diff,
-//                 tolerance
-//             );
-//         }
-//     }
+    /// Build a MeteoraDammV1 instance from a pool_id by fetching all needed accounts from RPC.
+    async fn build_from_pool_id(
+        pool_id: Pubkey,
+    ) -> (MeteoraDammV1, Vec<AccountInfo<'static>>, Clock) {
+        use solana_sdk::pubkey::Pubkey as SdkPubkey;
 
-//     #[test]
-//     fn test_round_trip_quote_to_base() {
-//         let mut damm = make_damm_v1(
-//             1_000_000_000,
-//             2_000_000_000,
-//             25,
-//             10_000,
-//             1,
-//             5,
-//         );
-//         let accounts = build_mock_accounts();
-//         let clock = dummy_clock();
-//         let input_mint = damm.quote_token_pk;
+        let rpc_client = get_rpc_client();
 
-//         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
-//             let amount_out = damm
-//                 .swap_base_in(&accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
-//             assert!(amount_out > 0);
+        let sdk_pool_id = SdkPubkey::try_from(pool_id.to_bytes().as_ref()).unwrap();
+        let pool_account = rpc_client.get_account(&sdk_pool_id).await
+            .unwrap_or_else(|e| panic!("Failed to fetch pool {}: {}", pool_id, e));
 
-//             // Reverse direction: output is base token
-//             let needed_in = damm
-//                 .swap_base_out(&accounts, damm.base_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
+        // Parse pool state (after 8-byte Anchor discriminator)
+        let d = &pool_account.data[8..];
+        let token_a_mint_key = Pubkey::new_from_array(d[32..64].try_into().unwrap());
+        let token_b_mint_key = Pubkey::new_from_array(d[64..96].try_into().unwrap());
+        let a_vault_key = Pubkey::new_from_array(d[96..128].try_into().unwrap());
+        let b_vault_key = Pubkey::new_from_array(d[128..160].try_into().unwrap());
+        let a_vault_lp_key = Pubkey::new_from_array(d[160..192].try_into().unwrap());
+        let b_vault_lp_key = Pubkey::new_from_array(d[192..224].try_into().unwrap());
+        // admin_token_a_fee at 226, admin_token_b_fee at 258
+        let proto_fee_a_key = Pubkey::new_from_array(d[226..258].try_into().unwrap());
+        let proto_fee_b_key = Pubkey::new_from_array(d[258..290].try_into().unwrap());
+        // trade_fee from pool data
+        let trade_fee_num = read_u64(d, TRADE_FEE_NUM_OFFSET);
+        let trade_fee_den = read_u64(d, TRADE_FEE_DEN_OFFSET);
 
-//             // swap_base_in floors the output, so reversing the floored output
-//             // may need slightly less input. Allow ±tolerance.
-//             let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
-//             let diff = if needed_in >= amount_in {
-//                 needed_in - amount_in
-//             } else {
-//                 amount_in - needed_in
-//             };
-//             assert!(
-//                 diff <= tolerance,
-//                 "Round-trip (quote→base): needed_in={}, amount_in={}, diff={}, tolerance={}",
-//                 needed_in,
-//                 amount_in,
-//                 diff,
-//                 tolerance
-//             );
-//         }
-//     }
+        eprintln!("MeteoraDammV1 pool: {}", pool_id);
+        eprintln!("  token_a_mint: {}", token_a_mint_key);
+        eprintln!("  token_b_mint: {}", token_b_mint_key);
+        eprintln!("  a_vault: {}", a_vault_key);
+        eprintln!("  b_vault: {}", b_vault_key);
+        eprintln!("  trade_fee: {}/{}", trade_fee_num, trade_fee_den);
 
-//     /// Forward consistency: swap_base_out(Y) → X, then swap_base_in(X) → Y'
-//     /// Y' should be >= Y (we over-estimate the input).
-//     #[test]
-//     fn test_round_trip_out_then_in_base_to_quote() {
-//         let mut damm = make_damm_v1(
-//             500_000_000,
-//             1_000_000_000,
-//             30,
-//             10_000,
-//             0, // no protocol fee
-//             1,
-//         );
-//         let accounts = build_mock_accounts();
-//         let clock = dummy_clock();
+        // Fetch vault accounts to parse token_vault and lp_mint
+        let a_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(a_vault_key.to_bytes().as_ref()).unwrap())
+            .await.expect("Failed to fetch a_vault");
+        let b_vault_account = rpc_client
+            .get_account(&SdkPubkey::try_from(b_vault_key.to_bytes().as_ref()).unwrap())
+            .await.expect("Failed to fetch b_vault");
 
-//         for &desired_out in &[1_000u64, 50_000, 1_000_000, 10_000_000] {
-//             // How much base do I need to get `desired_out` quote?
-//             let needed_in = damm
-//                 .swap_base_out(&accounts, damm.quote_token_pk, desired_out, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
-//             assert!(needed_in > 0);
+        // Vault layout (after disc): offset 11 = token_vault, offset 107 = lp_mint
+        let a_vault_data = &a_vault_account.data[8..];
+        let b_vault_data = &b_vault_account.data[8..];
+        let a_token_vault_key = Pubkey::new_from_array(a_vault_data[11..43].try_into().unwrap());
+        let b_token_vault_key = Pubkey::new_from_array(b_vault_data[11..43].try_into().unwrap());
+        let a_vault_lp_mint_key = Pubkey::new_from_array(a_vault_data[107..139].try_into().unwrap());
+        let b_vault_lp_mint_key = Pubkey::new_from_array(b_vault_data[107..139].try_into().unwrap());
 
-//             // Now actually swap that much base in
-//             let actual_out = damm
-//                 .swap_base_in(&accounts, damm.base_token_pk, needed_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
+        eprintln!("  a_token_vault: {}", a_token_vault_key);
+        eprintln!("  b_token_vault: {}", b_token_vault_key);
+        eprintln!("  a_vault_lp_mint: {}", a_vault_lp_mint_key);
+        eprintln!("  b_vault_lp_mint: {}", b_vault_lp_mint_key);
 
-//             // We should get at least as much as we wanted
-//             assert!(
-//                 actual_out >= desired_out,
-//                 "Out-then-in: actual_out ({}) should be >= desired_out ({})",
-//                 actual_out,
-//                 desired_out
-//             );
-//         }
-//     }
+        // Fetch all sub-accounts from RPC
+        let a_token_vault_info = fetch_account_info_from_rpc(&rpc_client, a_token_vault_key).await;
+        let b_token_vault_info = fetch_account_info_from_rpc(&rpc_client, b_token_vault_key).await;
+        let a_vault_lp_mint_info = fetch_account_info_from_rpc(&rpc_client, a_vault_lp_mint_key).await;
+        let b_vault_lp_mint_info = fetch_account_info_from_rpc(&rpc_client, b_vault_lp_mint_key).await;
+        let a_vault_lp_info = fetch_account_info_from_rpc(&rpc_client, a_vault_lp_key).await;
+        let b_vault_lp_info = fetch_account_info_from_rpc(&rpc_client, b_vault_lp_key).await;
 
-//     /// Zero-fee pool round-trip should be tighter.
-//     #[test]
-//     fn test_round_trip_zero_fee() {
-//         let mut damm = make_damm_v1(
-//             1_000_000_000,
-//             1_000_000_000,
-//             0, // no fee
-//             1,
-//             0,
-//             1,
-//         );
-//         let accounts = build_mock_accounts();
-//         let clock = dummy_clock();
+        let program_id_info = create_mock_account_info_with_data(
+            MeteoraDammV1::PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+        );
+        let pool_id_info = account_to_account_info(pool_id, pool_account);
+        let a_vault_info = account_to_account_info(a_vault_key, a_vault_account);
+        let b_vault_info = account_to_account_info(b_vault_key, b_vault_account);
+        let proto_fee_a_info = create_mock_account_info_with_data(
+            proto_fee_a_key, anchor_lang::solana_program::system_program::id(), None,
+        );
+        let proto_fee_b_info = create_mock_account_info_with_data(
+            proto_fee_b_key, anchor_lang::solana_program::system_program::id(), None,
+        );
+        let vault_program_info = create_mock_account_info_with_data(
+            Pubkey::new_unique(), anchor_lang::solana_program::system_program::id(), None,
+        );
+        let token_program_info = create_mock_account_info_with_data(
+            anchor_spl::token::ID, anchor_lang::solana_program::system_program::id(), None,
+        );
 
-//         for &amount_in in &[1_000u64, 1_000_000, 50_000_000] {
-//             let amount_out = damm
-//                 .swap_base_in(&accounts, damm.base_token_pk, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
+        // Layout:
+        // Static (static_base=0): [program_id]
+        // Dynamic (dyn_start=1): [pool, a_vault, b_vault, a_token_vault, b_token_vault,
+        //   a_vault_lp_mint, b_vault_lp_mint, a_vault_lp, b_vault_lp,
+        //   proto_fee_a, proto_fee_b, vault_program, token_program]
+        let accounts = vec![
+            program_id_info,       // S0
+            pool_id_info,          // D0 = D_POOL
+            a_vault_info,          // D1 = D_A_VAULT
+            b_vault_info,          // D2 = D_B_VAULT
+            a_token_vault_info,    // D3 = D_A_TOKEN_VAULT
+            b_token_vault_info,    // D4 = D_B_TOKEN_VAULT
+            a_vault_lp_mint_info,  // D5 = D_A_VAULT_LP_MINT
+            b_vault_lp_mint_info,  // D6 = D_B_VAULT_LP_MINT
+            a_vault_lp_info,       // D7 = D_A_VAULT_LP
+            b_vault_lp_info,       // D8 = D_B_VAULT_LP
+            proto_fee_a_info,      // D9 = D_PROTO_FEE_A
+            proto_fee_b_info,      // D10 = D_PROTO_FEE_B
+            vault_program_info,    // D11 = D_VAULT_PROGRAM
+            token_program_info,    // D12 = D_TOKEN_PROGRAM
+        ];
 
-//             let needed_in = damm
-//                 .swap_base_out(&accounts, damm.quote_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
-//                 .unwrap();
+        let static_base: usize = 0;
+        let dyn_start: usize = 1;
+        let dyn_end: usize = accounts.len();
 
-//             // With zero fees, needed_in should be exactly amount_in or amount_in+1 (rounding)
-//             assert!(
-//                 needed_in >= amount_in && needed_in <= amount_in + 1,
-//                 "Zero-fee round-trip: needed_in={}, amount_in={}",
-//                 needed_in,
-//                 amount_in
-//             );
-//         }
-//     }
+        // Convert trade_fee to millionths for pool_fees
+        let fee_millionths = if trade_fee_den > 0 {
+            ((trade_fee_num as u128 * 1_000_000) / trade_fee_den as u128) as u32
+        } else {
+            0
+        };
+        let pool_fees = [fee_millionths];
 
-//     /// Verify fee calculation helpers.
-//     #[test]
-//     fn test_calculate_trade_fee() {
-//         let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 0, 1);
-//         // 25/10000 = 0.25%
-//         assert_eq!(damm.calculate_trade_fee(10_000).unwrap(), 25);
-//         assert_eq!(damm.calculate_trade_fee(0).unwrap(), 0);
-//         // Small amounts: minimum fee of 1
-//         assert_eq!(damm.calculate_trade_fee(1).unwrap(), 1);
-//     }
+        let clock = get_clock_from_rpc(&rpc_client).await;
 
-//     #[test]
-//     fn test_calculate_protocol_fee() {
-//         let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 1, 5);
-//         // protocol = 1/5 = 20% of trade fee
-//         assert_eq!(damm.calculate_protocol_fee(100).unwrap(), 20);
-//         assert_eq!(damm.calculate_protocol_fee(0).unwrap(), 0);
-//         // Small fee: minimum 1
-//         assert_eq!(damm.calculate_protocol_fee(1).unwrap(), 1);
-//     }
+        let damm = MeteoraDammV1::new(&accounts, static_base, dyn_start, dyn_end, &clock, &pool_fees)
+            .expect("MeteoraDammV1::new failed");
 
-//     /// Constant product invariant: after swap, k' >= k (fees mean k grows).
-//     #[test]
-//     fn test_constant_product_invariant() {
-//         let mut damm = make_damm_v1(1_000_000_000, 2_000_000_000, 25, 10_000, 1, 5);
-//         let accounts = build_mock_accounts();
-//         let clock = dummy_clock();
+        eprintln!("  price: {}", damm.price);
+        eprintln!("  base_vault_amount: {}", damm.base_vault_amount);
+        eprintln!("  quote_vault_amount: {}", damm.quote_vault_amount);
 
-//         let k_before = damm.base_vault_amount as u128 * damm.quote_vault_amount as u128;
+        (damm, accounts, clock)
+    }
 
-//         let amount_in: u64 = 10_000_000;
-//         let amount_out = damm
-//             .swap_base_in(&accounts, damm.base_token_pk, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
-//             .unwrap();
+    // ---- Tests ----
 
-//         let new_base = damm.base_vault_amount as u128 + amount_in as u128;
-//         let new_quote = damm.quote_vault_amount as u128 - amount_out as u128;
-//         let k_after = new_base * new_quote;
+    #[tokio::test]
+    async fn test_damm_v1_round_trip() {
+        // SOL-USDC Meteora DAMM V1 pool
+        let pool_id = Pubkey::from_str_const("HcjZvfeSNJbNkfLD4eEcRBr96AD3w1GpmMppaeRZf7ur");
+        let (mut damm, accounts, clock) = build_from_pool_id(pool_id).await;
 
-//         assert!(
-//             k_after >= k_before,
-//             "k should not decrease: before={}, after={}",
-//             k_before,
-//             k_after
-//         );
-//     }
-// }
+        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
+        let no_fee = MintFee::ZERO;
+
+        // 1. Print all account pubkeys
+        eprintln!("\n=== Account Pubkeys ===");
+        eprintln!("base_mint        : {}", damm.base_token_pk);
+        eprintln!("quote_mint       : {}", damm.quote_token_pk);
+        eprintln!("pool_id          : {}", accounts[1 + MeteoraDammV1::D_POOL].key);
+        eprintln!("a_vault          : {}", accounts[1 + MeteoraDammV1::D_A_VAULT].key);
+        eprintln!("b_vault          : {}", accounts[1 + MeteoraDammV1::D_B_VAULT].key);
+        eprintln!("a_token_vault    : {}", accounts[1 + MeteoraDammV1::D_A_TOKEN_VAULT].key);
+        eprintln!("b_token_vault    : {}", accounts[1 + MeteoraDammV1::D_B_TOKEN_VAULT].key);
+        eprintln!("a_vault_lp_mint  : {}", accounts[1 + MeteoraDammV1::D_A_VAULT_LP_MINT].key);
+        eprintln!("b_vault_lp_mint  : {}", accounts[1 + MeteoraDammV1::D_B_VAULT_LP_MINT].key);
+        eprintln!("a_vault_lp       : {}", accounts[1 + MeteoraDammV1::D_A_VAULT_LP].key);
+        eprintln!("b_vault_lp       : {}", accounts[1 + MeteoraDammV1::D_B_VAULT_LP].key);
+        eprintln!("program_id       : {}", accounts[MeteoraDammV1::S_PROGRAM_ID].key);
+
+        // 2. Print price and inverse_price
+        let (price, inverse_price) = damm.get_prices().unwrap();
+        eprintln!("\n=== Prices ===");
+        eprintln!("price            : {}", price);
+        eprintln!("inverse_price    : {}", inverse_price);
+
+        // 3. Print fees
+        let (fee_factor, fee_factor_2) = damm.get_fee_factor().unwrap();
+        eprintln!("\n=== Fees ===");
+        eprintln!("trade_fee_num    : {}", damm.trade_fee_numerator);
+        eprintln!("trade_fee_den    : {}", damm.trade_fee_denominator);
+        eprintln!("fee_factor       : {}", fee_factor);
+        eprintln!("fee_factor_2     : {}", fee_factor_2);
+
+        // 4. prepare_for_execution
+        damm.prepare_for_execution(&accounts);
+        eprintln!("\n=== After prepare_for_execution ===");
+        eprintln!("buy_max_in       : {}", damm.buy_max_in);
+        eprintln!("buy_max_out      : {}", damm.buy_max_out);
+        eprintln!("sell_max_in      : {}", damm.sell_max_in);
+        eprintln!("sell_max_out     : {}", damm.sell_max_out);
+
+        // 5. Round-trip with start_amount = 1 WSOL
+        let start_amount: u64 = 1_000_000_000; // 1 SOL
+
+        let other_mint = if damm.base_token_pk == sol_mint {
+            damm.quote_token_pk
+        } else {
+            damm.base_token_pk
+        };
+
+        // Direction 1: SOL -> TOKEN -> SOL
+        eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
+        let token_out = damm.swap_base_in(
+            &accounts, sol_mint, start_amount, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_sol_in = damm.swap_base_out(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount, token_out, max_sol_in);
+
+        // Direction 2: TOKEN -> SOL -> TOKEN
+        eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
+        let sol_out = damm.swap_base_in(
+            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        let max_token_in = damm.swap_base_out(
+            &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
+        ).unwrap();
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out, sol_out, max_token_in);
+    }
+}

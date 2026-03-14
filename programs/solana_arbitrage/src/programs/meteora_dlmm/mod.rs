@@ -106,7 +106,7 @@ impl ProgramMeta for MeteoraDlmm {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        self.ensure_initialized(accounts, clock)?;
+        self.prepare_for_execution(accounts, clock)?;
         let swap_for_y = input_mint == self.base_token_pk;
         let (bin_arr_0, bin_arr_1, cache) = if swap_for_y {
             (D_BIN_BUY_0, D_BIN_BUY_1, self.buy_swap_cache.as_ref().unwrap())
@@ -153,7 +153,7 @@ impl ProgramMeta for MeteoraDlmm {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        self.ensure_initialized(accounts, clock)?;
+        self.prepare_for_execution(accounts, clock)?;
         let swap_for_y = output_mint == self.quote_token_pk;
 
         let (bin_arr_0, bin_arr_1, cache) = if swap_for_y {
@@ -609,7 +609,7 @@ impl MeteoraDlmm {
     /// Lazily initialize expensive fields (bin arrays, swap caches, active bin, max amounts).
     /// Called on first swap_base_in/swap_base_out. Skipped entirely on no-profit path.
     #[inline(never)]
-    pub fn ensure_initialized(&mut self, accounts: &[AccountInfo], clock: &Clock) -> Result<()> {
+    pub fn prepare_for_execution(&mut self, accounts: &[AccountInfo], clock: &Clock) -> Result<()> {
         if self.buy_swap_cache.is_some() {
             return Ok(());
         }
@@ -767,7 +767,7 @@ impl MeteoraDlmm {
         let fee_numerator = (pool_fees[0] as u64) * 1_000;
 
         // Extract slim fields — full LbPair is dropped after this.
-        // Volatility fields use raw on-chain values; ensure_initialized() will
+        // Volatility fields use raw on-chain values; prepare_for_execution() will
         // update them after calling update_references() on the re-read lb_pair.
         let lb_pair_slim = LbPairSlim {
             active_id: lb_pair.active_id,
@@ -780,7 +780,7 @@ impl MeteoraDlmm {
         };
 
         // LAZY INIT: skip bin array reads, active_bin computation, swap cache building.
-        // These are deferred to ensure_initialized() (called on first swap_base_in).
+        // These are deferred to prepare_for_execution() (called on first swap_base_in).
         // For the analytical profit check, we only need price + fee_rate + bin_step.
         // active_bin is zeroed → get_active_bin_max_in returns 0 → extract_pool_model
         // falls back to get_cached_max_amounts (u64::MAX) with conservative price.
@@ -897,6 +897,71 @@ impl MeteoraDlmm {
             has_variable_fee,
         });
         Ok((buy, sell, fee_rate))
+    }
+
+    /// Build SwapCache from raw fields (no full LbPair needed). Used by prepare_for_execution.
+    #[inline(never)]
+    fn build_swap_caches_raw(
+        active_id: i32,
+        bin_step: u16,
+        base_factor: u16,
+        base_fee_power_factor: u8,
+        variable_fee_control: u32,
+        max_volatility_accumulator: u32,
+        index_reference: i32,
+        volatility_reference: u32,
+        volatility_accumulator: u32,
+        accounts: &[AccountInfo],
+        dyn_start: usize,
+    ) -> anyhow::Result<(Box<SwapCache>, Box<SwapCache>)> {
+        // Compute initial_vol_acc
+        let initial_vol_acc = {
+            let delta_id = (i64::from(index_reference) - i64::from(active_id)).unsigned_abs();
+            let va = u64::from(volatility_reference)
+                .saturating_add(delta_id.saturating_mul(BASIS_POINT_MAX as u64));
+            std::cmp::min(va, max_volatility_accumulator.into()) as u32
+        };
+
+        // base_fee = base_factor * bin_step * 10 * 10^base_fee_power_factor
+        let base_fee = u128::from(base_factor)
+            .checked_mul(bin_step.into())
+            .unwrap_or(0)
+            .checked_mul(10u128)
+            .unwrap_or(0)
+            .checked_mul(10u128.pow(base_fee_power_factor.into()))
+            .unwrap_or(0);
+
+        let price_base = {
+            let bps = u128::from(bin_step)
+                .checked_shl(SCALE_OFFSET.into())
+                .unwrap()
+                .checked_div(BASIS_POINT_MAX as u128)
+                .unwrap();
+            ONE.checked_add(bps).unwrap()
+        };
+        let has_variable_fee = variable_fee_control > 0;
+
+        let buy = Box::new(SwapCache {
+            base_fee,
+            price_base,
+            bin_array_indices: [
+                Self::read_bin_array_index(&accounts[dyn_start + D_BIN_BUY_0]),
+                Self::read_bin_array_index(&accounts[dyn_start + D_BIN_BUY_1]),
+            ],
+            initial_vol_acc,
+            has_variable_fee,
+        });
+        let sell = Box::new(SwapCache {
+            base_fee,
+            price_base,
+            bin_array_indices: [
+                Self::read_bin_array_index(&accounts[dyn_start + D_BIN_SELL_0]),
+                Self::read_bin_array_index(&accounts[dyn_start + D_BIN_SELL_1]),
+            ],
+            initial_vol_acc,
+            has_variable_fee,
+        });
+        Ok((buy, sell))
     }
 
     /// Compute approximate (max_amount_in, max_amount_out) from first bin array + active price.
@@ -1268,7 +1333,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dlmm_round_trip() {
-        let pool_id = Pubkey::from_str_const("2AvqsCzg31jLQ3L2GRAbnq8BjumoAQVah7kuBEz1Ymq7");
+        let pool_id = Pubkey::from_str_const("8G3W9d9gFZNx98kqKMnsciM9p2A8sK4xekDeZRXK4arr");
         let (mut meteora, accounts, clock) = build_from_pool_id(pool_id).await;
 
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
@@ -1304,8 +1369,13 @@ mod tests {
         eprintln!("fee_factor       : {}", fee_factor);
         eprintln!("fee_factor_2     : {}", fee_factor_2);
 
-        // 4. Prepare for execution (no-op for DLMM, ensure_initialized called by swap)
-        // MeteoraDlmm has no prepare_for_execution, ensure_initialized is called lazily
+        // 4. prepare_for_execution (DLMM's equivalent of prepare_for_execution)
+        meteora.prepare_for_execution(&accounts, &clock).unwrap();
+        eprintln!("\n=== After prepare_for_execution ===");
+        eprintln!("buy_max_in       : {}", meteora.buy_max_in);
+        eprintln!("buy_max_out      : {}", meteora.buy_max_out);
+        eprintln!("sell_max_in      : {}", meteora.sell_max_in);
+        eprintln!("sell_max_out     : {}", meteora.sell_max_out);
 
         // 5. Round-trip with start_amount = 1 WSOL
         let start_amount: u64 = 1_000_000_000; // 1 SOL
@@ -1316,6 +1386,14 @@ mod tests {
             meteora.base_token_pk
         };
 
+        let rpc = get_rpc_client();
+        let other_mint_account = rpc.get_account(
+            &solana_sdk::pubkey::Pubkey::try_from(other_mint.to_bytes().as_ref()).unwrap()
+        ).await.unwrap();
+        let token_decimals = other_mint_account.data[44] as i32;
+        let sol_div = 10f64.powi(9);
+        let tok_div = 10f64.powi(token_decimals);
+
         // Direction 1: SOL -> TOKEN -> SOL
         eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
         let token_out = meteora.swap_base_in(
@@ -1324,7 +1402,7 @@ mod tests {
         let max_sol_in = meteora.swap_base_out(
             &accounts, other_mint, token_out, no_fee, no_fee, &clock,
         ).unwrap();
-        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount, token_out, max_sol_in);
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount as f64 / sol_div, token_out as f64 / tok_div, max_sol_in as f64 / sol_div);
 
         // Direction 2: TOKEN -> SOL -> TOKEN
         eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
@@ -1334,6 +1412,6 @@ mod tests {
         let max_token_in = meteora.swap_base_out(
             &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
         ).unwrap();
-        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out, sol_out, max_token_in);
+        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out as f64 / tok_div, sol_out as f64 / sol_div, max_token_in as f64 / tok_div);
     }
 }
