@@ -2874,7 +2874,7 @@ mod tests {
         let base_token_data = get_token_data("base_token");
         let quote_token_data = get_token_data("quote_token");
 
-        let program_id = create_mock_account_info(PumpAmm::PROGRAM_ID, system_program::id(), None);
+        let program_id = create_mock_account_info(crate::programs::pump_amm::PROGRAM_ID, system_program::id(), None);
         let pool_id = create_mock_account_info(pool_id, system_program::id(), None);
 
         let base_vault_account = create_mock_account_info_with_data(
@@ -3105,7 +3105,7 @@ mod tests {
         // eprintln!("base_token_account: {:?}", base_token_account.data);
         // eprintln!("quote_to/ken_account: {:?}", quote_token_account.data);
 
-        let program_id = create_mock_account_info(PumpAmm::PROGRAM_ID, system_program::id(), None);
+        let program_id = create_mock_account_info(crate::programs::pump_amm::PROGRAM_ID, system_program::id(), None);
         let pool_id = create_mock_account_info(pool_id, system_program::id(), None);
         let protocol_fee_recipient =
             create_mock_account_info(Pubkey::new_unique(), system_program::id(), None);

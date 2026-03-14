@@ -12,6 +12,17 @@ use anchor_spl::token_2022::spl_token_2022::{
     extension::{self, StateWithExtensions},
 };
 
+/// Mint transfer fee parameters passed via instruction data (no on-chain parsing needed).
+#[derive(Clone, Copy, Debug)]
+pub struct MintFee {
+    pub bps: u16,
+    pub max: u64,
+}
+
+impl MintFee {
+    pub const ZERO: MintFee = MintFee { bps: 0, max: 0 };
+}
+
 #[derive(Debug)]
 pub struct TransferFeeIncludedAmount {
     pub amount: u64,
@@ -118,11 +129,11 @@ pub fn get_epoch_transfer_fee(token_mint: &AccountInfo) -> Result<Option<Transfe
     Ok(None)
 }
 
-/// Extract fee rate from a mint account as a f64 (basis_points / 10_000).
-/// Returns 0.0 for standard SPL Token mints or mints without transfer fee extension.
-pub fn extract_fee_rate(token_mint: &AccountInfo, epoch: u64) -> Result<f64> {
+/// Extract transfer fee parameters from a mint account, returning a MintFee.
+/// Returns MintFee::ZERO for standard SPL Token mints or mints without transfer fee extension.
+pub fn extract_mint_fee(token_mint: &AccountInfo, epoch: u64) -> Result<MintFee> {
     if *token_mint.owner == Token::id() {
-        return Ok(0.0);
+        return Ok(MintFee::ZERO);
     }
 
     let token_mint_data = token_mint.try_borrow_data()?;
@@ -132,17 +143,36 @@ pub fn extract_fee_rate(token_mint: &AccountInfo, epoch: u64) -> Result<f64> {
         token_mint_unpacked.get_extension::<extension::transfer_fee::TransferFeeConfig>()
     {
         let fee = transfer_fee_config.get_epoch_fee(epoch);
-        let basis_points = u16::from(fee.transfer_fee_basis_points);
-        return Ok(basis_points as f64 / 10_000.0);
+        let bps = u16::from(fee.transfer_fee_basis_points);
+        let max = u64::from(fee.maximum_fee);
+        return Ok(MintFee { bps, max });
     }
 
-    Ok(0.0)
+    Ok(MintFee::ZERO)
 }
 
-/// Look up a cached fee rate by mint pubkey. Returns 0.0 if not found.
+/// Look up a cached mint fee by pubkey. Returns MintFee::ZERO if not found.
 #[inline(always)]
-pub fn lookup_fee_rate(mint_fees: &[(Pubkey, f64)], mint: &Pubkey) -> f64 {
-    mint_fees.iter().find(|(k, _)| k == mint).map(|(_, f)| *f).unwrap_or(0.0)
+pub fn lookup_fee_rate(mint_fees: &[(Pubkey, MintFee)], mint: &Pubkey) -> MintFee {
+    mint_fees.iter().find(|(k, _)| k == mint).map(|(_, f)| *f).unwrap_or(MintFee::ZERO)
+}
+
+/// Get (input_transfer_fee, output_transfer_fee) for a given input mint,
+/// looking up fees from the cached mint_fees slice.
+#[inline(always)]
+pub fn get_transfer_fees(
+    input_mint: Pubkey,
+    base_token_pk: &Pubkey,
+    quote_token_pk: &Pubkey,
+    mint_fees: &[(Pubkey, MintFee)],
+) -> (MintFee, MintFee) {
+    let base_fee = lookup_fee_rate(mint_fees, base_token_pk);
+    let quote_fee = lookup_fee_rate(mint_fees, quote_token_pk);
+    if input_mint == *base_token_pk {
+        (base_fee, quote_fee)
+    } else {
+        (quote_fee, base_fee)
+    }
 }
 
 /// Calculate the fee for output amount
@@ -202,24 +232,39 @@ pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64) -> Result<
     Ok(fee)
 }
 
-/// Apply forward transfer fee using a pre-computed fee rate.
+/// Apply forward transfer fee using MintFee (bps + max cap).
 /// Returns the fee amount to subtract from `pre_fee_amount`.
 #[inline(always)]
-pub fn apply_transfer_fee(pre_fee_amount: u64, fee_rate: f64) -> u64 {
-    if fee_rate == 0.0 {
+pub fn apply_transfer_fee(pre_fee_amount: u64, fee: MintFee) -> u64 {
+    if fee.bps == 0 {
         return 0;
     }
-    (pre_fee_amount as f64 * fee_rate) as u64
+    let calculated = ((pre_fee_amount as u128) * (fee.bps as u128) / 10_000) as u64;
+    if fee.max > 0 && calculated > fee.max {
+        fee.max
+    } else {
+        calculated
+    }
 }
 
-/// Apply inverse transfer fee using a pre-computed fee rate.
+/// Apply inverse transfer fee using MintFee (bps + max cap).
 /// Returns the fee amount to add to `post_fee_amount` to get the pre-fee amount.
 #[inline(always)]
-pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee_rate: f64) -> u64 {
-    if fee_rate == 0.0 || post_fee_amount == 0 {
+pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee: MintFee) -> u64 {
+    if fee.bps == 0 || post_fee_amount == 0 {
         return 0;
     }
-    (post_fee_amount as f64 * fee_rate / (1.0 - fee_rate)).ceil() as u64
+    let denom = 10_000u64.saturating_sub(fee.bps as u64);
+    if denom == 0 {
+        return post_fee_amount; // 100% fee edge case
+    }
+    let numer = (post_fee_amount as u128) * (fee.bps as u128);
+    let calculated = ((numer + denom as u128 - 1) / denom as u128) as u64; // ceil division
+    if fee.max > 0 && calculated > fee.max {
+        fee.max
+    } else {
+        calculated
+    }
 }
 
 pub fn get_transfer_fee_config(mint_info: &AccountInfo) -> Result<Option<TransferFeeConfig>> {

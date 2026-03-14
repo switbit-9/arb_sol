@@ -1,6 +1,7 @@
 use super::*;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::utils::token::MintFee;
 use std::result::Result::Ok;
 
 
@@ -46,20 +47,26 @@ pub struct SwapCache {
 }
 
 #[inline(always)]
-fn apply_transfer_fee_cached(fee_rate: f64, amount: u64) -> u64 {
-    if fee_rate == 0.0 { 0 } else { (amount as f64 * fee_rate) as u64 }
+fn apply_transfer_fee_cached(fee: MintFee, amount: u64) -> u64 {
+    if fee.bps == 0 { return 0; }
+    let calculated = ((amount as u128) * (fee.bps as u128) / 10_000) as u64;
+    if fee.max > 0 && calculated > fee.max { fee.max } else { calculated }
 }
 
 #[inline(always)]
 fn calculate_transfer_fee_included_amount_cached(
-    fee_rate: f64,
+    fee: MintFee,
     transfer_fee_excluded_amount: u64,
 ) -> anyhow::Result<u64> {
-    if fee_rate == 0.0 || transfer_fee_excluded_amount == 0 {
+    if fee.bps == 0 || transfer_fee_excluded_amount == 0 {
         return Ok(transfer_fee_excluded_amount);
     }
-    let transfer_fee = (transfer_fee_excluded_amount as f64 * fee_rate / (1.0 - fee_rate)).ceil() as u64;
-    Ok(transfer_fee_excluded_amount.checked_add(transfer_fee).context("Overflow")?)
+    let denom = 10_000u64.saturating_sub(fee.bps as u64);
+    if denom == 0 { return Ok(transfer_fee_excluded_amount); }
+    let numer = (transfer_fee_excluded_amount as u128) * (fee.bps as u128);
+    let transfer_fee = ((numer + denom as u128 - 1) / denom as u128) as u64;
+    let capped = if fee.max > 0 && transfer_fee > fee.max { fee.max } else { transfer_fee };
+    Ok(transfer_fee_excluded_amount.checked_add(capped).context("Overflow")?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,9 +74,9 @@ pub fn quote_exact_out<'a>(
     lb_pair: &LbPairSlim,
     mut amount_out: u64,
     swap_for_y: bool,
-    bin_arrays: [AccountInfo<'a>; 2],
-    transfer_fee_x: f64,
-    transfer_fee_y: f64,
+    bin_arrays: &[AccountInfo<'a>; 2],
+    transfer_fee_x: MintFee,
+    transfer_fee_y: MintFee,
     cache: &SwapCache,
 ) -> anyhow::Result<SwapExactOutQuote> {
     let mut slim = *lb_pair;
@@ -247,9 +254,9 @@ pub fn quote_exact_in<'a>(
     lb_pair: &LbPairSlim,
     amount_in: u64,
     swap_for_y: bool,
-    bin_arrays: [AccountInfo<'a>; 2],
-    transfer_fee_x: f64,
-    transfer_fee_y: f64,
+    bin_arrays: &[AccountInfo<'a>; 2],
+    transfer_fee_x: MintFee,
+    transfer_fee_y: MintFee,
     cache: &SwapCache,
 ) -> anyhow::Result<SwapExactInQuote> {
     let mut slim = *lb_pair;
@@ -504,7 +511,7 @@ pub fn get_active_bin_array<'a>(
     lb_pair: &LbPair,
     bitmap_extension: Option<&BinArrayBitmapExtension>,
     swap_for_y: bool,
-    bin_arrays: Vec<AccountInfo<'a>>,
+    bin_arrays: &[AccountInfo<'a>],
 ) -> anyhow::Result<Bin> {
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;

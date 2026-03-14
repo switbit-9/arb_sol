@@ -28,9 +28,7 @@ impl<'info, T: ProgramMeta + ?Sized> Market<'info, T> {
 
 
     pub fn generate_edges(&'info self) -> Vec<Edge> {
-        let prices = self.program.get_prices().unwrap();
-        let price = prices.0;
-        let inverse_price = prices.1;
+        let (price, inverse_price) = self.program.get_prices().unwrap();
         let (fee_a_to_b, fee_b_to_a) = self.program.get_fee_factor().unwrap_or((1.0, 1.0));
         let program_id = *self.program.get_id();
         let pool_id = *self.program.get_pool_id();

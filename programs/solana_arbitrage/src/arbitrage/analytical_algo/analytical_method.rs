@@ -3,20 +3,27 @@ use crate::arbitrage::algo_2::ArbitragePath;
 use crate::arbitrage::base::Edge;
 use crate::programs::{ProgramInstance, ProgramMeta, SolarBError};
 use crate::utils::bot_config::BotConfig;
+use crate::utils::token::{get_transfer_fees, MintFee};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
 use super::formulas::{analytical_estimate, analytical_estimate_nhop, analytical_optimal_multibin};
-use super::pool_model::{extract_pool_model, PoolModel};
+use super::pool_model::{extract_pool_model, extract_pool_model_both, PoolModel};
 
 /// Minimum search amount in lamports
 const MIN_SEARCH_AMOUNT: u64 = 1_000;
-/// Golden section ratio
-const GOLDEN_RATIO: f64 = 1.618033988749895;
 /// Max golden section iterations for DLMM refinement
-const DLMM_REFINE_ITERATIONS: usize = 8;
+/// 5 iterations narrows a 4x range to ~6.8% — sufficient precision for DLMM paths.
+const DLMM_REFINE_ITERATIONS: usize = 5;
 /// Convergence threshold for golden section (lamports)
-const CONVERGENCE: u64 = 10_000;
+const CONVERGENCE: u64 = 50_000;
+
+/// Integer approximation of x / golden_ratio ≈ x * 0.6180339...
+/// Uses x * 6180 / 10000 (accurate to 0.005%, avoids f64 entirely).
+#[inline(always)]
+fn golden_div(x: u64) -> u64 {
+    ((x as u128) * 6180 / 10000) as u64
+}
 
 // ─── Simulation helpers ─────────────────────────────────────────────────────
 
@@ -24,16 +31,21 @@ const CONVERGENCE: u64 = 10_000;
 #[inline]
 fn simulate_2hop<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     buy_idx: usize,
     sell_idx: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
     amount_in: u64,
     clock: &Clock,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<i128> {
-    let middle_amount = instances[buy_idx].swap_base_in(accounts, input_mint, amount_in, clock)?;
-    let final_amount = instances[sell_idx].swap_base_in(accounts, middle_mint, middle_amount, clock)?;
+    let (base1, quote1) = instances[buy_idx].get_mints();
+    let (in_fee_1, out_fee_1) = get_transfer_fees(input_mint, base1, quote1, mint_fees);
+    let middle_amount = instances[buy_idx].swap_base_in(accounts, input_mint, amount_in, in_fee_1, out_fee_1, clock)?;
+    let (base2, quote2) = instances[sell_idx].get_mints();
+    let (in_fee_2, out_fee_2) = get_transfer_fees(middle_mint, base2, quote2, mint_fees);
+    let final_amount = instances[sell_idx].swap_base_in(accounts, middle_mint, middle_amount, in_fee_2, out_fee_2, clock)?;
     Ok(final_amount as i128 - amount_in as i128)
 }
 
@@ -41,7 +53,7 @@ fn simulate_2hop<'info>(
 /// centered around the analytical optimal amount.
 fn golden_section_refine<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     buy_idx: usize,
     sell_idx: usize,
     input_mint: Pubkey,
@@ -49,17 +61,18 @@ fn golden_section_refine<'info>(
     hint: u64,
     max_amount: u64,
     clock: &Clock,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<(u64, i128)> {
     let mut a = (hint / 2).max(MIN_SEARCH_AMOUNT);
     let mut b = (hint.saturating_mul(2)).min(max_amount);
-    let mut c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
-    let mut d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+    let mut c = b - golden_div(b - a);
+    let mut d = a + golden_div(b - a);
     let mut fc = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock,
+        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock, mint_fees,
     )
     .unwrap_or(i128::MIN);
     let mut fd = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock,
+        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock, mint_fees,
     )
     .unwrap_or(i128::MIN);
 
@@ -71,18 +84,18 @@ fn golden_section_refine<'info>(
             b = d;
             d = c;
             fd = fc;
-            c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            c = b - golden_div(b - a);
             fc = simulate_2hop(
-                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock,
+                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock, mint_fees,
             )
             .unwrap_or(i128::MIN);
         } else {
             a = c;
             c = d;
             fc = fd;
-            d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            d = a + golden_div(b - a);
             fd = simulate_2hop(
-                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock,
+                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock, mint_fees,
             )
             .unwrap_or(i128::MIN);
         }
@@ -90,7 +103,7 @@ fn golden_section_refine<'info>(
 
     let optimal = (a + b) / 2;
     let profit = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, optimal, clock,
+        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, optimal, clock, mint_fees,
     )?;
     Ok((optimal, profit))
 }
@@ -146,8 +159,8 @@ fn top2_by_marginal_price(entries: &[PoolEntry]) -> [Option<usize>; 2] {
 ///
 /// O(n) approach: extract all pool models in a single pass, group by middle_mint,
 /// then test only the top-2 buy × top-2 sell combos per group (≤ 4 pairs).
-fn find_best_candidate_analytical<'info>(
-    instances: &[ProgramInstance<'info>],
+fn find_best_candidate_analytical(
+    instances: &[ProgramInstance],
     config: &BotConfig,
 ) -> Option<AnalyticalCandidate> {
     let start_token = config.start_token.unwrap_or(WSOL);
@@ -157,9 +170,10 @@ fn find_best_candidate_analytical<'info>(
     // Each instance that involves start_token produces:
     //   - a buy entry (input=start_token, output=middle_mint)
     //   - a sell entry (input=middle_mint, output=start_token)
-    let mut group_mints: Vec<Pubkey> = Vec::new();
-    let mut buy_groups: Vec<Vec<PoolEntry>> = Vec::new();
-    let mut sell_groups: Vec<Vec<PoolEntry>> = Vec::new();
+    let n = instances.len();
+    let mut group_mints: Vec<Pubkey> = Vec::with_capacity(n);
+    let mut buy_groups: Vec<Vec<PoolEntry>> = Vec::with_capacity(n);
+    let mut sell_groups: Vec<Vec<PoolEntry>> = Vec::with_capacity(n);
 
     for (i, inst) in instances.iter().enumerate() {
         let (base, quote) = inst.get_mints();
@@ -177,20 +191,19 @@ fn find_best_candidate_analytical<'info>(
             pos
         } else {
             group_mints.push(middle_mint);
-            buy_groups.push(Vec::new());
-            sell_groups.push(Vec::new());
+            buy_groups.push(Vec::with_capacity(4));
+            sell_groups.push(Vec::with_capacity(4));
             group_mints.len() - 1
         };
 
-        // Buy direction: start_token → middle_mint
-        let buy_model = extract_pool_model(inst, start_token);
+        // Extract both directions from shared data in one pass
+        let (buy_model, sell_model) = extract_pool_model_both(inst, start_token, middle_mint);
+
         if !matches!(buy_model, PoolModel::Opaque { .. }) {
             let mp = buy_model.marginal_price();
             buy_groups[group_idx].push(PoolEntry { idx: i, model: buy_model, marginal_price: mp });
         }
 
-        // Sell direction: middle_mint → start_token
-        let sell_model = extract_pool_model(inst, middle_mint);
         if !matches!(sell_model, PoolModel::Opaque { .. }) {
             let mp = sell_model.marginal_price();
             sell_groups[group_idx].push(PoolEntry { idx: i, model: sell_model, marginal_price: mp });
@@ -230,22 +243,8 @@ fn find_best_candidate_analytical<'info>(
                     continue;
                 }
 
-                let price_diff_pct = ((buy.marginal_price - sell.marginal_price) / sell.marginal_price) * 100.0;
-
-                debug_eprintln!("");
-                debug_eprintln!("");
-                msg!(
-                    "d={:.2} p={:.5} in={:.5} | f={:.4} {} | f={:.4} {}",
-                    price_diff_pct,
-                    est_profit as f64 / 1_000_000_000.0,
-                    opt_amount as f64 / 1_000_000_000.0,
-                    buy.model.fee(),
-                    &instances[buy.idx].get_pool_id().to_string()[..1],
-                    sell.model.fee(),
-                    &instances[sell.idx].get_pool_id().to_string()[..1],
-                );
-                debug_eprintln!("");
-                debug_eprintln!("");
+                // msg! removed — runs on every candidate pair, wastes ~200+ CU each
+                // (f64 formatting + Pubkey::to_string heap alloc + sol_log syscall)
 
 
                 if best.as_ref().map_or(true, |b| est_profit > b.estimated_profit) {
@@ -270,20 +269,21 @@ fn find_best_candidate_analytical<'info>(
 
 /// Find the best candidate within a group of instance indices sharing the same token.
 /// Uses top-2 pruning by marginal price to test ≤ 4 combos instead of O(k²).
-fn find_best_candidate_for_group<'info>(
-    instances: &[ProgramInstance<'info>],
+fn find_best_candidate_for_group(
+    instances: &[ProgramInstance],
     group: &[usize],
     start_token: Pubkey,
     middle_mint: Pubkey,
     max_amount_in: u64,
     min_profit: i128,
 ) -> Option<AnalyticalCandidate> {
-    // Extract models + marginal prices for buy and sell directions
-    let mut buy_entries: Vec<PoolEntry> = Vec::new();
-    let mut sell_entries: Vec<PoolEntry> = Vec::new();
+    // Extract models + marginal prices for buy and sell directions (shared lookups)
+    let mut buy_entries: Vec<PoolEntry> = Vec::with_capacity(group.len());
+    let mut sell_entries: Vec<PoolEntry> = Vec::with_capacity(group.len());
 
     for &i in group {
-        let buy_model = extract_pool_model(&instances[i], start_token);
+        let (buy_model, sell_model) = extract_pool_model_both(&instances[i], start_token, middle_mint);
+
         if matches!(buy_model, PoolModel::Opaque { .. }) {
             debug_eprintln!("  pair: buy_pool[{}]={} -> Opaque, skip", i, instances[i].name());
         } else {
@@ -291,7 +291,6 @@ fn find_best_candidate_for_group<'info>(
             buy_entries.push(PoolEntry { idx: i, model: buy_model, marginal_price: mp });
         }
 
-        let sell_model = extract_pool_model(&instances[i], middle_mint);
         if matches!(sell_model, PoolModel::Opaque { .. }) {
             debug_eprintln!("  pair: sell_pool[{}]={} -> Opaque, skip", i, instances[i].name());
         } else {
@@ -378,7 +377,7 @@ fn build_edges(
     use crate::arbitrage::base::edge::EdgeSide;
     use crate::arbitrage::base::pool::Pool;
 
-    let (buy_price, buy_inv_price) = buy_instance.get_prices()?;
+    let (buy_price, buy_inverse_price) = buy_instance.get_prices()?;
     let (buy_fee_a_to_b, buy_fee_b_to_a) = buy_instance.get_fee_factor().unwrap_or((1.0, 1.0));
     let (buy_base, _) = buy_instance.get_mints();
     let (buy_max_in, buy_max_out) = buy_instance.get_cached_max_amounts(input_mint);
@@ -401,7 +400,7 @@ fn build_edges(
             *buy_instance.get_id(),
             *buy_instance.get_pool_id(),
             EdgeSide::RightToLeft,
-            buy_inv_price,
+            buy_inverse_price,
             buy_fee_b_to_a,
             buy_fee_a_to_b,
             buy_max_in,
@@ -411,7 +410,7 @@ fn build_edges(
         )
     };
 
-    let (sell_price, sell_inv_price) = sell_instance.get_prices()?;
+    let (sell_price, sell_inverse_price) = sell_instance.get_prices()?;
     let (sell_fee_a_to_b, sell_fee_b_to_a) = sell_instance.get_fee_factor().unwrap_or((1.0, 1.0));
     let (sell_base, _) = sell_instance.get_mints();
     let (sell_max_in, sell_max_out) = sell_instance.get_cached_max_amounts(middle_mint);
@@ -434,7 +433,7 @@ fn build_edges(
             *sell_instance.get_id(),
             *sell_instance.get_pool_id(),
             EdgeSide::RightToLeft,
-            sell_inv_price,
+            sell_inverse_price,
             sell_fee_b_to_a,
             sell_fee_a_to_b,
             sell_max_in,
@@ -456,17 +455,18 @@ fn build_edges(
 /// `run_analytical_multi_trade`.
 fn validate_and_build_path<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     candidate: &AnalyticalCandidate,
     config: &BotConfig,
     log_prefix: &str,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
     #[cfg(any(test, feature = "debug"))]
     {
         let buy_inst = &instances[candidate.buy_idx];
         let sell_inst = &instances[candidate.sell_idx];
-        let (buy_price, _) = buy_inst.get_prices().unwrap_or((0.0, 0.0));
-        let (sell_price, _) = sell_inst.get_prices().unwrap_or((0.0, 0.0));
+        let buy_price = buy_inst.get_prices().unwrap_or((0.0, 0.0)).0;
+        let sell_price = sell_inst.get_prices().unwrap_or((0.0, 0.0)).0;
         let buy_fee = buy_inst.get_fee_factor().unwrap_or((1.0, 1.0)).0;
         let sell_fee = sell_inst.get_fee_factor().unwrap_or((1.0, 1.0)).0;
         debug_eprintln!("");
@@ -539,6 +539,7 @@ fn validate_and_build_path<'info>(
                     candidate.middle_mint,
                     multibin_amount,
                     &config.clock,
+                    mint_fees,
                 )?;
                 (multibin_amount, profit)
             } else {
@@ -552,6 +553,7 @@ fn validate_and_build_path<'info>(
                     candidate.optimal_amount,
                     config.max_amount_in,
                     &config.clock,
+                    mint_fees,
                 )?
             }
         } else {
@@ -565,10 +567,13 @@ fn validate_and_build_path<'info>(
                 candidate.optimal_amount,
                 config.max_amount_in,
                 &config.clock,
+                mint_fees,
             )?
         }
     } else {
-        golden_section_refine(
+        // Pure CP+CP: analytical formula gives exact optimal — validate with
+        // a single simulate_2hop instead of ~18 swap_base_in calls via golden section.
+        let profit = simulate_2hop(
             accounts,
             instances,
             buy_idx,
@@ -576,9 +581,10 @@ fn validate_and_build_path<'info>(
             candidate.input_mint,
             candidate.middle_mint,
             candidate.optimal_amount,
-            config.max_amount_in,
             &config.clock,
-        )?
+            mint_fees,
+        )?;
+        (candidate.optimal_amount, profit)
     };
 
     // msg!("{} optimal_in={}, profit={}", log_prefix, optimal_amount, profit);
@@ -617,18 +623,19 @@ fn validate_and_build_path<'info>(
 #[inline(never)]
 pub fn run_arbitrage_analytical<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
     match config.mode {
         arb_mode::SINGLE_PAIR_MULTI_MARKET => {
-            run_analytical_2hop(accounts, instances, config)
+            run_analytical_2hop(accounts, instances, config, mint_fees)
         }
         arb_mode::MULTI_HOP_CHAIN => {
-            run_analytical_multihop(accounts, instances, config)
+            run_analytical_multihop(accounts, instances, config, mint_fees)
         }
         arb_mode::MULTIPLE_TRADES => {
-            run_analytical_multi_trade(accounts, instances, config)
+            run_analytical_multi_trade(accounts, instances, config, mint_fees)
         }
         _ => Err(error!(SolarBError::InvalidMode)),
     }
@@ -644,8 +651,9 @@ pub fn run_arbitrage_analytical<'info>(
 #[inline(never)]
 fn run_analytical_2hop<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
     let candidate = find_best_candidate_analytical(instances, config);
 
@@ -662,7 +670,7 @@ fn run_analytical_2hop<'info>(
         candidate.estimated_profit
     );
 
-    validate_and_build_path(accounts, instances, &candidate, config, "Analytical 2hop")
+    validate_and_build_path(accounts, instances, &candidate, config, "Analytical 2hop", mint_fees)
 }
 
 // ─── Multiple trades analytical (mode 2) ────────────────────────────────────
@@ -671,14 +679,16 @@ fn run_analytical_2hop<'info>(
 #[inline(never)]
 fn run_analytical_multi_trade<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
     let start_token = config.start_token.unwrap_or(WSOL);
 
     // Group instance indices by their "other" mint (the one that's not start_token)
-    let mut group_mints: Vec<Pubkey> = Vec::new();
-    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let n = instances.len();
+    let mut group_mints: Vec<Pubkey> = Vec::with_capacity(n);
+    let mut groups: Vec<Vec<usize>> = Vec::with_capacity(n);
 
     for (idx, inst) in instances.iter().enumerate() {
         let (base, quote) = inst.get_mints();
@@ -700,8 +710,9 @@ fn run_analytical_multi_trade<'info>(
 
     debug_eprintln!("[ANA-MULTI]: {} token groups", groups.len());
 
-    // Collect profit-positive candidates from all groups
-    let mut candidates: Vec<AnalyticalCandidate> = Vec::new();
+    // Track top-3 candidates by estimated profit — avoids Vec + sort overhead.
+    const MAX_CANDIDATES: usize = 3;
+    let mut top_candidates: [Option<AnalyticalCandidate>; MAX_CANDIDATES] = [None, None, None];
 
     for (group_idx, group) in groups.iter().enumerate() {
         if group.len() < 2 {
@@ -723,23 +734,38 @@ fn run_analytical_multi_trade<'info>(
                 candidate.optimal_amount as f64 / 1e9, candidate.estimated_profit as f64 / 1e9, candidate.dlmm_capped
             );
             if candidate.estimated_profit > 0 {
-                candidates.push(candidate);
+                // Insert into top-N sorted array (descending by profit)
+                let profit = candidate.estimated_profit;
+                let mut slot = MAX_CANDIDATES;
+                for j in (0..MAX_CANDIDATES).rev() {
+                    if top_candidates[j].as_ref().map_or(true, |c| profit > c.estimated_profit) {
+                        slot = j;
+                    } else {
+                        break;
+                    }
+                }
+                if slot < MAX_CANDIDATES {
+                    // Shift lower entries down
+                    for j in (slot + 1..MAX_CANDIDATES).rev() {
+                        top_candidates[j] = top_candidates[j - 1].take();
+                    }
+                    top_candidates[slot] = Some(candidate);
+                }
             }
         } else {
             debug_eprintln!("Analytical multi-trade: group {} no candidate found", group_idx);
         }
     }
 
-    if candidates.is_empty() {
+    if top_candidates[0].is_none() {
         debug_eprintln!("Analytical multi-trade: no candidate found");
         return Ok(None);
     }
 
-    // Sort best first
-    candidates.sort_by(|a, b| b.estimated_profit.cmp(&a.estimated_profit));
+    // Try each candidate (best first): if it validates with profit, return it
+    for candidate_opt in top_candidates.iter() {
+        let Some(candidate) = candidate_opt else { break };
 
-    // Try each: if best validates with profit, return it; otherwise try next
-    for candidate in candidates.iter() {
         debug_eprintln!(
             "Analytical multi-trade: buy_model={}, sell_model={}, optimal_amount={}, estimated_profit={}",
             candidate.buy_model.label(),
@@ -748,7 +774,7 @@ fn run_analytical_multi_trade<'info>(
             candidate.estimated_profit as f64 / 1_000_000_000.0
         );
 
-        if let Some(path) = validate_and_build_path(accounts, instances, candidate, config, "Analytical multi-trade")? {
+        if let Some(path) = validate_and_build_path(accounts, instances, candidate, config, "Analytical multi-trade", mint_fees)? {
             if path.profit > 0 {
                 return Ok(Some(path));
             }
@@ -774,39 +800,72 @@ struct MultiHopCandidate {
     dlmm_capped: bool,
 }
 
+/// Pre-extracted pool info for indexed multi-hop search.
+struct HopEntry {
+    idx: usize,        // index into instances
+    other_mint: Pubkey, // the non-input mint (output of this hop)
+    model: PoolModel,
+}
+
 /// Find the best 3-hop analytical candidate: start → A → B → start.
-fn find_best_candidate_analytical_multihop<'info>(
-    instances: &[ProgramInstance<'info>],
+///
+/// Indexed approach: O(n) pre-pass to build mint→instances adjacency,
+/// then O(hop1 × avg_hop2 × hop3_lookup) instead of O(n³).
+fn find_best_candidate_analytical_multihop(
+    instances: &[ProgramInstance],
     config: &BotConfig,
 ) -> Option<MultiHopCandidate> {
     let start_token = config.start_token.unwrap_or(WSOL);
     let max_amount_in = config.max_amount_in;
+    let n = instances.len();
+
+    // ── Pre-pass: build adjacency by input mint ──────────────────────────
+    // hop1_entries: pools that accept start_token (start → mint_a)
+    // mid_entries: for each mint, pools that accept that mint (mint_a → mint_b)
+    // hop3_entries: pools that accept some mint and output start_token (mint_b → start)
+    let mut hop1_entries: Vec<HopEntry> = Vec::with_capacity(n);
+    // For hop3: index by the non-start mint (the input to hop3)
+    let mut hop3_mints: Vec<Pubkey> = Vec::with_capacity(n);
+    let mut hop3_groups: Vec<Vec<HopEntry>> = Vec::with_capacity(n);
+
+    for (i, inst) in instances.iter().enumerate() {
+        let (base, quote) = inst.get_mints();
+
+        // Check if this pool involves start_token
+        if *base == start_token || *quote == start_token {
+            let other = if *base == start_token { *quote } else { *base };
+
+            // Hop 1: start_token → other
+            let model = extract_pool_model(inst, start_token);
+            if !matches!(model, PoolModel::Opaque { .. }) {
+                hop1_entries.push(HopEntry { idx: i, other_mint: other, model });
+            }
+
+            // Hop 3: other → start_token (reverse direction)
+            let model3 = extract_pool_model(inst, other);
+            if !matches!(model3, PoolModel::Opaque { .. }) {
+                let pos = hop3_mints.iter().position(|m| *m == other);
+                let gidx = if let Some(p) = pos { p } else {
+                    hop3_mints.push(other);
+                    hop3_groups.push(Vec::with_capacity(4));
+                    hop3_mints.len() - 1
+                };
+                hop3_groups[gidx].push(HopEntry { idx: i, other_mint: start_token, model: model3 });
+            }
+        }
+    }
+
+    // ── Search: hop1 × hop2 × hop3 (hop3 via index lookup) ──────────────
     let mut best: Option<MultiHopCandidate> = None;
 
-    for (i, inst_1) in instances.iter().enumerate() {
-        let (base_1, quote_1) = inst_1.get_mints();
+    for h1 in &hop1_entries {
+        let mint_a = h1.other_mint;
 
-        // Hop 1: start_token → mint_a
-        let mint_a = if *base_1 == start_token {
-            *quote_1
-        } else if *quote_1 == start_token {
-            *base_1
-        } else {
-            continue;
-        };
-
-        let model_1 = extract_pool_model(inst_1, start_token);
-        if matches!(model_1, PoolModel::Opaque { .. }) {
-            continue;
-        }
-
+        // Hop 2: find all pools that accept mint_a and output mint_b != start_token
         for (j, inst_2) in instances.iter().enumerate() {
-            if j == i {
-                continue;
-            }
+            if j == h1.idx { continue; }
             let (base_2, quote_2) = inst_2.get_mints();
 
-            // Hop 2: mint_a → mint_b (mint_b must not be start_token)
             let mint_b = if *base_2 == mint_a {
                 *quote_2
             } else if *quote_2 == mint_a {
@@ -814,39 +873,24 @@ fn find_best_candidate_analytical_multihop<'info>(
             } else {
                 continue;
             };
-            if mint_b == start_token {
-                continue; // That's a 2-hop, handled by mode 0/2
-            }
+            if mint_b == start_token { continue; }
 
             let model_2 = extract_pool_model(inst_2, mint_a);
-            if matches!(model_2, PoolModel::Opaque { .. }) {
-                continue;
-            }
+            if matches!(model_2, PoolModel::Opaque { .. }) { continue; }
 
-            for (k, inst_3) in instances.iter().enumerate() {
-                if k == i || k == j {
-                    continue;
-                }
-                let (base_3, quote_3) = inst_3.get_mints();
+            // Hop 3: look up pools that accept mint_b and output start_token
+            let hop3_group = match hop3_mints.iter().position(|m| *m == mint_b) {
+                Some(pos) => &hop3_groups[pos],
+                None => continue,
+            };
 
-                // Hop 3: mint_b → start_token
-                let has_pair = (*base_3 == mint_b && *quote_3 == start_token)
-                    || (*quote_3 == mint_b && *base_3 == start_token);
-                if !has_pair {
-                    continue;
-                }
+            for h3 in hop3_group {
+                if h3.idx == h1.idx || h3.idx == j { continue; }
 
-                let model_3 = extract_pool_model(inst_3, mint_b);
-                if matches!(model_3, PoolModel::Opaque { .. }) {
-                    continue;
-                }
-
-                let models = [model_1.clone(), model_2.clone(), model_3.clone()];
+                let models = [h1.model, model_2, h3.model];
                 let Some((opt_amount, est_profit, dlmm_capped)) =
                     analytical_estimate_nhop(&models, max_amount_in)
-                else {
-                    continue;
-                };
+                else { continue };
 
                 if opt_amount < MIN_SEARCH_AMOUNT || est_profit <= config.min_profit {
                     continue;
@@ -854,7 +898,7 @@ fn find_best_candidate_analytical_multihop<'info>(
 
                 if best.as_ref().map_or(true, |b| est_profit > b.estimated_profit) {
                     best = Some(MultiHopCandidate {
-                        indices: [i, j, k],
+                        indices: [h1.idx, j, h3.idx],
                         mints: [start_token, mint_a, mint_b, start_token],
                         models,
                         optimal_amount: opt_amount,
@@ -873,15 +917,18 @@ fn find_best_candidate_analytical_multihop<'info>(
 #[inline]
 fn simulate_nhop<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     indices: &[usize; 3],
     mints: &[Pubkey; 4],
     amount_in: u64,
     clock: &Clock,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<i128> {
     let mut current = amount_in;
     for hop in 0..3 {
-        current = instances[indices[hop]].swap_base_in(accounts, mints[hop], current, clock)?;
+        let (base_pk, quote_pk) = instances[indices[hop]].get_mints();
+        let (in_fee, out_fee) = get_transfer_fees(mints[hop], base_pk, quote_pk, mint_fees);
+        current = instances[indices[hop]].swap_base_in(accounts, mints[hop], current, in_fee, out_fee, clock)?;
     }
     Ok(current as i128 - amount_in as i128)
 }
@@ -889,19 +936,20 @@ fn simulate_nhop<'info>(
 /// Golden section refinement for a 3-hop path.
 fn golden_section_refine_nhop<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     indices: &[usize; 3],
     mints: &[Pubkey; 4],
     hint: u64,
     max_amount: u64,
     clock: &Clock,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<(u64, i128)> {
     let mut a = (hint / 2).max(MIN_SEARCH_AMOUNT);
     let mut b = (hint.saturating_mul(2)).min(max_amount);
-    let mut c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
-    let mut d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
-    let mut fc = simulate_nhop(accounts, instances, indices, mints, c, clock).unwrap_or(i128::MIN);
-    let mut fd = simulate_nhop(accounts, instances, indices, mints, d, clock).unwrap_or(i128::MIN);
+    let mut c = b - golden_div(b - a);
+    let mut d = a + golden_div(b - a);
+    let mut fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees).unwrap_or(i128::MIN);
+    let mut fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees).unwrap_or(i128::MIN);
 
     for _ in 0..DLMM_REFINE_ITERATIONS {
         if b - a < CONVERGENCE {
@@ -911,21 +959,21 @@ fn golden_section_refine_nhop<'info>(
             b = d;
             d = c;
             fd = fc;
-            c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
-            fc = simulate_nhop(accounts, instances, indices, mints, c, clock)
+            c = b - golden_div(b - a);
+            fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees)
                 .unwrap_or(i128::MIN);
         } else {
             a = c;
             c = d;
             fc = fd;
-            d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
-            fd = simulate_nhop(accounts, instances, indices, mints, d, clock)
+            d = a + golden_div(b - a);
+            fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees)
                 .unwrap_or(i128::MIN);
         }
     }
 
     let optimal = (a + b) / 2;
-    let profit = simulate_nhop(accounts, instances, indices, mints, optimal, clock)?;
+    let profit = simulate_nhop(accounts, instances, indices, mints, optimal, clock, mint_fees)?;
     Ok((optimal, profit))
 }
 
@@ -945,7 +993,7 @@ fn build_edges_multihop(
         let input_mint = mints[hop];
         let output_mint = mints[hop + 1];
 
-        let (price, inv_price) = inst.get_prices()?;
+        let (price, inverse_price) = inst.get_prices()?;
         let (fee_a_to_b, fee_b_to_a) = inst.get_fee_factor().unwrap_or((1.0, 1.0));
         let (base, _) = inst.get_mints();
         let (max_in, max_out) = inst.get_cached_max_amounts(input_mint);
@@ -968,7 +1016,7 @@ fn build_edges_multihop(
                 *inst.get_id(),
                 *inst.get_pool_id(),
                 EdgeSide::RightToLeft,
-                inv_price,
+                inverse_price,
                 fee_b_to_a,
                 fee_a_to_b,
                 max_in,
@@ -988,8 +1036,9 @@ fn build_edges_multihop(
 #[inline(never)]
 fn run_analytical_multihop<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
     let candidate = find_best_candidate_analytical_multihop(instances, config);
 
@@ -1016,6 +1065,7 @@ fn run_analytical_multihop<'info>(
         candidate.optimal_amount,
         config.max_amount_in,
         &config.clock,
+        mint_fees,
     )?;
 
     // msg!("Multihop optimal_in={}, profit={}", optimal_amount, profit);

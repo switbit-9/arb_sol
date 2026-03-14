@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::utils::token::MintFee;
 
 use super::meteora_damm_v1::MeteoraDammV1;
 use super::meteora_damm_v2::MeteoraDammV2;
@@ -80,9 +81,11 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        dispatch_mut!(self, swap_base_in(accounts, input_mint, amount_in, clock))
+        dispatch_mut!(self, swap_base_in(accounts, input_mint, amount_in, input_transfer_fee, output_transfer_fee, clock))
     }
 
     fn swap_base_out<'a>(
@@ -90,9 +93,11 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        dispatch_mut!(self, swap_base_out(accounts, output_mint, amount_out, clock))
+        dispatch_mut!(self, swap_base_out(accounts, output_mint, amount_out, input_transfer_fee, output_transfer_fee, clock))
     }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
@@ -195,17 +200,17 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
         dispatch_mut!(self, fast_quote(input_mint, amount_in, profit_pct))
     }
 
-    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>], mint_fees: &[(Pubkey, f64)]) {
+    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>]) {
         // Transmute lifetime to match inner type — safe because accounts outlive the call
         let accounts: &[AccountInfo<'info>] = unsafe { std::mem::transmute(accounts) };
         match self {
-            ProgramInstance::PumpAmm(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::RaydiumAmm(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::RaydiumCLMM(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::RaydiumCPMM(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::MeteoraDammV1(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::MeteoraDammV2(p) => p.prepare_for_execution(accounts, mint_fees),
-            ProgramInstance::OrcaWhirlpool(p) => p.prepare_for_execution(accounts, mint_fees),
+            ProgramInstance::PumpAmm(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::RaydiumAmm(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::RaydiumCLMM(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::RaydiumCPMM(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::MeteoraDammV1(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::MeteoraDammV2(p) => p.prepare_for_execution(accounts),
+            ProgramInstance::OrcaWhirlpool(p) => p.prepare_for_execution(accounts),
             ProgramInstance::MeteoraDlmm(_) => {} // DLMM computes everything in new()
         }
     }
@@ -234,6 +239,8 @@ pub trait ProgramMeta {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64>;
 
@@ -244,6 +251,8 @@ pub trait ProgramMeta {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64>;
 
@@ -353,7 +362,7 @@ pub trait ProgramMeta {
     /// Compute deferred fields (max amounts, transfer fees, etc.) needed for
     /// simulation and execution. Only called for instances in a profitable path.
     /// Default no-op for programs that compute everything in new().
-    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>], _mint_fees: &[(Pubkey, f64)]) {}
+    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>]) {}
 
     /// Simplified swap estimate from cached state only (no account reads).
     /// Skips transfer fees. Used for candidate ranking, not execution.

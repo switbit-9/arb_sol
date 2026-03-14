@@ -21,7 +21,7 @@ fn format_arb_path(edges: &[Edge], amount_in: u64, amount_out: u128) -> String {
             "[{}] --(pool {} @ p={:.6} fee={:.4})--> [{}]",
             short_key(&edge.left.mint_account),
             short_key(&edge.pool_id),
-            edge.price,
+            edge.get_price(),
             edge.fee_factor,
             short_key(&edge.right.mint_account),
         ));
@@ -35,8 +35,8 @@ fn format_arb_path(edges: &[Edge], amount_in: u64, amount_out: u128) -> String {
 }
 
 /// Build a pool_id -> index lookup map.
-fn build_pool_index<'info>(
-    instances: &[ProgramInstance<'info>],
+fn build_pool_index(
+    instances: &[ProgramInstance],
 ) -> HashMap<Pubkey, usize> {
     instances
         .iter()
@@ -63,9 +63,9 @@ fn edge_fast_quote(
 /// Highly efficient iterative check for 2-hop (Cross) Arbitrage.
 /// O(E) complexity. Safe for on-chain execution (no recursion).
 /// Path: Start -> Token B -> Start
-pub fn find_cross_arbitrage_iterative<'info>(
+pub fn find_cross_arbitrage_iterative(
     edges: &[&Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
@@ -186,9 +186,9 @@ pub fn find_cross_arbitrage_iterative<'info>(
 /// Optimized O(E) check for 3-hop (Triangular) Arbitrage using Map lookup.
 /// Best performance for on-chain execution.
 /// Path: Start -> Token B -> Token C -> Start
-pub fn find_triangular_arbitrage_iterative<'info>(
+pub fn find_triangular_arbitrage_iterative(
     edges: &[&Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let start_token = config.start_token;
@@ -317,11 +317,8 @@ pub fn find_triangular_arbitrage_iterative<'info>(
 }
 
 /// Generate edges for a single program instance.
-pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edge>> {
-    // Get prices from the program's get_prices method
-    let prices = program.get_prices()?;
-    let price = prices.0;
-    let inverse_price = prices.1;
+pub fn generate_edges(program: &ProgramInstance) -> Result<Vec<Edge>> {
+    let (price, inverse_price) = program.get_prices()?;
 
     // Get directional fee factors: (fee_a_to_b, fee_b_to_a)
     let (fee_a_to_b, fee_b_to_a) = program.get_fee_factor().unwrap_or((0.0, 0.0));
@@ -393,7 +390,7 @@ pub fn generate_edges<'info>(program: &ProgramInstance<'info>) -> Result<Vec<Edg
 }
 
 /// Generate edges for all program instances.
-pub fn get_edges<'info>(instances: &[ProgramInstance<'info>]) -> Result<Vec<Edge>> {
+pub fn get_edges(instances: &[ProgramInstance]) -> Result<Vec<Edge>> {
     // Pre-allocate capacity: each instance generates 2 edges
     let mut edges = Vec::with_capacity(instances.len() * 2);
     for instance in instances {
@@ -403,8 +400,8 @@ pub fn get_edges<'info>(instances: &[ProgramInstance<'info>]) -> Result<Vec<Edge
     Ok(edges)
 }
 
-pub fn check_arbitrage<'info>(
-    instances: &mut [ProgramInstance<'info>],
+pub fn check_arbitrage(
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let edges = get_edges(instances)?;

@@ -60,6 +60,153 @@ impl PoolModel {
     }
 }
 
+/// Extract PoolModels for both swap directions at once, sharing expensive lookups
+/// (get_vault_amounts, get_fee_factor, get_prices) between buy and sell.
+///
+/// Returns (buy_model, sell_model) where buy = start_token→middle, sell = middle→start_token.
+pub fn extract_pool_model_both(
+    instance: &dyn ProgramMeta,
+    start_token: Pubkey,
+    middle_mint: Pubkey,
+) -> (PoolModel, PoolModel) {
+    let name = instance.name();
+    let (base_mint, _quote_mint) = instance.get_mints();
+
+    // Shared lookups — done once instead of twice
+    let (price_a_to_b, price_b_to_a) = instance.get_prices().unwrap_or((0.0, 0.0));
+    let (fee_a_to_b, fee_b_to_a) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
+
+    let buy_marginal = if start_token == *base_mint {
+        price_a_to_b * fee_a_to_b
+    } else {
+        price_b_to_a * fee_b_to_a
+    };
+    let sell_marginal = if middle_mint == *base_mint {
+        price_a_to_b * fee_a_to_b
+    } else {
+        price_b_to_a * fee_b_to_a
+    };
+
+    let buy_opaque = PoolModel::Opaque { marginal_price: buy_marginal };
+    let sell_opaque = PoolModel::Opaque { marginal_price: sell_marginal };
+
+    match name {
+        "RaydiumAmm" | "RaydiumCPMM" | "MeteoraDammV1" => {
+            let (base_vault, quote_vault) = match instance.get_vault_amounts() {
+                Ok(v) => v,
+                Err(_) => return (buy_opaque, sell_opaque),
+            };
+            let bv = base_vault as f64;
+            let qv = quote_vault as f64;
+            if bv <= 0.0 || qv <= 0.0 {
+                return (buy_opaque, sell_opaque);
+            }
+
+            let buy = if start_token == *base_mint {
+                PoolModel::CpFeeOnInput { reserve_in: bv, reserve_out: qv, fee: fee_a_to_b, marginal_price: buy_marginal }
+            } else {
+                PoolModel::CpFeeOnInput { reserve_in: qv, reserve_out: bv, fee: fee_b_to_a, marginal_price: buy_marginal }
+            };
+            let sell = if middle_mint == *base_mint {
+                PoolModel::CpFeeOnInput { reserve_in: bv, reserve_out: qv, fee: fee_a_to_b, marginal_price: sell_marginal }
+            } else {
+                PoolModel::CpFeeOnInput { reserve_in: qv, reserve_out: bv, fee: fee_b_to_a, marginal_price: sell_marginal }
+            };
+            (buy, sell)
+        }
+
+        "PumpAmm" => {
+            let (base_vault, quote_vault) = match instance.get_vault_amounts() {
+                Ok(v) => v,
+                Err(_) => return (buy_opaque, sell_opaque),
+            };
+            let fee_factor = fee_a_to_b; // PumpAmm symmetric fee
+            let bv = base_vault as f64;
+            let qv = quote_vault as f64;
+            if bv <= 0.0 || qv <= 0.0 {
+                return (buy_opaque, sell_opaque);
+            }
+
+            let make_model = |input_mint: Pubkey, mp: f64| -> PoolModel {
+                if input_mint == *base_mint {
+                    PoolModel::CpFeeOnOutput { reserve_in: bv, reserve_out: qv, fee: fee_factor, marginal_price: mp }
+                } else {
+                    PoolModel::CpFeeOnInput { reserve_in: qv, reserve_out: bv, fee: fee_factor, marginal_price: mp }
+                }
+            };
+            (make_model(start_token, buy_marginal), make_model(middle_mint, sell_marginal))
+        }
+
+        "MeteoraDLMM" => {
+            let make_dlmm = |input_mint: Pubkey, mp: f64| -> PoolModel {
+                let price = if input_mint == *base_mint { price_a_to_b } else { price_b_to_a };
+                if price <= 0.0 || !price.is_finite() {
+                    return PoolModel::Opaque { marginal_price: mp };
+                }
+                let max_in_active = instance.get_active_bin_max_in(input_mint).unwrap_or(u64::MAX);
+                let bin_step_frac = instance.get_bin_step_frac();
+                let (max_in, price) = if max_in_active == 0 {
+                    let (total_max_in, _) = instance.get_cached_max_amounts(input_mint);
+                    if total_max_in == 0 {
+                        return PoolModel::Opaque { marginal_price: mp };
+                    }
+                    (total_max_in, price / (1.0 + bin_step_frac))
+                } else {
+                    (max_in_active, price)
+                };
+                PoolModel::Linear { price, fee: fee_a_to_b, max_in, bin_step_frac, marginal_price: mp }
+            };
+            (make_dlmm(start_token, buy_marginal), make_dlmm(middle_mint, sell_marginal))
+        }
+
+        "MeteoraDammV2" => {
+            let (base_vault, quote_vault) = match instance.get_vault_amounts() {
+                Ok(v) => v,
+                Err(_) => return (buy_opaque, sell_opaque),
+            };
+            let bv = base_vault as f64;
+            let qv = quote_vault as f64;
+            if bv <= 0.0 || qv <= 0.0 {
+                return (buy_opaque, sell_opaque);
+            }
+
+            let make_model = |input_mint: Pubkey, mp: f64| -> PoolModel {
+                let (r_in, r_out, fee) = if input_mint == *base_mint {
+                    (bv, qv, fee_a_to_b)
+                } else {
+                    (qv, bv, fee_b_to_a)
+                };
+                if instance.is_fee_on_input(input_mint) {
+                    PoolModel::CpFeeOnInput { reserve_in: r_in, reserve_out: r_out, fee, marginal_price: mp }
+                } else {
+                    PoolModel::CpFeeOnOutput { reserve_in: r_in, reserve_out: r_out, fee, marginal_price: mp }
+                }
+            };
+            (make_model(start_token, buy_marginal), make_model(middle_mint, sell_marginal))
+        }
+
+        "OrcaWhirlpool" | "RaydiumCLMM" => {
+            let (base_vault, quote_vault) = match instance.get_vault_amounts() {
+                Ok(v) => v,
+                Err(_) => return (buy_opaque, sell_opaque),
+            };
+            let bv = base_vault as f64;
+            let qv = quote_vault as f64;
+            if bv <= 0.0 || qv <= 0.0 {
+                return (buy_opaque, sell_opaque);
+            }
+
+            let make_model = |input_mint: Pubkey, mp: f64| -> PoolModel {
+                let (r_in, r_out) = if input_mint == *base_mint { (bv, qv) } else { (qv, bv) };
+                PoolModel::CpFeeOnInput { reserve_in: r_in, reserve_out: r_out, fee: fee_a_to_b, marginal_price: mp }
+            };
+            (make_model(start_token, buy_marginal), make_model(middle_mint, sell_marginal))
+        }
+
+        _ => (buy_opaque, sell_opaque),
+    }
+}
+
 /// Extract a PoolModel for a specific swap direction from a ProgramInstance.
 ///
 /// `instance`: the pool's ProgramMeta implementation
@@ -68,15 +215,14 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
     let name = instance.name();
     let (base_mint, _quote_mint) = instance.get_mints();
 
+    let (price_a_to_b, price_b_to_a) = instance.get_prices().unwrap_or((0.0, 0.0));
+    let (fee_a_to_b, fee_b_to_a) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
+
     // Compute marginal price from the program's own price calculation, fee-adjusted.
-    let marginal_price = {
-        let (price_a_to_b, price_b_to_a) = instance.get_prices().unwrap_or((0.0, 0.0));
-        let (fee_a_to_b, fee_b_to_a) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
-        if input_mint == *base_mint {
-            price_a_to_b * fee_a_to_b
-        } else {
-            price_b_to_a * fee_b_to_a
-        }
+    let marginal_price = if input_mint == *base_mint {
+        price_a_to_b * fee_a_to_b
+    } else {
+        price_b_to_a * fee_b_to_a
     };
 
     let opaque = PoolModel::Opaque { marginal_price };
@@ -87,8 +233,6 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
                 Ok(v) => v,
                 Err(_) => return opaque,
             };
-            let (fee_a_to_b, fee_b_to_a) =
-                instance.get_fee_factor().unwrap_or((1.0, 1.0));
 
             let (r_in, r_out, fee) = if input_mint == *base_mint {
                 (base_vault as f64, quote_vault as f64, fee_a_to_b)
@@ -109,7 +253,7 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
                 Err(_) => return opaque,
             };
             // PumpAmm returns symmetric fee_factor, but application differs by direction
-            let fee_factor = instance.get_fee_factor().unwrap_or((1.0, 1.0)).0;
+            let fee_factor = fee_a_to_b;
 
             if input_mint == *base_mint {
                 // Selling base: input = base token, output = quote (SOL)
@@ -143,16 +287,12 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
         }
 
         "MeteoraDLMM" => {
-            let (price_base_to_quote, price_quote_to_base) = match instance.get_prices() {
-                Ok(p) => p,
-                Err(_) => return opaque,
-            };
-            let fee_factor = instance.get_fee_factor().unwrap_or((1.0, 1.0)).0;
+            let fee_factor = fee_a_to_b;
 
             let price = if input_mint == *base_mint {
-                price_base_to_quote
+                price_a_to_b
             } else {
-                price_quote_to_base
+                price_b_to_a
             };
 
             if price <= 0.0 || !price.is_finite() {
@@ -193,8 +333,6 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
                 Ok(v) => v,
                 Err(_) => return opaque,
             };
-            let (fee_a_to_b, fee_b_to_a) =
-                instance.get_fee_factor().unwrap_or((1.0, 1.0));
 
             let (r_in, r_out, fee) = if input_mint == *base_mint {
                 (base_vault as f64, quote_vault as f64, fee_a_to_b)
@@ -220,7 +358,7 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
                 Ok(v) => v,
                 Err(_) => return opaque,
             };
-            let fee_factor = instance.get_fee_factor().unwrap_or((1.0, 1.0)).0;
+            let fee_factor = fee_a_to_b;
 
             let (r_in, r_out) = if input_mint == *base_mint {
                 (base_vault as f64, quote_vault as f64)

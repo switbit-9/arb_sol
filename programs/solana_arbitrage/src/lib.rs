@@ -34,7 +34,7 @@ use programs::{
     RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
 };
 use utils::bot_config::BotConfig;
-use utils::token::extract_fee_rate;
+use utils::token::{extract_mint_fee, get_transfer_fees, MintFee};
 use utils::utils::parse_token_account;
 
 #[cfg(test)]
@@ -124,14 +124,14 @@ fn start_bot<'info>(
 
     // Build mint fee rate cache once — avoids repeated Clock::get() + mint deserialization per program
     let epoch = clock.epoch;
-    let mut mint_fees: Vec<(Pubkey, f64)> = Vec::with_capacity(num_mints);
+    let mut mint_fees: Vec<(Pubkey, MintFee)> = Vec::with_capacity(num_mints);
     for i in 0..num_mints {
         let mint_acc = &accounts[4 + i * 2];
-        let fee_rate = extract_fee_rate(mint_acc, epoch)?;
-        mint_fees.push((*mint_acc.key, fee_rate));
+        let fee = extract_mint_fee(mint_acc, epoch)?;
+        mint_fees.push((*mint_acc.key, fee));
     }
 
-    let mut instances = parse_accounts(accounts, shared_statics_start, pool_start, &data, &clock, &mint_fees)?;
+    let mut instances = parse_accounts(accounts, shared_statics_start, pool_start, &data, &clock)?;
 
     let test_mode = data.test;
     let mut bot_config = BotConfig::new(
@@ -146,7 +146,7 @@ fn start_bot<'info>(
     // msg!("Mode={}, mints={}, max_in={}", data.mode, data.mints, max_amount_in);
 
     // Run both algorithms independently and pick the better result
-    let arbitrage_path = run_arbitrage_analytical(accounts, &mut instances, &mut bot_config)?;
+    let arbitrage_path = run_arbitrage_analytical(accounts, &mut instances, &mut bot_config, &mint_fees)?;
 
     // Log comparison
     #[cfg(any(test, feature = "debug"))]
@@ -181,11 +181,11 @@ fn start_bot<'info>(
     // Prepare only the winning instances (deferred max amounts, transfer fees, etc.)
     for edge in &arbitrage_path.edges {
         if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-            inst.prepare_for_execution(accounts, &mint_fees);
+            inst.prepare_for_execution(accounts);
         }
     }
 
-    let sim_profit = run_simulation(accounts, &arbitrage_path, &mut instances, &mut bot_config)?;
+    let sim_profit = run_simulation(accounts, &arbitrage_path, &mut instances, &mut bot_config, &mint_fees)?;
 
     if sim_profit <= bot_config.min_profit
         || (!test_mode && arbitrage_path.profit <= bot_config.min_profit)
@@ -222,7 +222,6 @@ fn parse_accounts<'info>(
     pool_start: usize,
     data: &InstructionData,
     clock: &Clock,
-    mint_fees: &[(Pubkey, f64)],
 ) -> Result<Vec<ProgramInstance<'info>>> {
     let mut index: usize = pool_start;
     let accounts_len = accounts.len();
@@ -252,35 +251,35 @@ fn parse_accounts<'info>(
         let instance = match dex_type {
             dex_type::PUMP_AMM => {
                 debug_eprintln!("PumpAmm");
-                create_pump_amm(accounts, static_base, index, end_index, mint_fees)?
+                create_pump_amm(accounts, static_base, index, end_index, &[])?
             }
             dex_type::METEORA_DAMM_V1 | dex_type::METEORA_DBC => {
                 debug_eprintln!("MeteoraDammV1");
-                create_meteora_damm_v1(accounts, static_base, index, end_index, clock, mint_fees)?
+                create_meteora_damm_v1(accounts, static_base, index, end_index, clock, &[])?
             }
             dex_type::METEORA_DAMM_V2 => {
                 debug_eprintln!("MeteoraDammV2");
-                create_meteora_damm_v2(accounts, static_base, index, end_index, clock, mint_fees)?
+                create_meteora_damm_v2(accounts, static_base, index, end_index, clock, &[])?
             }
             dex_type::METEORA_DLMM => {
                 debug_eprintln!("MeteoraDlmm");
-                create_meteora_dlmm(accounts, static_base, index, end_index, clock, mint_fees)?
+                create_meteora_dlmm(accounts, static_base, index, end_index, &[])?
             }
             dex_type::WHIRLPOOL => {
                 debug_eprintln!("OrcaWhirlpool");
-                create_orca_whirlpool(accounts, static_base, index, end_index, mint_fees)?
+                create_orca_whirlpool(accounts, static_base, index, end_index, &[])?
             }
             dex_type::RAYDIUM_AMM => {
                 debug_eprintln!("RaydiumAmm");
-                create_raydium_amm(accounts, static_base, index, end_index, mint_fees)?
+                create_raydium_amm(accounts, static_base, index, end_index, &[])?
             }
             dex_type::RAYDIUM_CLMM => {
                 debug_eprintln!("RaydiumCLMM");
-                create_raydium_clmm(accounts, static_base, index, end_index, mint_fees)?
+                create_raydium_clmm(accounts, static_base, index, end_index, &[])?
             }
             dex_type::RAYDIUM_CPMM => {
                 debug_eprintln!("RaydiumCPMM");
-                create_raydium_cpmm(accounts, static_base, index, end_index, mint_fees)?
+                create_raydium_cpmm(accounts, static_base, index, end_index, &[])?
             }
             _ => return Err(error!(SolarBError::UnknownProgram)),
         };
@@ -306,9 +305,9 @@ fn create_pump_amm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::PumpAmm(PumpAmm::new(accounts, static_base, dyn_start, dyn_end, mint_fees)?))
+    Ok(ProgramInstance::PumpAmm(PumpAmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -318,9 +317,9 @@ fn create_meteora_damm_v1<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(accounts, static_base, dyn_start, dyn_end, clock, mint_fees)?))
+    Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(accounts, static_base, dyn_start, dyn_end, clock, pool_fees)?))
 }
 
 #[inline(never)]
@@ -330,9 +329,9 @@ fn create_meteora_damm_v2<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[(Pubkey, f64)],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(accounts, static_base, dyn_start, dyn_end, clock, mint_fees)?))
+    Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(accounts, static_base, dyn_start, dyn_end, clock, pool_fees)?))
 }
 
 #[inline(never)]
@@ -341,10 +340,9 @@ fn create_meteora_dlmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    clock: &Clock,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(accounts, static_base, dyn_start, dyn_end, clock, mint_fees)?))
+    Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -353,9 +351,9 @@ fn create_orca_whirlpool<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(accounts, static_base, dyn_start, dyn_end, mint_fees)?))
+    Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -364,9 +362,9 @@ fn create_raydium_amm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(accounts, static_base, dyn_start, dyn_end, mint_fees)?))
+    Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -375,9 +373,9 @@ fn create_raydium_clmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(accounts, static_base, dyn_start, dyn_end, mint_fees)?))
+    Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -386,9 +384,9 @@ fn create_raydium_cpmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    mint_fees: &[(Pubkey, f64)],
+    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end, mint_fees)?))
+    Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
 }
 
 #[inline(never)]
@@ -901,6 +899,7 @@ fn run_simulation<'info>(
     arbitrage_path: &ArbitragePath,
     instances: &mut Vec<ProgramInstance<'info>>,
     bot_config: &mut BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<i128> {
     let start_amount = arbitrage_path.start_amount;
 
@@ -915,17 +914,22 @@ fn run_simulation<'info>(
             .find(|inst| inst.get_pool_id() == &edge.pool_id)
             .ok_or(SolarBError::UnknownProgram)?;
 
+        let (base_pk, quote_pk) = program_instance.get_mints();
+        let (in_fee, out_fee) = get_transfer_fees(input_mint, base_pk, quote_pk, mint_fees);
+
         // swap_base_in: given amount_in, what do we get out?
         let amount_out = program_instance.swap_base_in(
             accounts,
             input_mint,
             current_amount,
+            in_fee,
+            out_fee,
             &bot_config.clock,
         )?;
 
         // swap_base_out: given that amount_out, how much would we need to put in?
         let required_in =
-            program_instance.swap_base_out(accounts, output_mint, amount_out, &bot_config.clock)?;
+            program_instance.swap_base_out(accounts, output_mint, amount_out, in_fee, out_fee, &bot_config.clock)?;
 
         let input_short = &input_mint.to_string()[..8];
         let output_short = &output_mint.to_string()[..8];
@@ -1073,7 +1077,7 @@ mod tests {
         // All pool_lengths are 0 → no pools parsed
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
         let data = make_instruction_data(&[], &[], &[], 0);
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), &[]);
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -1082,7 +1086,7 @@ mod tests {
     fn test_parse_accounts_empty_segment() {
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
         let data = make_instruction_data(&[], &[], &[], 0);
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), &[]);
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -1100,7 +1104,7 @@ mod tests {
             &[0],
             4,
         );
-        let result = parse_accounts(&accounts, 0, 4, &data, &default_clock(), &[]);
+        let result = parse_accounts(&accounts, 0, 4, &data, &default_clock());
         assert!(result.is_err());
     }
 
@@ -1113,7 +1117,7 @@ mod tests {
             &[0],
             2,
         );
-        let result = parse_accounts(&accounts, 0, 2, &data, &default_clock(), &[]);
+        let result = parse_accounts(&accounts, 0, 2, &data, &default_clock());
         assert!(result.is_err());
     }
 
@@ -1128,7 +1132,7 @@ mod tests {
             &[0],
             0,
         );
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), &[]);
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
         assert!(result.is_err());
     }
 }

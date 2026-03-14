@@ -236,7 +236,7 @@ mod tests {
     const MODE: u8 = crate::arb_mode::MULTIPLE_TRADES;
 
     fn make_instruction_data(test_mode: bool) -> InstructionData {
-        InstructionData              {
+        InstructionData {
         mints: 3,
         shared_statics_len: 13,
         pool_types: [0, 3, 3, 3, 3, 3, 3, 0],
@@ -244,6 +244,9 @@ mod tests {
         type_static_offsets: [0, 10, 10, 10, 10, 10, 10, 0],
         mode: 2,
         test: false,
+        fee_bps: [0; 3],
+        fee_max: [0; 3],
+        pool_fees: [0; 16],
     }
     }
 

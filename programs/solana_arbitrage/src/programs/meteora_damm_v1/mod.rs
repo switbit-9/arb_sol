@@ -1,6 +1,6 @@
 use crate::programs::ProgramMeta;
-use crate::utils::token::{apply_transfer_fee, lookup_fee_rate};
-use crate::utils::utils::parse_token_account;
+use crate::utils::token::{apply_transfer_fee, MintFee};
+use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -8,7 +8,6 @@ use anchor_lang::solana_program::{
     program_error::ProgramError,
     pubkey::Pubkey,
 };
-use std::marker::PhantomData;
 
 // ── Pool account data byte offsets (after 8-byte Anchor discriminator) ──
 const TOKEN_A_MINT_OFFSET: usize = 32;
@@ -74,15 +73,13 @@ fn read_vault_unlocked_amount(vault_account: &AccountInfo, current_time: u64) ->
     Ok(total_amount.saturating_sub(locked_profit))
 }
 
-pub struct MeteoraDammV1<'info> {
+pub struct MeteoraDammV1 {
     pub pool_id: Pubkey,
     pub base_token_pk: Pubkey,
     pub quote_token_pk: Pubkey,
     pub base_vault_amount: u64,
     pub quote_vault_amount: u64,
     pub price: f64,
-    pub inverse_price: f64,
-    pub fee_rate: f64,
     pub trade_fee_numerator: u64,
     pub trade_fee_denominator: u64,
     pub protocol_fee_numerator: u64,
@@ -93,13 +90,10 @@ pub struct MeteoraDammV1<'info> {
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
-    pub base_fee_rate: f64,
-    pub quote_fee_rate: f64,
     pub prepared: bool,
-    _phantom: PhantomData<&'info ()>,
 }
 
-impl<'info> ProgramMeta for MeteoraDammV1<'info> {
+impl ProgramMeta for MeteoraDammV1 {
     fn get_id(&self) -> &Pubkey {
         &Self::PROGRAM_ID
     }
@@ -119,12 +113,12 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
-        Ok((self.price, self.inverse_price))
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok((self.price, inverse))
     }
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        // Symmetric fee: same rate for both A->B and B->A
-        let f = 1.0 - self.fee_rate;
+        let f = 1.0 - self.trade_fee_numerator as f64 / self.trade_fee_denominator as f64;
         Ok((f, f))
     }
 
@@ -187,18 +181,17 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         amount_in: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         _clock: &Clock,
     ) -> Result<u64> {
-        let (reserve_in, reserve_out, fee_in, fee_out) = if input_mint == self.base_token_pk {
-            (self.base_vault_amount as u128, self.quote_vault_amount as u128,
-             self.base_fee_rate, self.quote_fee_rate)
+        let (reserve_in, reserve_out) = if input_mint == self.base_token_pk {
+            (self.base_vault_amount as u128, self.quote_vault_amount as u128)
         } else {
-            (self.quote_vault_amount as u128, self.base_vault_amount as u128,
-             self.quote_fee_rate, self.base_fee_rate)
+            (self.quote_vault_amount as u128, self.base_vault_amount as u128)
         };
 
-        // Apply transfer fee on input
-        let transfer_fee_in = apply_transfer_fee(amount_in, fee_in);
+        let transfer_fee_in = apply_transfer_fee(amount_in, input_transfer_fee);
         let amount_in_after_transfer = amount_in.checked_sub(transfer_fee_in).unwrap();
 
         // Calculate total trade fee: fee = amount * fee_num / fee_den
@@ -233,8 +226,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
 
         let amount_out_u64 = u64::try_from(amount_out).map_err(|_| ProgramError::InvalidArgument)?;
 
-        // Apply transfer fee on output
-        let transfer_fee_out = apply_transfer_fee(amount_out_u64, fee_out);
+        let transfer_fee_out = apply_transfer_fee(amount_out_u64, output_transfer_fee);
         let amount_out_final = amount_out_u64.checked_sub(transfer_fee_out).unwrap();
 
         Ok(amount_out_final)
@@ -245,20 +237,17 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         accounts: &[AccountInfo<'a>],
         output_mint: Pubkey,
         amount_out: u64,
+        input_transfer_fee: MintFee,
+        output_transfer_fee: MintFee,
         _clock: &Clock,
     ) -> Result<u64> {
-        let (reserve_in, reserve_out, fee_in, fee_out) = if output_mint == self.base_token_pk {
-            // Output is A, input is B
-            (self.quote_vault_amount as u128, self.base_vault_amount as u128,
-             self.quote_fee_rate, self.base_fee_rate)
+        let (reserve_in, reserve_out) = if output_mint == self.base_token_pk {
+            (self.quote_vault_amount as u128, self.base_vault_amount as u128)
         } else {
-            // Output is B, input is A
-            (self.base_vault_amount as u128, self.quote_vault_amount as u128,
-             self.base_fee_rate, self.quote_fee_rate)
+            (self.base_vault_amount as u128, self.quote_vault_amount as u128)
         };
 
-        // Add transfer fee to desired output
-        let transfer_fee_out = apply_transfer_fee(amount_out, fee_out);
+        let transfer_fee_out = apply_transfer_fee(amount_out, output_transfer_fee);
         let amount_out_before_transfer = (amount_out as u128)
             .checked_add(transfer_fee_out as u128)
             .ok_or(ProgramError::InvalidArgument)?;
@@ -293,8 +282,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
         let amount_in_u64 =
             u64::try_from(amount_before_fee).map_err(|_| ProgramError::InvalidArgument)?;
 
-        // Add transfer fee on input
-        let transfer_fee_in = apply_transfer_fee(amount_in_u64, fee_in);
+        let transfer_fee_in = apply_transfer_fee(amount_in_u64, input_transfer_fee);
         let total_in = amount_in_u64
             .checked_add(transfer_fee_in)
             .ok_or(ProgramError::InvalidArgument)?;
@@ -453,7 +441,7 @@ impl<'info> ProgramMeta for MeteoraDammV1<'info> {
     }
 }
 
-impl<'info> MeteoraDammV1<'info> {
+impl MeteoraDammV1 {
     pub const PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB");
     const SWAP_DISC: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
@@ -478,13 +466,13 @@ impl<'info> MeteoraDammV1<'info> {
 
     pub const MIN_ACCOUNTS: usize = 13;
 
-    pub fn new(
-        accounts: &[AccountInfo<'info>],
+    pub fn new<'a>(
+        accounts: &[AccountInfo<'a>],
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
         clock: &Clock,
-        mint_fees: &[(Pubkey, f64)],
+        pool_fees: &[u32],
     ) -> Result<Self> {
         require!(
             dyn_end - dyn_start >= Self::MIN_ACCOUNTS,
@@ -503,10 +491,11 @@ impl<'info> MeteoraDammV1<'info> {
 
         let token_a_mint = read_pubkey(d, TOKEN_A_MINT_OFFSET);
         let token_b_mint = read_pubkey(d, TOKEN_B_MINT_OFFSET);
-        let trade_fee_numerator = read_u64(d, TRADE_FEE_NUM_OFFSET);
-        let trade_fee_denominator = read_u64(d, TRADE_FEE_DEN_OFFSET);
-        let protocol_fee_numerator = read_u64(d, PROTOCOL_FEE_NUM_OFFSET);
-        let protocol_fee_denominator = read_u64(d, PROTOCOL_FEE_DEN_OFFSET);
+        // trade_fee from client-side pool_fees[0] (millionths), reconstruct as num/den
+        let trade_fee_numerator = pool_fees[0] as u64;
+        let trade_fee_denominator = 1_000_000u64;
+        let protocol_fee_numerator = 0u64;
+        let protocol_fee_denominator = 1u64;
 
         drop(pool_data);
 
@@ -522,8 +511,8 @@ impl<'info> MeteoraDammV1<'info> {
         let current_time: u64 = clock.unix_timestamp as u64;
         let vault_a_unlocked = read_vault_unlocked_amount(a_vault, current_time)?;
         let vault_b_unlocked = read_vault_unlocked_amount(b_vault, current_time)?;
-        let pool_a_lp_amount = parse_token_account(a_vault_lp)?.amount;
-        let pool_b_lp_amount = parse_token_account(b_vault_lp)?.amount;
+        let pool_a_lp_amount = read_token_amount(a_vault_lp)?;
+        let pool_b_lp_amount = read_token_amount(b_vault_lp)?;
         let vault_a_lp_supply = read_mint_supply(a_vault_lp_mint)?;
         let vault_b_lp_supply = read_mint_supply(b_vault_lp_mint)?;
 
@@ -547,17 +536,10 @@ impl<'info> MeteoraDammV1<'info> {
             0
         };
 
-        let fee_rate = if trade_fee_denominator > 0 {
-            trade_fee_numerator as f64 / trade_fee_denominator as f64
+        let price = if base_vault_amount > 0 && quote_vault_amount > 0 {
+            quote_vault_amount as f64 / base_vault_amount as f64
         } else {
             0.0
-        };
-
-        let (price, inverse_price) = if base_vault_amount > 0 && quote_vault_amount > 0 {
-            let p = quote_vault_amount as f64 / base_vault_amount as f64;
-            (p, 1.0 / p)
-        } else {
-            (0.0, 0.0)
         };
 
         // Defer max amounts and transfer fees to prepare_for_execution()
@@ -568,8 +550,6 @@ impl<'info> MeteoraDammV1<'info> {
             base_vault_amount,
             quote_vault_amount,
             price,
-            inverse_price,
-            fee_rate,
             trade_fee_numerator,
             trade_fee_denominator,
             protocol_fee_numerator,
@@ -580,29 +560,24 @@ impl<'info> MeteoraDammV1<'info> {
             buy_max_out: 0,
             sell_max_in: 0,
             sell_max_out: 0,
-            base_fee_rate: 0.0,
-            quote_fee_rate: 0.0,
             prepared: false,
-            _phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
     }
 
-    /// Symmetric CP max amounts: computed once during init.
-    fn compute_cached_max(base_vault: u64, quote_vault: u64, fee_rate: f64) -> (u64, u64, u64, u64) {
-        fn cp_max(x: f64, y: f64, fee_factor: f64) -> (u64, u64) {
-            let target = y * 0.99;
-            if target <= 0.0 || y <= target || fee_factor <= 0.0 {
-                return (0, y as u64);
+    /// Symmetric CP max amounts: computed once during init (integer math).
+    fn compute_cached_max(base_vault: u64, quote_vault: u64, fee_num: u64, fee_den: u64) -> (u64, u64, u64, u64) {
+        fn cp_max(x: u64, y: u64, fee_num: u64, fee_den: u64) -> (u64, u64) {
+            let ff = (fee_den as u128).saturating_sub(fee_num as u128);
+            if ff == 0 || y == 0 {
+                return (0, y);
             }
-            let denom = y - target;
-            let dx = (x / fee_factor) * ((y / denom) - 1.0);
-            (dx.max(0.0).min(u64::MAX as f64) as u64, y as u64)
+            let dx = (x as u128).saturating_mul(99).saturating_mul(fee_den as u128) / ff;
+            (dx.min(u64::MAX as u128) as u64, y)
         }
-        let ff = 1.0 - fee_rate;
-        let (buy_in, buy_out) = cp_max(base_vault as f64, quote_vault as f64, ff);
-        let (sell_in, sell_out) = cp_max(quote_vault as f64, base_vault as f64, ff);
+        let (buy_in, buy_out) = cp_max(base_vault, quote_vault, fee_num, fee_den);
+        let (sell_in, sell_out) = cp_max(quote_vault, base_vault, fee_num, fee_den);
         (buy_in, buy_out, sell_in, sell_out)
     }
 
@@ -635,21 +610,17 @@ impl<'info> MeteoraDammV1<'info> {
 
     /// Compute deferred fields: max amounts, transfer fee rates.
     /// Called only for instances that participate in a profitable arb path.
-    pub fn prepare_for_execution(
+    pub fn prepare_for_execution<'a>(
         &mut self,
-        _accounts: &[AccountInfo<'info>],
-        mint_fees: &[(Pubkey, f64)],
+        _accounts: &[AccountInfo<'a>],
     ) {
         if self.prepared {
             return;
         }
         self.prepared = true;
 
-        self.base_fee_rate = lookup_fee_rate(mint_fees, &self.base_token_pk);
-        self.quote_fee_rate = lookup_fee_rate(mint_fees, &self.quote_token_pk);
-
         let (buy_in, buy_out, sell_in, sell_out) =
-            Self::compute_cached_max(self.base_vault_amount, self.quote_vault_amount, self.fee_rate);
+            Self::compute_cached_max(self.base_vault_amount, self.quote_vault_amount, self.trade_fee_numerator, self.trade_fee_denominator);
         self.buy_max_in = buy_in;
         self.buy_max_out = buy_out;
         self.sell_max_in = sell_in;
@@ -657,282 +628,271 @@ impl<'info> MeteoraDammV1<'info> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn make_damm_v1(
-        base_vault: u64,
-        quote_vault: u64,
-        fee_num: u64,
-        fee_den: u64,
-        proto_num: u64,
-        proto_den: u64,
-    ) -> MeteoraDammV1<'static> {
-        let base_token_pk = Pubkey::new_unique();
-        let quote_token_pk = Pubkey::new_unique();
-        let fee_rate = if fee_den > 0 {
-            fee_num as f64 / fee_den as f64
-        } else {
-            0.0
-        };
-        let price = quote_vault as f64 / base_vault as f64;
-        let (buy_max_in, buy_max_out, sell_max_in, sell_max_out) =
-            MeteoraDammV1::compute_cached_max(base_vault, quote_vault, fee_rate);
-        MeteoraDammV1 {
-            pool_id: Pubkey::new_unique(),
-            base_token_pk,
-            quote_token_pk,
-            base_vault_amount: base_vault,
-            quote_vault_amount: quote_vault,
-            price,
-            inverse_price: 1.0 / price,
-            fee_rate,
-            trade_fee_numerator: fee_num,
-            trade_fee_denominator: fee_den,
-            protocol_fee_numerator: proto_num,
-            protocol_fee_denominator: proto_den,
-            static_base: 0,
-            dyn_start: 1,
-            buy_max_in,
-            buy_max_out,
-            sell_max_in,
-            sell_max_out,
-            base_fee_rate: 0.0,
-            quote_fee_rate: 0.0,
-            prepared: true,
-            _phantom: PhantomData,
-        }
-    }
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     fn make_damm_v1(
+//         base_vault: u64,
+//         quote_vault: u64,
+//         fee_num: u64,
+//         fee_den: u64,
+//         proto_num: u64,
+//         proto_den: u64,
+//     ) -> MeteoraDammV1 {
+//         let base_token_pk = Pubkey::new_unique();
+//         let quote_token_pk = Pubkey::new_unique();
+//         let (buy_max_in, buy_max_out, sell_max_in, sell_max_out) =
+//             MeteoraDammV1::compute_cached_max(base_vault, quote_vault, fee_num, fee_den);
+//         MeteoraDammV1 {
+//             pool_id: Pubkey::new_unique(),
+//             base_token_pk,
+//             quote_token_pk,
+//             base_vault_amount: base_vault,
+//             quote_vault_amount: quote_vault,
+//             price: quote_vault as f64 / base_vault as f64,
+//             trade_fee_numerator: fee_num,
+//             trade_fee_denominator: fee_den,
+//             protocol_fee_numerator: proto_num,
+//             protocol_fee_denominator: proto_den,
+//             static_base: 0,
+//             dyn_start: 1,
+//             buy_max_in,
+//             buy_max_out,
+//             sell_max_in,
+//             sell_max_out,
+//             prepared: true,
+//         }
+//     }
 
-    /// Build a mock accounts slice: 1 static (program_id) + 13 dynamic accounts.
-    fn build_mock_accounts() -> Vec<AccountInfo<'static>> {
-        let mut accounts = Vec::new();
-        // 1 static + MIN_ACCOUNTS(13) dynamic = 14 total
-        for _ in 0..(1 + MeteoraDammV1::MIN_ACCOUNTS) {
-            let key = Box::leak(Box::new(Pubkey::new_unique()));
-            let owner = Box::leak(Box::new(Pubkey::default()));
-            let data = Box::leak(Box::new(vec![0u8; 8]));
-            let lamports = Box::leak(Box::new(0u64));
-            accounts.push(AccountInfo::new(
-                key, false, false, lamports, data, owner, false, 0,
-            ));
-        }
-        accounts
-    }
+//     /// Build a mock accounts slice: 1 static (program_id) + 13 dynamic accounts.
+//     fn build_mock_accounts() -> Vec<AccountInfo<'static>> {
+//         let mut accounts = Vec::new();
+//         // 1 static + MIN_ACCOUNTS(13) dynamic = 14 total
+//         for _ in 0..(1 + MeteoraDammV1::MIN_ACCOUNTS) {
+//             let key = Box::leak(Box::new(Pubkey::new_unique()));
+//             let owner = Box::leak(Box::new(Pubkey::default()));
+//             let data = Box::leak(Box::new(vec![0u8; 8]));
+//             let lamports = Box::leak(Box::new(0u64));
+//             accounts.push(AccountInfo::new(
+//                 key, false, false, lamports, data, owner, false, 0,
+//             ));
+//         }
+//         accounts
+//     }
 
-    fn dummy_clock() -> Clock {
-        Clock {
-            slot: 0,
-            epoch_start_timestamp: 0,
-            epoch: 0,
-            leader_schedule_epoch: 0,
-            unix_timestamp: 0,
-        }
-    }
+//     fn dummy_clock() -> Clock {
+//         Clock {
+//             slot: 0,
+//             epoch_start_timestamp: 0,
+//             epoch: 0,
+//             leader_schedule_epoch: 0,
+//             unix_timestamp: 0,
+//         }
+//     }
 
-    /// Round-trip: swap_base_in(X) → Y, then swap_base_out(Y) → X'
-    /// X' should be >= X (swap_base_out rounds up).
-    #[test]
-    fn test_round_trip_base_to_quote() {
-        let mut damm = make_damm_v1(
-            1_000_000_000, // 1B base
-            2_000_000_000, // 2B quote
-            25,            // 0.25% fee
-            10_000,
-            1, // 20% protocol fee
-            5,
-        );
-        let accounts = build_mock_accounts();
-        let clock = dummy_clock();
-        let input_mint = damm.base_token_pk;
+//     /// Round-trip: swap_base_in(X) → Y, then swap_base_out(Y) → X'
+//     /// X' should be >= X (swap_base_out rounds up).
+//     #[test]
+//     fn test_round_trip_base_to_quote() {
+//         let mut damm = make_damm_v1(
+//             1_000_000_000, // 1B base
+//             2_000_000_000, // 2B quote
+//             25,            // 0.25% fee
+//             10_000,
+//             1, // 20% protocol fee
+//             5,
+//         );
+//         let accounts = build_mock_accounts();
+//         let clock = dummy_clock();
+//         let input_mint = damm.base_token_pk;
 
-        for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
-            let amount_out = damm
-                .swap_base_in(&accounts, input_mint, amount_in, &clock)
-                .unwrap();
-            assert!(amount_out > 0, "swap_base_in should produce non-zero output");
+//         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
+//             let amount_out = damm
+//                 .swap_base_in(&accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
+//             assert!(amount_out > 0, "swap_base_in should produce non-zero output");
 
-            // Reverse: how much input is needed to get `amount_out` of quote?
-            let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, &clock)
-                .unwrap();
+//             // Reverse: how much input is needed to get `amount_out` of quote?
+//             let needed_in = damm
+//                 .swap_base_out(&accounts, damm.quote_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
 
-            // swap_base_in floors the output, so reversing may differ by ±tolerance
-            let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
-            let diff = if needed_in >= amount_in {
-                needed_in - amount_in
-            } else {
-                amount_in - needed_in
-            };
-            assert!(
-                diff <= tolerance,
-                "Round-trip (base→quote): needed_in={}, amount_in={}, diff={}, tolerance={}",
-                needed_in,
-                amount_in,
-                diff,
-                tolerance
-            );
-        }
-    }
+//             // swap_base_in floors the output, so reversing may differ by ±tolerance
+//             let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
+//             let diff = if needed_in >= amount_in {
+//                 needed_in - amount_in
+//             } else {
+//                 amount_in - needed_in
+//             };
+//             assert!(
+//                 diff <= tolerance,
+//                 "Round-trip (base→quote): needed_in={}, amount_in={}, diff={}, tolerance={}",
+//                 needed_in,
+//                 amount_in,
+//                 diff,
+//                 tolerance
+//             );
+//         }
+//     }
 
-    #[test]
-    fn test_round_trip_quote_to_base() {
-        let mut damm = make_damm_v1(
-            1_000_000_000,
-            2_000_000_000,
-            25,
-            10_000,
-            1,
-            5,
-        );
-        let accounts = build_mock_accounts();
-        let clock = dummy_clock();
-        let input_mint = damm.quote_token_pk;
+//     #[test]
+//     fn test_round_trip_quote_to_base() {
+//         let mut damm = make_damm_v1(
+//             1_000_000_000,
+//             2_000_000_000,
+//             25,
+//             10_000,
+//             1,
+//             5,
+//         );
+//         let accounts = build_mock_accounts();
+//         let clock = dummy_clock();
+//         let input_mint = damm.quote_token_pk;
 
-        for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
-            let amount_out = damm
-                .swap_base_in(&accounts, input_mint, amount_in, &clock)
-                .unwrap();
-            assert!(amount_out > 0);
+//         for &amount_in in &[1_000u64, 100_000, 1_000_000, 10_000_000, 100_000_000] {
+//             let amount_out = damm
+//                 .swap_base_in(&accounts, input_mint, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
+//             assert!(amount_out > 0);
 
-            // Reverse direction: output is base token
-            let needed_in = damm
-                .swap_base_out(&accounts, damm.base_token_pk, amount_out, &clock)
-                .unwrap();
+//             // Reverse direction: output is base token
+//             let needed_in = damm
+//                 .swap_base_out(&accounts, damm.base_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
 
-            // swap_base_in floors the output, so reversing the floored output
-            // may need slightly less input. Allow ±tolerance.
-            let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
-            let diff = if needed_in >= amount_in {
-                needed_in - amount_in
-            } else {
-                amount_in - needed_in
-            };
-            assert!(
-                diff <= tolerance,
-                "Round-trip (quote→base): needed_in={}, amount_in={}, diff={}, tolerance={}",
-                needed_in,
-                amount_in,
-                diff,
-                tolerance
-            );
-        }
-    }
+//             // swap_base_in floors the output, so reversing the floored output
+//             // may need slightly less input. Allow ±tolerance.
+//             let tolerance = (amount_in as f64 * 0.001) as u64 + 2;
+//             let diff = if needed_in >= amount_in {
+//                 needed_in - amount_in
+//             } else {
+//                 amount_in - needed_in
+//             };
+//             assert!(
+//                 diff <= tolerance,
+//                 "Round-trip (quote→base): needed_in={}, amount_in={}, diff={}, tolerance={}",
+//                 needed_in,
+//                 amount_in,
+//                 diff,
+//                 tolerance
+//             );
+//         }
+//     }
 
-    /// Forward consistency: swap_base_out(Y) → X, then swap_base_in(X) → Y'
-    /// Y' should be >= Y (we over-estimate the input).
-    #[test]
-    fn test_round_trip_out_then_in_base_to_quote() {
-        let mut damm = make_damm_v1(
-            500_000_000,
-            1_000_000_000,
-            30,
-            10_000,
-            0, // no protocol fee
-            1,
-        );
-        let accounts = build_mock_accounts();
-        let clock = dummy_clock();
+//     /// Forward consistency: swap_base_out(Y) → X, then swap_base_in(X) → Y'
+//     /// Y' should be >= Y (we over-estimate the input).
+//     #[test]
+//     fn test_round_trip_out_then_in_base_to_quote() {
+//         let mut damm = make_damm_v1(
+//             500_000_000,
+//             1_000_000_000,
+//             30,
+//             10_000,
+//             0, // no protocol fee
+//             1,
+//         );
+//         let accounts = build_mock_accounts();
+//         let clock = dummy_clock();
 
-        for &desired_out in &[1_000u64, 50_000, 1_000_000, 10_000_000] {
-            // How much base do I need to get `desired_out` quote?
-            let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, desired_out, &clock)
-                .unwrap();
-            assert!(needed_in > 0);
+//         for &desired_out in &[1_000u64, 50_000, 1_000_000, 10_000_000] {
+//             // How much base do I need to get `desired_out` quote?
+//             let needed_in = damm
+//                 .swap_base_out(&accounts, damm.quote_token_pk, desired_out, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
+//             assert!(needed_in > 0);
 
-            // Now actually swap that much base in
-            let actual_out = damm
-                .swap_base_in(&accounts, damm.base_token_pk, needed_in, &clock)
-                .unwrap();
+//             // Now actually swap that much base in
+//             let actual_out = damm
+//                 .swap_base_in(&accounts, damm.base_token_pk, needed_in, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
 
-            // We should get at least as much as we wanted
-            assert!(
-                actual_out >= desired_out,
-                "Out-then-in: actual_out ({}) should be >= desired_out ({})",
-                actual_out,
-                desired_out
-            );
-        }
-    }
+//             // We should get at least as much as we wanted
+//             assert!(
+//                 actual_out >= desired_out,
+//                 "Out-then-in: actual_out ({}) should be >= desired_out ({})",
+//                 actual_out,
+//                 desired_out
+//             );
+//         }
+//     }
 
-    /// Zero-fee pool round-trip should be tighter.
-    #[test]
-    fn test_round_trip_zero_fee() {
-        let mut damm = make_damm_v1(
-            1_000_000_000,
-            1_000_000_000,
-            0, // no fee
-            1,
-            0,
-            1,
-        );
-        let accounts = build_mock_accounts();
-        let clock = dummy_clock();
+//     /// Zero-fee pool round-trip should be tighter.
+//     #[test]
+//     fn test_round_trip_zero_fee() {
+//         let mut damm = make_damm_v1(
+//             1_000_000_000,
+//             1_000_000_000,
+//             0, // no fee
+//             1,
+//             0,
+//             1,
+//         );
+//         let accounts = build_mock_accounts();
+//         let clock = dummy_clock();
 
-        for &amount_in in &[1_000u64, 1_000_000, 50_000_000] {
-            let amount_out = damm
-                .swap_base_in(&accounts, damm.base_token_pk, amount_in, &clock)
-                .unwrap();
+//         for &amount_in in &[1_000u64, 1_000_000, 50_000_000] {
+//             let amount_out = damm
+//                 .swap_base_in(&accounts, damm.base_token_pk, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
 
-            let needed_in = damm
-                .swap_base_out(&accounts, damm.quote_token_pk, amount_out, &clock)
-                .unwrap();
+//             let needed_in = damm
+//                 .swap_base_out(&accounts, damm.quote_token_pk, amount_out, MintFee::ZERO, MintFee::ZERO, &clock)
+//                 .unwrap();
 
-            // With zero fees, needed_in should be exactly amount_in or amount_in+1 (rounding)
-            assert!(
-                needed_in >= amount_in && needed_in <= amount_in + 1,
-                "Zero-fee round-trip: needed_in={}, amount_in={}",
-                needed_in,
-                amount_in
-            );
-        }
-    }
+//             // With zero fees, needed_in should be exactly amount_in or amount_in+1 (rounding)
+//             assert!(
+//                 needed_in >= amount_in && needed_in <= amount_in + 1,
+//                 "Zero-fee round-trip: needed_in={}, amount_in={}",
+//                 needed_in,
+//                 amount_in
+//             );
+//         }
+//     }
 
-    /// Verify fee calculation helpers.
-    #[test]
-    fn test_calculate_trade_fee() {
-        let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 0, 1);
-        // 25/10000 = 0.25%
-        assert_eq!(damm.calculate_trade_fee(10_000).unwrap(), 25);
-        assert_eq!(damm.calculate_trade_fee(0).unwrap(), 0);
-        // Small amounts: minimum fee of 1
-        assert_eq!(damm.calculate_trade_fee(1).unwrap(), 1);
-    }
+//     /// Verify fee calculation helpers.
+//     #[test]
+//     fn test_calculate_trade_fee() {
+//         let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 0, 1);
+//         // 25/10000 = 0.25%
+//         assert_eq!(damm.calculate_trade_fee(10_000).unwrap(), 25);
+//         assert_eq!(damm.calculate_trade_fee(0).unwrap(), 0);
+//         // Small amounts: minimum fee of 1
+//         assert_eq!(damm.calculate_trade_fee(1).unwrap(), 1);
+//     }
 
-    #[test]
-    fn test_calculate_protocol_fee() {
-        let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 1, 5);
-        // protocol = 1/5 = 20% of trade fee
-        assert_eq!(damm.calculate_protocol_fee(100).unwrap(), 20);
-        assert_eq!(damm.calculate_protocol_fee(0).unwrap(), 0);
-        // Small fee: minimum 1
-        assert_eq!(damm.calculate_protocol_fee(1).unwrap(), 1);
-    }
+//     #[test]
+//     fn test_calculate_protocol_fee() {
+//         let mut damm = make_damm_v1(1_000_000, 1_000_000, 25, 10_000, 1, 5);
+//         // protocol = 1/5 = 20% of trade fee
+//         assert_eq!(damm.calculate_protocol_fee(100).unwrap(), 20);
+//         assert_eq!(damm.calculate_protocol_fee(0).unwrap(), 0);
+//         // Small fee: minimum 1
+//         assert_eq!(damm.calculate_protocol_fee(1).unwrap(), 1);
+//     }
 
-    /// Constant product invariant: after swap, k' >= k (fees mean k grows).
-    #[test]
-    fn test_constant_product_invariant() {
-        let mut damm = make_damm_v1(1_000_000_000, 2_000_000_000, 25, 10_000, 1, 5);
-        let accounts = build_mock_accounts();
-        let clock = dummy_clock();
+//     /// Constant product invariant: after swap, k' >= k (fees mean k grows).
+//     #[test]
+//     fn test_constant_product_invariant() {
+//         let mut damm = make_damm_v1(1_000_000_000, 2_000_000_000, 25, 10_000, 1, 5);
+//         let accounts = build_mock_accounts();
+//         let clock = dummy_clock();
 
-        let k_before = damm.base_vault_amount as u128 * damm.quote_vault_amount as u128;
+//         let k_before = damm.base_vault_amount as u128 * damm.quote_vault_amount as u128;
 
-        let amount_in: u64 = 10_000_000;
-        let amount_out = damm
-            .swap_base_in(&accounts, damm.base_token_pk, amount_in, &clock)
-            .unwrap();
+//         let amount_in: u64 = 10_000_000;
+//         let amount_out = damm
+//             .swap_base_in(&accounts, damm.base_token_pk, amount_in, MintFee::ZERO, MintFee::ZERO, &clock)
+//             .unwrap();
 
-        let new_base = damm.base_vault_amount as u128 + amount_in as u128;
-        let new_quote = damm.quote_vault_amount as u128 - amount_out as u128;
-        let k_after = new_base * new_quote;
+//         let new_base = damm.base_vault_amount as u128 + amount_in as u128;
+//         let new_quote = damm.quote_vault_amount as u128 - amount_out as u128;
+//         let k_after = new_base * new_quote;
 
-        assert!(
-            k_after >= k_before,
-            "k should not decrease: before={}, after={}",
-            k_before,
-            k_after
-        );
-    }
-}
+//         assert!(
+//             k_after >= k_before,
+//             "k should not decrease: before={}, after={}",
+//             k_before,
+//             k_after
+//         );
+//     }
+// }

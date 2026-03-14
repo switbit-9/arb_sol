@@ -89,9 +89,9 @@ fn top2_by_price<'a>(edges: &[&'a Edge]) -> (Option<&'a Edge>, Option<&'a Edge>)
 /// The caller should run `find_optimal_amount_in_v2` on it to find the real optimum.
 ///
 /// Path: Root -> Token B -> Root
-pub fn find_cross_arbitrage_optimized<'info>(
+pub fn find_cross_arbitrage_optimized(
     edges: &[&Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<Option<(Vec<Edge>, i128, u128)>> {
     let start_token = config.start_token;
@@ -366,7 +366,7 @@ pub fn find_cross_arbitrage_optimized<'info>(
                     edge.left.mint_account,
                     edge.right.mint_account,
                     edge.pool_id,
-                    edge.price,
+                    edge.get_price(),
                     edge.fee_factor,
                 );
             }

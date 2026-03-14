@@ -6,18 +6,24 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey::Pubkey;
 
 /// Configuration for the optimization search - OPTIMIZED FOR LOW CU USAGE
-const GOLDEN_RATIO: f64 = 1.618033988749895; // (1 + sqrt(5)) / 2
 const MAX_ITERATIONS: usize = 12; // Reduced from 25 to save CU
 const CONVERGENCE_THRESHOLD: u64 = 10_000; // 0.1 SOL - larger = fewer iterations
 const MIN_SEARCH_AMOUNT: u64 = 1_000; // 0.000001 SOL minimum
 const MIN_PROFIT_THRESHOLD: i128 = 50_000; // 0.00005 SOL - skip refinement if below
+
+/// Integer approximation of x / golden_ratio ≈ x * 0.6180339...
+/// Uses x * 6180 / 10000 (accurate to 0.005%, avoids f64 entirely).
+#[inline(always)]
+fn golden_div(x: u64) -> u64 {
+    ((x as u128) * 6180 / 10000) as u64
+}
 
 
 /// Simulate a full arbitrage path and return the profit (DLMM + AMM)
 #[inline]
 fn simulate_path<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
     input_mint: Pubkey,
@@ -35,7 +41,7 @@ fn simulate_path<'info>(
 /// Optimized for low CU usage
 fn golden_section_search<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
     input_mint: Pubkey,
@@ -52,8 +58,8 @@ fn golden_section_search<'info>(
     let mut b = max_amount;
 
     // Initial golden section points
-    let mut c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
-    let mut d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+    let mut c = b - golden_div(b - a);
+    let mut d = a + golden_div(b - a);
 
     // Evaluate at initial points
     let mut fc = simulate_path(
@@ -108,7 +114,7 @@ fn golden_section_search<'info>(
             b = d;
             d = c;
             fd = fc;
-            c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            c = b - golden_div(b - a);
             fc = simulate_path(
                 accounts,
                 instances,
@@ -125,7 +131,7 @@ fn golden_section_search<'info>(
             a = c;
             c = d;
             fc = fd;
-            d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            d = a + golden_div(b - a);
             fd = simulate_path(
                 accounts,
                 instances,
@@ -184,7 +190,7 @@ fn golden_section_search<'info>(
 /// Reduced grid points and conditional golden section refinement
 fn hybrid_search<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
     input_mint: Pubkey,
@@ -221,8 +227,10 @@ fn hybrid_search<'info>(
     //     return Ok((hint_amount, i128::MIN));
     // }
 
-    // Phase 1: Reduced grid search - only 6 points instead of 10
-    let grid_points = [0.00001, 0.0001, 0.001, 0.01, 0.05, 0.20, 0.50, 0.7, 1.0];
+    // Phase 1: Grid search using integer parts-per-million (avoids f64)
+    // Values: 0.001%, 0.01%, 0.1%, 1%, 5%, 20%, 50%, 70%, 100%
+    const GRID_PPM: [u64; 9] = [10, 100, 1_000, 10_000, 50_000, 200_000, 500_000, 700_000, 1_000_000];
+    let range = max_amount - min_amount;
 
     let mut best_amount = min_amount;
     let mut best_profit = i128::MIN;
@@ -230,8 +238,8 @@ fn hybrid_search<'info>(
     let mut prev_profit = i128::MIN;
     let mut last_drop: i128 = 0;
 
-    for (idx, &fraction) in grid_points.iter().enumerate() {
-        let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
+    for (idx, &ppm) in GRID_PPM.iter().enumerate() {
+        let amount = min_amount + ((range as u128 * ppm as u128 / 1_000_000) as u64);
         let profit = simulate_path(
             accounts,
             instances,
@@ -247,8 +255,8 @@ fn hybrid_search<'info>(
         #[cfg(any(test, feature = "debug"))]
         {
         debug_eprintln!(
-                "Grid search [{:.0}%]: amount={} ({} SOL), profit={} ({} SOL)",
-                fraction * 100.0,
+                "Grid search [{}ppm]: amount={} ({} SOL), profit={} ({} SOL)",
+                ppm,
                 amount,
                 amount as f64 / 1_000_000_000.0,
                 profit,
@@ -298,13 +306,13 @@ fn hybrid_search<'info>(
 
     // Phase 2: Refine around the best point using golden section
     let lower_bound = if best_idx > 0 {
-        min_amount + ((max_amount - min_amount) as f64 * grid_points[best_idx - 1]) as u64
+        min_amount + ((range as u128 * GRID_PPM[best_idx - 1] as u128 / 1_000_000) as u64)
     } else {
         min_amount
     };
 
-    let upper_bound = if best_idx < grid_points.len() - 1 {
-        min_amount + ((max_amount - min_amount) as f64 * grid_points[best_idx + 1]) as u64
+    let upper_bound = if best_idx < GRID_PPM.len() - 1 {
+        min_amount + ((range as u128 * GRID_PPM[best_idx + 1] as u128 / 1_000_000) as u64)
     } else {
         max_amount
     };
@@ -384,9 +392,13 @@ fn analytical_hint_amm_dlmm(
     let f_amm = if amm_input_mint == amm_base { fee_a_to_b } else { fee_b_to_a };
 
     let dlmm_input_mint = if amm_is_first { middle_mint } else { input_mint };
-    let (dlmm_price_base, dlmm_price_inv) = dlmm.get_prices().ok()?;
+    let (dlmm_price, dlmm_inverse_price) = dlmm.get_prices().ok()?;
     let dlmm_base = dlmm.get_base_token();
-    let p_dlmm = if dlmm_input_mint == dlmm_base { dlmm_price_base } else { dlmm_price_inv };
+    let p_dlmm = if dlmm_input_mint == dlmm_base {
+        dlmm_price
+    } else {
+        dlmm_inverse_price
+    };
 
     let (f_dlmm, _) = dlmm.get_fee_factor().ok()?;
 
@@ -437,7 +449,7 @@ fn analytical_hint_amm_dlmm(
 
 /// Find optimal amount for 2-hop path using hybrid search
 pub fn find_optimal_amount<'info>(
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
     input_mint: Pubkey,
@@ -508,7 +520,7 @@ pub fn find_optimal_amount<'info>(
 fn simulate_n_hop_path<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     amount_in: u64,
     clock: &Clock,
 ) -> Result<i128> {
@@ -531,7 +543,7 @@ fn simulate_n_hop_path<'info>(
 fn quick_profit_check_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -559,7 +571,7 @@ fn quick_profit_check_n_hop<'info>(
 fn golden_section_search_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -571,8 +583,8 @@ fn golden_section_search_n_hop<'info>(
     let mut a = min_amount;
     let mut b = max_amount;
 
-    let mut c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
-    let mut d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+    let mut c = b - golden_div(b - a);
+    let mut d = a + golden_div(b - a);
 
     let mut fc = simulate_n_hop_path(accounts, edges, instances, c, clock)
         .unwrap_or(i128::MIN);
@@ -595,14 +607,14 @@ fn golden_section_search_n_hop<'info>(
             b = d;
             d = c;
             fd = fc;
-            c = b - ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            c = b - golden_div(b - a);
             fc = simulate_n_hop_path(accounts, edges, instances, c, clock)
                 .unwrap_or(i128::MIN);
         } else {
             a = c;
             c = d;
             fc = fd;
-            d = a + ((b - a) as f64 / GOLDEN_RATIO) as u64;
+            d = a + golden_div(b - a);
             fd = simulate_n_hop_path(accounts, edges, instances, d, clock)
                 .unwrap_or(i128::MIN);
         }
@@ -629,7 +641,7 @@ fn golden_section_search_n_hop<'info>(
 fn hybrid_search_n_hop<'info>(
     accounts: &[AccountInfo<'info>],
     edges: &[Edge],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     min_amount: u64,
     max_amount: u64,
     clock: &Clock,
@@ -642,7 +654,9 @@ fn hybrid_search_n_hop<'info>(
         return Ok((hint_amount, i128::MIN));
     }
 
-    let grid_points = [0.05, 0.20, 0.40, 0.60, 0.80, 1.0];
+    // Grid points as parts-per-million: 5%, 20%, 40%, 60%, 80%, 100%
+    const GRID_PPM_NHOP: [u64; 6] = [50_000, 200_000, 400_000, 600_000, 800_000, 1_000_000];
+    let range = max_amount - min_amount;
 
     let mut best_amount = min_amount;
     let mut best_profit = i128::MIN;
@@ -650,8 +664,8 @@ fn hybrid_search_n_hop<'info>(
     let mut prev_profit = i128::MIN;
     let mut last_drop: i128 = 0;
 
-    for (idx, &fraction) in grid_points.iter().enumerate() {
-        let amount = min_amount + ((max_amount - min_amount) as f64 * fraction) as u64;
+    for (idx, &ppm) in GRID_PPM_NHOP.iter().enumerate() {
+        let amount = min_amount + ((range as u128 * ppm as u128 / 1_000_000) as u64);
         let profit = simulate_n_hop_path(accounts, edges, instances, amount, clock)
             .unwrap_or(i128::MIN);
 
@@ -679,13 +693,13 @@ fn hybrid_search_n_hop<'info>(
     }
 
     let lower_bound = if best_idx > 0 {
-        min_amount + ((max_amount - min_amount) as f64 * grid_points[best_idx - 1]) as u64
+        min_amount + ((range as u128 * GRID_PPM_NHOP[best_idx - 1] as u128 / 1_000_000) as u64)
     } else {
         min_amount
     };
 
-    let upper_bound = if best_idx < grid_points.len() - 1 {
-        min_amount + ((max_amount - min_amount) as f64 * grid_points[best_idx + 1]) as u64
+    let upper_bound = if best_idx < GRID_PPM_NHOP.len() - 1 {
+        min_amount + ((range as u128 * GRID_PPM_NHOP[best_idx + 1] as u128 / 1_000_000) as u64)
     } else {
         max_amount
     };
@@ -705,7 +719,7 @@ fn hybrid_search_n_hop<'info>(
 fn find_optimal_amount_n_hop<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &BotConfig,
 ) -> Result<(u64, i128)> {
     if edges.is_empty() {
@@ -736,7 +750,7 @@ fn find_optimal_amount_n_hop<'info>(
 pub fn find_optimal_amount_in_v2<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     if edges.len() < 2 {
@@ -772,7 +786,7 @@ pub fn find_optimal_amount_in_v2<'info>(
 pub fn find_optimal_amount_in_v3<'info>(
     edges: &[Edge],
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
     find_optimal_amount_in_v2(edges, accounts, instances, config)
