@@ -1,13 +1,13 @@
 pub mod state;
 
 use self::state::AMM_INFO_SIZE;
-use crate::programs::ProgramMeta;
+use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::{read_token_amount, read_vault_data};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -53,6 +53,8 @@ pub struct RaydiumAmm {
     pub quote_vault_amount: u64, // effective pc reserve (vault - need_take_pnl)
     pub price: f64,
     pub fee_rate: f64,
+    /// Pre-computed fee factor: 1 - fee_rate
+    pub fee_factor: (f64, f64),
     pub static_base: usize,
     pub dyn_start: usize,
     pub buy_max_in: u64,
@@ -76,8 +78,9 @@ impl ProgramMeta for RaydiumAmm {
     }
 
     fn name(&self) -> &'static str { "RaydiumAmm" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::RaydiumAmm }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.fee_rate; Ok((f, f)) }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
         let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
@@ -212,7 +215,7 @@ impl ProgramMeta for RaydiumAmm {
         };
 
         // Add back swap fee: amount_in = amount_in_after_fee / (1 - fee_rate)
-        let fee_factor = 1.0 - self.fee_rate;
+        let fee_factor = self.fee_factor.0;
         let amount_in_before_fee = (amount_in_after_fee as f64 / fee_factor).ceil() as u128;
 
         let amount_in_u64 =
@@ -265,7 +268,7 @@ impl ProgramMeta for RaydiumAmm {
         let min_out = min_amount_out.unwrap_or(0);
 
         // SwapBaseInV2 accounts: [spl_token, amm_pool, authority, coin_vault, pc_vault, user_source, user_destination, user_wallet]
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*mint_1_token_program.key, false), // spl_token
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new_readonly(*authority.key, false),
@@ -284,7 +287,7 @@ impl ProgramMeta for RaydiumAmm {
 
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas,
+            accounts: metas.to_vec(),
             data: data.to_vec(),
         };
 
@@ -301,7 +304,7 @@ impl ProgramMeta for RaydiumAmm {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke(&swap_ix, accounts_slice)?;
+            invoke_unchecked(&swap_ix, accounts_slice)?;
         }
         Ok(())
     }
@@ -379,7 +382,7 @@ impl ProgramMeta for RaydiumAmm {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke(&swap_ix, accounts_slice)?;
+            invoke_unchecked(&swap_ix, accounts_slice)?;
         }
         Ok(())
     }
@@ -430,7 +433,6 @@ impl RaydiumAmm {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
-        pool_fees: &[u32],
     ) -> Result<Self> {
 
         let pool_acc = &accounts[dyn_start + D_POOL];
@@ -472,7 +474,8 @@ impl RaydiumAmm {
 
         let price = quote_vault_amount as f64 / base_vault_amount as f64;
 
-        let fee_rate = pool_fees[0] as f64 / 1_000_000.0;
+        // Placeholder: fee rate will be read from on-chain account data
+        let fee_rate = 0.0;
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = RaydiumAmm {
@@ -483,6 +486,7 @@ impl RaydiumAmm {
             quote_vault_amount,
             price,
             fee_rate,
+            fee_factor: { let f = 1.0 - fee_rate; (f, f) },
             static_base,
             dyn_start,
             buy_max_in: 0,
@@ -686,14 +690,7 @@ mod tests {
         let dyn_start: usize = 2;
         let dyn_end: usize = accounts.len();
 
-        let fee_millionths = if amm.swap_fee_denominator > 0 {
-            (amm.swap_fee_numerator as f64 / amm.swap_fee_denominator as f64 * 1_000_000.0) as u32
-        } else {
-            0
-        };
-        let pool_fees = [fee_millionths];
-
-        let mut raydium_amm = RaydiumAmm::new(&accounts, static_base, dyn_start, dyn_end, &pool_fees)
+        let mut raydium_amm = RaydiumAmm::new(&accounts, static_base, dyn_start, dyn_end)
             .expect("RaydiumAmm::new failed");
 
         let clock = get_clock_from_rpc(&rpc_client).await;
@@ -709,7 +706,7 @@ mod tests {
     #[tokio::test]
     async fn test_raydium_amm_round_trip() {
         // SOL/USDC Raydium AMM pool on mainnet
-        let pool_id = Pubkey::from_str_const("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq");
+        let pool_id = Pubkey::from_str_const("8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt");
         let (mut raydium_amm, accounts, clock) = build_from_pool_id(pool_id).await;
 
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");

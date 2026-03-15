@@ -28,7 +28,7 @@ use arbitrage::algo_2::{
     /* check_arbitrage, */ find_cross_arbitrage_optimized,
     find_triangular_arbitrage_iterative, get_edges, ArbitragePath,
 };
-use arbitrage::analytical_algo::run_arbitrage_analytical;
+use arbitrage::analytical_algo::{run_analytical_2hop, run_analytical_multihop};
 use programs::{
     MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, ProgramMeta, PumpAmm,
     RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
@@ -83,6 +83,10 @@ pub struct InstructionData {
     pub mode: u8,
     /// Test mode: if true, skip profit checks and execute with tiny amount (100 lamports)
     pub test: bool,
+    /// Number of pools per mint group (for MULTIPLE_TRADES lazy evaluation).
+    /// e.g. [3, 2, 0, 0] = group 0 has 3 pools (pool_types[0..3]), group 1 has 2 pools (pool_types[3..5]).
+    /// All zeros = fall back to parsing all pools at once.
+    pub group_sizes: [u8; 4],
 }
 
 #[derive(Accounts)]
@@ -111,7 +115,6 @@ fn start_bot<'info>(
     let shared_statics_start = 4 + num_mints * 2;
     let pool_start = shared_statics_start + data.shared_statics_len as usize;
 
-    // Start token is always mint index 0, user token account at base + 1
     let user_token_account = &accounts[5];
     let max_amount_in = parse_token_account(user_token_account)?.amount;
     if max_amount_in == 0 {
@@ -122,8 +125,136 @@ fn start_bot<'info>(
     let max_amount_in = 2_000_000_000;
     debug_eprintln!("max_amount_in: {:?}", max_amount_in);
 
-    // Build mint fee rate cache once — avoids repeated Clock::get() + mint deserialization per program
+    match data.mode {
+        arb_mode::MULTI_HOP_CHAIN => {
+            start_bot_multihop(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)
+        }
+        _ => {
+            // SINGLE_PAIR (1 group) and MULTIPLE_TRADES (N groups) share the same loop
+            start_bot_grouped(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)
+        }
+    }
+}
+
+/// Grouped flow for SINGLE_PAIR and MULTIPLE_TRADES modes.
+/// Iterates mint groups lazily: parse + evaluate group 0 first, only parse group 1 if no profit.
+/// SINGLE_PAIR is just 1 iteration (all pools in one group).
+#[inline(never)]
+fn start_bot_grouped<'info>(
+    accounts: &[AccountInfo<'info>],
+    data: &InstructionData,
+    clock: Clock,
+    payer: &AccountInfo<'info>,
+    shared_statics_start: usize,
+    pool_start: usize,
+    max_amount_in: u64,
+) -> Result<Option<ArbitragePath>> {
+    let test_mode = data.test;
     let epoch = clock.epoch;
+
+    // Determine groups: for MULTIPLE_TRADES use group_sizes, for SINGLE_PAIR = 1 group with all pools
+    let effective_groups: [u8; 4] = if data.mode == arb_mode::MULTIPLE_TRADES && data.group_sizes[0] > 0 {
+        data.group_sizes
+    } else {
+        let total_pools = data.pool_lengths.iter().filter(|&&l| l > 0).count() as u8;
+        [total_pools, 0, 0, 0]
+    };
+
+    // WSOL mint fee is shared across all groups
+    let wsol_mint_acc = &accounts[4];
+    let wsol_fee = extract_mint_fee(wsol_mint_acc, epoch)?;
+
+    let mut pool_idx_offset = 0usize;
+    for g in 0..4usize {
+        let group_size = effective_groups[g] as usize;
+        if group_size == 0 {
+            break;
+        }
+
+        let pool_idx_start = pool_idx_offset;
+        let pool_idx_end = pool_idx_offset + group_size;
+        pool_idx_offset = pool_idx_end;
+
+        // Mint fees: WSOL + this group's mint (mint index g+1 for MULTIPLE_TRADES, mint index 1 for SINGLE_PAIR)
+        let group_mint_idx = if data.mode == arb_mode::MULTIPLE_TRADES { g + 1 } else { 1 };
+        let group_mint_acc = &accounts[4 + group_mint_idx * 2];
+        let group_mint_fee = extract_mint_fee(group_mint_acc, epoch)?;
+        let mint_fees = vec![
+            (*wsol_mint_acc.key, wsol_fee),
+            (*group_mint_acc.key, group_mint_fee),
+        ];
+
+        let mut instances = parse_accounts(
+            accounts, shared_statics_start, pool_start, data, &clock,
+            pool_idx_start, pool_idx_end,
+        )?;
+
+        let mut group_config = BotConfig::new(
+            Some(WSOL),
+            max_amount_in,
+            5_500,
+            2,
+            arb_mode::SINGLE_PAIR_MULTI_MARKET,
+            clock.clone(),
+            test_mode,
+        );
+
+        let arbitrage_path = run_analytical_2hop(
+            accounts, &mut instances, &mut group_config, &mint_fees,
+        )?;
+
+        let Some(mut arb_path) = arbitrage_path else {
+            continue;
+        };
+
+        for edge in &arb_path.edges {
+            if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
+                inst.prepare_for_execution(accounts);
+            }
+        }
+
+        let sim_profit = run_simulation(
+            accounts, &arb_path, &mut instances, &mut group_config, &mint_fees,
+        )?;
+
+        if sim_profit <= group_config.min_profit
+            || (!test_mode && arb_path.profit <= group_config.min_profit)
+        {
+            continue;
+        }
+
+        if test_mode {
+            arb_path.start_amount = 1_000_000;
+        }
+
+        #[cfg(test)]
+        {
+            if arb_path.profit > 0 {
+                write_results_to_file(&[Some(arb_path.clone())]);
+            }
+        }
+
+        execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
+        return Ok(Some(arb_path));
+    }
+    Ok(None)
+}
+
+/// Multi-hop flow: all pools parsed at once, needs all mints for the chain.
+#[inline(never)]
+fn start_bot_multihop<'info>(
+    accounts: &[AccountInfo<'info>],
+    data: &InstructionData,
+    clock: Clock,
+    payer: &AccountInfo<'info>,
+    shared_statics_start: usize,
+    pool_start: usize,
+    max_amount_in: u64,
+) -> Result<Option<ArbitragePath>> {
+    let test_mode = data.test;
+    let num_mints = data.mints as usize;
+    let epoch = clock.epoch;
+
     let mut mint_fees: Vec<(Pubkey, MintFee)> = Vec::with_capacity(num_mints);
     for i in 0..num_mints {
         let mint_acc = &accounts[4 + i * 2];
@@ -131,22 +262,15 @@ fn start_bot<'info>(
         mint_fees.push((*mint_acc.key, fee));
     }
 
-    let mut instances = parse_accounts(accounts, shared_statics_start, pool_start, &data, &clock)?;
-
-    let test_mode = data.test;
     let mut bot_config = BotConfig::new(
-        Some(WSOL),
-        max_amount_in,
-        5_500,
-        data.mints,
-        data.mode,
-        clock,
-        test_mode,
+        Some(WSOL), max_amount_in, 5_500, data.mints, data.mode, clock, test_mode,
     );
-    // msg!("Mode={}, mints={}, max_in={}", data.mode, data.mints, max_amount_in);
 
-    // Run both algorithms independently and pick the better result
-    let arbitrage_path = run_arbitrage_analytical(accounts, &mut instances, &mut bot_config, &mint_fees)?;
+    let mut instances = parse_accounts(
+        accounts, shared_statics_start, pool_start, data, &bot_config.clock, 0, 8,
+    )?;
+
+    let arbitrage_path = run_analytical_multihop(accounts, &mut instances, &mut bot_config, &mint_fees)?;
 
     // Log comparison
     #[cfg(any(test, feature = "debug"))]
@@ -164,21 +288,15 @@ fn start_bot<'info>(
             grid_amount_in as f64 / 1_000_000_000.0,
             ana_profit as f64 / 1_000_000_000.0,
             ana_amount_in as f64 / 1_000_000_000.0,
-            if ana_profit > grid_profit {
-                "Ana"
-            } else {
-                "Grid"
-            }
+            if ana_profit > grid_profit { "Ana" } else { "Grid" }
         );
         eprintln!("");
     }
 
-    if arbitrage_path.is_none() {
+    let Some(mut arbitrage_path) = arbitrage_path else {
         return Ok(None);
-    }
-    let mut arbitrage_path = arbitrage_path.unwrap();
+    };
 
-    // Prepare only the winning instances (deferred max amounts, transfer fees, etc.)
     for edge in &arbitrage_path.edges {
         if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
             inst.prepare_for_execution(accounts);
@@ -190,17 +308,14 @@ fn start_bot<'info>(
     if sim_profit <= bot_config.min_profit
         || (!test_mode && arbitrage_path.profit <= bot_config.min_profit)
     {
-        msg!(
+        debug_eprintln!(
             "Not found: sp={} ap={} mp={}",
-            sim_profit,
-            arbitrage_path.profit,
-            bot_config.min_profit
+            sim_profit, arbitrage_path.profit, bot_config.min_profit
         );
         return Ok(None);
     }
 
     if test_mode {
-        // Override with tiny amount: 100 lamports (0.0000001 SOL)
         arbitrage_path.start_amount = 1_000_000;
     }
 
@@ -222,19 +337,25 @@ fn parse_accounts<'info>(
     pool_start: usize,
     data: &InstructionData,
     clock: &Clock,
+    pool_idx_start: usize,
+    pool_idx_end: usize,
 ) -> Result<Vec<ProgramInstance<'info>>> {
+    // Compute dynamic account offset by skipping pools before pool_idx_start
     let mut index: usize = pool_start;
+    for i in 0..pool_idx_start {
+        index += data.pool_lengths[i] as usize;
+    }
     let accounts_len = accounts.len();
 
     let mut estimated_capacity = 0usize;
-    for &len in &data.pool_lengths {
-        if len > 0 {
+    for i in pool_idx_start..pool_idx_end {
+        if data.pool_lengths[i] > 0 {
             estimated_capacity += 1;
         }
     }
     let mut instances = Vec::with_capacity(estimated_capacity);
 
-    for i in 0..8 {
+    for i in pool_idx_start..pool_idx_end {
         let span = data.pool_lengths[i] as usize;
         if span == 0 {
             continue;
@@ -255,31 +376,31 @@ fn parse_accounts<'info>(
             }
             dex_type::METEORA_DAMM_V1 | dex_type::METEORA_DBC => {
                 debug_eprintln!("MeteoraDammV1");
-                create_meteora_damm_v1(accounts, static_base, index, end_index, clock, &[])?
+                create_meteora_damm_v1(accounts, static_base, index, end_index, clock)?
             }
             dex_type::METEORA_DAMM_V2 => {
                 debug_eprintln!("MeteoraDammV2");
-                create_meteora_damm_v2(accounts, static_base, index, end_index, clock, &[])?
+                create_meteora_damm_v2(accounts, static_base, index, end_index, clock)?
             }
             dex_type::METEORA_DLMM => {
                 debug_eprintln!("MeteoraDlmm");
-                create_meteora_dlmm(accounts, static_base, index, end_index, &[])?
+                create_meteora_dlmm(accounts, static_base, index, end_index)?
             }
             dex_type::WHIRLPOOL => {
                 debug_eprintln!("OrcaWhirlpool");
-                create_orca_whirlpool(accounts, static_base, index, end_index, &[])?
+                create_orca_whirlpool(accounts, static_base, index, end_index)?
             }
             dex_type::RAYDIUM_AMM => {
                 debug_eprintln!("RaydiumAmm");
-                create_raydium_amm(accounts, static_base, index, end_index, &[])?
+                create_raydium_amm(accounts, static_base, index, end_index)?
             }
             dex_type::RAYDIUM_CLMM => {
                 debug_eprintln!("RaydiumCLMM");
-                create_raydium_clmm(accounts, static_base, index, end_index, &[])?
+                create_raydium_clmm(accounts, static_base, index, end_index)?
             }
             dex_type::RAYDIUM_CPMM => {
                 debug_eprintln!("RaydiumCPMM");
-                create_raydium_cpmm(accounts, static_base, index, end_index, &[])?
+                create_raydium_cpmm(accounts, static_base, index, end_index)?
             }
             _ => return Err(error!(SolarBError::UnknownProgram)),
         };
@@ -317,9 +438,8 @@ fn create_meteora_damm_v1<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(accounts, static_base, dyn_start, dyn_end, clock, pool_fees)?))
+    Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(accounts, static_base, dyn_start, dyn_end, clock)?))
 }
 
 #[inline(never)]
@@ -329,9 +449,8 @@ fn create_meteora_damm_v2<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-    pool_fees: &[(Pubkey, f64)],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(accounts, static_base, dyn_start, dyn_end, clock, pool_fees)?))
+    Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(accounts, static_base, dyn_start, dyn_end, clock)?))
 }
 
 #[inline(never)]
@@ -340,9 +459,8 @@ fn create_meteora_dlmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
@@ -351,9 +469,8 @@ fn create_orca_whirlpool<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
@@ -362,9 +479,8 @@ fn create_raydium_amm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
@@ -373,9 +489,8 @@ fn create_raydium_clmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
@@ -384,9 +499,8 @@ fn create_raydium_cpmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
 ) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
@@ -907,7 +1021,6 @@ fn run_simulation<'info>(
 
     for (i, edge) in arbitrage_path.edges.iter().enumerate() {
         let input_mint = edge.left.mint_account;
-        let output_mint = edge.right.mint_account;
 
         let program_instance = instances
             .iter_mut()
@@ -917,7 +1030,6 @@ fn run_simulation<'info>(
         let (base_pk, quote_pk) = program_instance.get_mints();
         let (in_fee, out_fee) = get_transfer_fees(input_mint, base_pk, quote_pk, mint_fees);
 
-        // swap_base_in: given amount_in, what do we get out?
         let amount_out = program_instance.swap_base_in(
             accounts,
             input_mint,
@@ -927,15 +1039,14 @@ fn run_simulation<'info>(
             &bot_config.clock,
         )?;
 
-        // swap_base_out: given that amount_out, how much would we need to put in?
-        let required_in =
-            program_instance.swap_base_out(accounts, output_mint, amount_out, in_fee, out_fee, &bot_config.clock)?;
-
-        let input_short = &input_mint.to_string()[..8];
-        let output_short = &output_mint.to_string()[..8];
-
         #[cfg(any(test, feature = "debug"))]
         {
+            let output_mint = edge.right.mint_account;
+            // swap_base_out only needed for debug logging — skip in production to save CU
+            let required_in =
+                program_instance.swap_base_out(accounts, output_mint, amount_out, in_fee, out_fee, &bot_config.clock)?;
+            let input_short = &input_mint.to_string()[..8];
+            let output_short = &output_mint.to_string()[..8];
             let in_decimals = get_mint_decimals(accounts, &input_mint);
             let out_decimals = get_mint_decimals(accounts, &output_mint);
             debug_eprintln!(
@@ -953,32 +1064,25 @@ fn run_simulation<'info>(
         current_amount = amount_out;
     }
 
-    #[cfg(any(test, feature = "debug"))]
-    debug_eprintln!("---");
-    #[cfg(any(test, feature = "debug"))]
-    let end_decimals = get_mint_decimals(
-        accounts,
-        &arbitrage_path.edges.last().unwrap().right.mint_account,
-    );
     let profit = current_amount as i128 - start_amount as i128;
-    if profit > 0 {
-        let profit_pct = (profit as f64 / start_amount as f64) * 100.0;
-        #[cfg(any(test, feature = "debug"))]
-        {
+
+    #[cfg(any(test, feature = "debug"))]
+    {
+        debug_eprintln!("---");
+        let end_decimals = get_mint_decimals(
+            accounts,
+            &arbitrage_path.edges.last().unwrap().right.mint_account,
+        );
+        if profit > 0 {
+            let profit_pct = (profit as f64 / start_amount as f64) * 100.0;
             debug_eprintln!(
                 "PROFIT: {} ({:.4}%)",
                 format_amount_i128(profit, end_decimals),
                 profit_pct,
             );
-        }
-    } else {
-        #[cfg(any(test, feature = "debug"))]
-        {
+        } else {
             debug_eprintln!("NO PROFIT: {}", format_amount_i128(profit, end_decimals),);
         }
-    }
-    #[cfg(any(test, feature = "debug"))]
-    {
         let start_decimals =
             get_mint_decimals(accounts, &arbitrage_path.edges[0].left.mint_account);
         debug_eprintln!(
@@ -988,8 +1092,7 @@ fn run_simulation<'info>(
         );
     }
 
-    let simulation_profit = current_amount as i128 - start_amount as i128;
-    Ok(simulation_profit)
+    Ok(profit)
 }
 
 #[cfg(test)]
@@ -1065,6 +1168,7 @@ mod tests {
             type_static_offsets: to,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
             test: false,
+            group_sizes: [0; 4],
         }
     }
 
@@ -1077,7 +1181,7 @@ mod tests {
         // All pool_lengths are 0 → no pools parsed
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
         let data = make_instruction_data(&[], &[], &[], 0);
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -1086,7 +1190,7 @@ mod tests {
     fn test_parse_accounts_empty_segment() {
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
         let data = make_instruction_data(&[], &[], &[], 0);
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -1104,7 +1208,7 @@ mod tests {
             &[0],
             4,
         );
-        let result = parse_accounts(&accounts, 0, 4, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, 4, &data, &default_clock(), 0, 8);
         assert!(result.is_err());
     }
 
@@ -1117,7 +1221,7 @@ mod tests {
             &[0],
             2,
         );
-        let result = parse_accounts(&accounts, 0, 2, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, 2, &data, &default_clock(), 0, 8);
         assert!(result.is_err());
     }
 
@@ -1132,7 +1236,7 @@ mod tests {
             &[0],
             0,
         );
-        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock());
+        let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
         assert!(result.is_err());
     }
 }

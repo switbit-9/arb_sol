@@ -1,10 +1,10 @@
-use crate::programs::ProgramMeta;
+use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -84,6 +84,8 @@ pub struct MeteoraDammV1 {
     pub trade_fee_denominator: u64,
     pub protocol_fee_numerator: u64,
     pub protocol_fee_denominator: u64,
+    /// Pre-computed fee factor: 1 - trade_fee_numerator/trade_fee_denominator
+    pub fee_factor: (f64, f64),
     pub static_base: usize,
     pub dyn_start: usize,
     pub buy_max_in: u64,
@@ -107,6 +109,7 @@ impl ProgramMeta for MeteoraDammV1 {
     }
 
     fn name(&self) -> &'static str { "MeteoraDammV1" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::MeteoraDammV1 }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Ok((self.base_vault_amount, self.quote_vault_amount))
@@ -117,10 +120,7 @@ impl ProgramMeta for MeteoraDammV1 {
         Ok((self.price, inverse))
     }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        let f = 1.0 - self.trade_fee_numerator as f64 / self.trade_fee_denominator as f64;
-        Ok((f, f))
-    }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
@@ -383,7 +383,7 @@ impl ProgramMeta for MeteoraDammV1 {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke(&swap_ix, accounts_slice)?;
+            invoke_unchecked(&swap_ix, accounts_slice)?;
         }
         Ok(())
     }
@@ -472,7 +472,6 @@ impl MeteoraDammV1 {
         dyn_start: usize,
         dyn_end: usize,
         clock: &Clock,
-        pool_fees: &[u32],
     ) -> Result<Self> {
         require!(
             dyn_end - dyn_start >= Self::MIN_ACCOUNTS,
@@ -491,8 +490,8 @@ impl MeteoraDammV1 {
 
         let token_a_mint = read_pubkey(d, TOKEN_A_MINT_OFFSET);
         let token_b_mint = read_pubkey(d, TOKEN_B_MINT_OFFSET);
-        // trade_fee from client-side pool_fees[0] (millionths), reconstruct as num/den
-        let trade_fee_numerator = pool_fees[0] as u64;
+        // Placeholder: fee rates will be read from on-chain account data
+        let trade_fee_numerator = 0u64;
         let trade_fee_denominator = 1_000_000u64;
         let protocol_fee_numerator = 0u64;
         let protocol_fee_denominator = 1u64;
@@ -554,6 +553,7 @@ impl MeteoraDammV1 {
             trade_fee_denominator,
             protocol_fee_numerator,
             protocol_fee_denominator,
+            fee_factor: { let f = 1.0 - trade_fee_numerator as f64 / trade_fee_denominator as f64; (f, f) },
             static_base,
             dyn_start,
             buy_max_in: 0,
@@ -805,17 +805,9 @@ mod tests {
         let dyn_start: usize = 1;
         let dyn_end: usize = accounts.len();
 
-        // Convert trade_fee to millionths for pool_fees
-        let fee_millionths = if trade_fee_den > 0 {
-            ((trade_fee_num as u128 * 1_000_000) / trade_fee_den as u128) as u32
-        } else {
-            0
-        };
-        let pool_fees = [fee_millionths];
-
         let clock = get_clock_from_rpc(&rpc_client).await;
 
-        let damm = MeteoraDammV1::new(&accounts, static_base, dyn_start, dyn_end, &clock, &pool_fees)
+        let damm = MeteoraDammV1::new(&accounts, static_base, dyn_start, dyn_end, &clock)
             .expect("MeteoraDammV1::new failed");
 
         eprintln!("  price: {}", damm.price);

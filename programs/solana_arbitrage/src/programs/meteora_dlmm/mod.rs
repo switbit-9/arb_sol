@@ -1,12 +1,12 @@
 pub mod dlmm_lib;
 
-use crate::programs::programs::ProgramMeta;
+use crate::programs::programs::{PoolKind, ProgramMeta};
 use crate::programs::SolarBError;
 use crate::utils::token::MintFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -76,6 +76,8 @@ pub struct MeteoraDlmm {
     pub static_base: usize,
     pub dyn_start: usize,
     pub fee_numerator: u64,
+    /// Pre-computed fee factor: 1 - fee_numerator/FEE_PRECISION
+    pub fee_factor: (f64, f64),
     /// Cached from init: base→quote (X→Y) buy bins
     pub buy_max_in: u64,
     pub buy_max_out: u64,
@@ -201,6 +203,7 @@ impl ProgramMeta for MeteoraDlmm {
     }
 
     fn name(&self) -> &'static str { "MeteoraDLMM" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::MeteoraDlmm }
 
     fn get_max_amount_in<'a>(&self, accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         MeteoraDlmm::get_max_amount_in(self, accounts, mint)
@@ -235,10 +238,7 @@ impl ProgramMeta for MeteoraDlmm {
     }
 
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        let f = 1.0 - self.fee_numerator as f64 / FEE_PRECISION as f64;
-        Ok((f, f))
-    }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
@@ -437,8 +437,8 @@ impl ProgramMeta for MeteoraDlmm {
             data: data.to_vec(),
         };
 
-        // Order must match metas order exactly
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        // Stack-allocated account infos array — no heap Vec
+        let accounts_arr = [
             pool_id.clone(),
             bitmap_extension.clone(),
             base_vault.clone(),
@@ -460,8 +460,8 @@ impl ProgramMeta for MeteoraDlmm {
         ];
 
         unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-            invoke(&swap_ix, accounts)?;
+            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
+            invoke_unchecked(&swap_ix, accounts)?;
         }
         Ok(())
     }
@@ -503,6 +503,12 @@ impl ProgramMeta for MeteoraDlmm {
             return Err(ProgramError::InvalidAccountData.into());
         };
 
+        let (user_token_in, user_token_out) = if input_mint == self.base_token_pk {
+            (user_base_token_account, user_quote_token_account)
+        } else {
+            (user_quote_token_account, user_base_token_account)
+        };
+
         let min_amount_out_value = min_amount_out.unwrap_or(0);
 
         // Get stored accounts - static from static_base, dynamic from dyn_start
@@ -542,8 +548,8 @@ impl ProgramMeta for MeteoraDlmm {
             AccountMeta::new(*bitmap_extension.key, false),
             AccountMeta::new(*base_vault.key, false),
             AccountMeta::new(*quote_vault.key, false),
-            AccountMeta::new(*user_base_token_account.key, false),
-            AccountMeta::new(*user_quote_token_account.key, false),
+            AccountMeta::new(*user_token_in.key, false),
+            AccountMeta::new(*user_token_out.key, false),
             AccountMeta::new_readonly(self.base_token_pk, false),
             AccountMeta::new_readonly(self.quote_token_pk, false),
             AccountMeta::new(*oracle.key, false),
@@ -571,15 +577,14 @@ impl ProgramMeta for MeteoraDlmm {
             data: data.to_vec(),
         };
 
-        // Collect AccountInfo into a vector and use unsafe to cast lifetimes
-        // Order must match metas order exactly
-        let accounts_vec: Vec<AccountInfo<'a>> = vec![
+        // Stack-allocated account infos array — no heap Vec
+        let accounts_arr = [
             pool_id.clone(),
             bitmap_extension.clone(),
             base_vault.clone(),
             quote_vault.clone(),
-            unsafe { std::mem::transmute(user_base_token_account.to_account_info()) },
-            unsafe { std::mem::transmute(user_quote_token_account.to_account_info()) },
+            unsafe { std::mem::transmute(user_token_in.to_account_info()) },
+            unsafe { std::mem::transmute(user_token_out.to_account_info()) },
             unsafe { std::mem::transmute(base_mint_info.to_account_info()) },
             unsafe { std::mem::transmute(quote_mint_info.to_account_info()) },
             oracle.clone(),
@@ -595,8 +600,8 @@ impl ProgramMeta for MeteoraDlmm {
         ];
 
         unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_vec.as_slice());
-            invoke(&swap_ix, accounts)?;
+            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
+            invoke_unchecked(&swap_ix, accounts)?;
         }
         Ok(())
     }
@@ -738,21 +743,68 @@ impl MeteoraDlmm {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
-        pool_fees: &[u32],
     ) -> Result<Self> {
         let pool_acc = &accounts[dyn_start + D_POOL];
-        let (lb_pair, lb_price) = {
-            let pool_data = pool_acc.try_borrow_data()?;
-            // Box immediately to avoid large LbPair on the stack
-            let lb: Box<LbPair> = Box::new(bytemuck::pod_read_unaligned(&pool_data[8..]));
-            let pr: u128 = get_price_from_id(lb.active_id, lb.bin_step)
-                .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
-            (lb, pr)
-        };
+        // Read only the fields we need directly from account bytes (~50 CU vs ~600 for full LbPair parse + Box).
+        // LbPair layout after 8-byte discriminator:
+        //   [0..32]   StaticParameters   (variable_fee_control @8, max_vol_acc @12)
+        //   [32..64]  VariableParameters (vol_acc @32, vol_ref @36, idx_ref @40)
+        //   [64..68]  bump_seed + bin_step_seed + pair_type
+        //   [68..72]  active_id (i32)
+        //   [72..74]  bin_step (u16)
+        //   [80..112] token_x_mint (Pubkey)
+        //   [112..144] token_y_mint (Pubkey)
+        let (lb_pair_slim, base_token_pk, quote_token_pk, lb_price, fee_numerator) = {
+            let d = pool_acc.try_borrow_data()?;
+            let d = &d[8..]; // skip discriminator
 
-        // Read token mints from pool state (no longer passed as accounts)
-        let base_token_pk = lb_pair.token_x_mint;
-        let quote_token_pk = lb_pair.token_y_mint;
+            let base_factor = u16::from_le_bytes([d[0], d[1]]);
+            let base_fee_power_factor = d[26];
+            let variable_fee_control = u32::from_le_bytes([d[8], d[9], d[10], d[11]]);
+            let volatility_accumulator = u32::from_le_bytes([d[32], d[33], d[34], d[35]]);
+            let active_id = i32::from_le_bytes([d[68], d[69], d[70], d[71]]);
+            let bin_step = u16::from_le_bytes([d[72], d[73]]);
+
+            // Inline get_base_fee: base_factor * bin_step * 10 * 10^base_fee_power_factor
+            let base_fee = (base_factor as u128)
+                * (bin_step as u128)
+                * 10u128
+                * 10u128.pow(base_fee_power_factor as u32);
+
+            // Inline get_variable_fee
+            let variable_fee = if variable_fee_control > 0 {
+                let square_vfa_bin = (volatility_accumulator as u128)
+                    .saturating_mul(bin_step as u128)
+                    .saturating_pow(2);
+                (variable_fee_control as u128)
+                    .saturating_mul(square_vfa_bin)
+                    .saturating_add(99_999_999_999)
+                    / 100_000_000_000
+            } else {
+                0
+            };
+
+            // total_fee capped at MAX_FEE_RATE (100_000_000)
+            let total_fee = std::cmp::min(base_fee + variable_fee, 100_000_000u128) as u64;
+
+            let slim = LbPairSlim {
+                active_id,
+                bin_step,
+                volatility_accumulator,
+                volatility_reference: u32::from_le_bytes([d[36], d[37], d[38], d[39]]),
+                index_reference: i32::from_le_bytes([d[40], d[41], d[42], d[43]]),
+                max_vol_acc: u32::from_le_bytes([d[12], d[13], d[14], d[15]]),
+                variable_fee_control,
+            };
+
+            let token_x: Pubkey = Pubkey::new_from_array(d[80..112].try_into().unwrap());
+            let token_y: Pubkey = Pubkey::new_from_array(d[112..144].try_into().unwrap());
+
+            let pr: u128 = get_price_from_id(active_id, bin_step)
+                .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+
+            (slim, token_x, token_y, pr, total_fee)
+        };
 
         let price = get_price_f64(lb_price);
 
@@ -762,22 +814,6 @@ impl MeteoraDlmm {
             let skew: f64 = if lb_price % 2 == 0 { 1.03 } else { 0.97 };
             price *= skew;
         }
-
-        // Fee from client-side instruction data (millionths → DLMM precision 1e9)
-        let fee_numerator = (pool_fees[0] as u64) * 1_000;
-
-        // Extract slim fields — full LbPair is dropped after this.
-        // Volatility fields use raw on-chain values; prepare_for_execution() will
-        // update them after calling update_references() on the re-read lb_pair.
-        let lb_pair_slim = LbPairSlim {
-            active_id: lb_pair.active_id,
-            bin_step: lb_pair.bin_step,
-            volatility_accumulator: lb_pair.v_parameters.volatility_accumulator,
-            volatility_reference: lb_pair.v_parameters.volatility_reference,
-            index_reference: lb_pair.v_parameters.index_reference,
-            max_vol_acc: lb_pair.parameters.max_volatility_accumulator,
-            variable_fee_control: lb_pair.parameters.variable_fee_control,
-        };
 
         // LAZY INIT: skip bin array reads, active_bin computation, swap cache building.
         // These are deferred to prepare_for_execution() (called on first swap_base_in).
@@ -795,6 +831,7 @@ impl MeteoraDlmm {
             lb_price,
             price,
             fee_numerator,
+            fee_factor: { let f = 1.0 - fee_numerator as f64 / FEE_PRECISION as f64; (f, f) },
             static_base,
             dyn_start,
             buy_max_in: u64::MAX,
@@ -1107,7 +1144,7 @@ impl MeteoraDlmm {
 
         // Compute slope = price_f64 * fee_factor
         let price_f64 = price_q64 as f64 / Q64_SCALE;
-        let fee_factor = 1.0 - self.fee_numerator as f64 / FEE_PRECISION as f64;
+        let fee_factor = self.fee_factor.0;
         // For swap_for_y: input X, output Y → slope = price * fee (X→Y: multiply by price)
         // For swap_for_x: input Y, output X → slope = (1/price) * fee (Y→X: divide by price)
         let slope = if swap_for_y {
@@ -1312,13 +1349,7 @@ mod tests {
         let dyn_start: usize = 3;
         let dyn_end: usize = accounts.len();
 
-        // Fee: use a reasonable default (e.g. 500 = 0.05% in millionths -> * 1000 = DLMM precision)
-        // The pool_fees slice is used as (pool_fees[0] as u64) * 1_000 for fee_numerator
-        let total_fee = lb_pair.get_total_fee().unwrap_or(0) as u32;
-        let pool_fee_millionths = (total_fee / 1_000) as u32;
-        let pool_fees = [pool_fee_millionths];
-
-        let meteora = MeteoraDlmm::new(&accounts, static_base, dyn_start, dyn_end, &pool_fees)
+        let meteora = MeteoraDlmm::new(&accounts, static_base, dyn_start, dyn_end)
             .expect("MeteoraDlmm::new failed");
 
         let clock = get_clock_from_rpc(&rpc_client).await;

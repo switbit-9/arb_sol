@@ -244,6 +244,7 @@ mod tests {
         type_static_offsets: [0, 10, 10, 10, 10, 10, 10, 0],
         mode: 2,
         test: false,
+        group_sizes: [0; 4],
         // fee_bps: [0; 3],
         // fee_max: [0; 3],
         // pool_fees: [0; 16],

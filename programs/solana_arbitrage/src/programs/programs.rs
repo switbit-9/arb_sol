@@ -11,6 +11,20 @@ use super::raydium_amm::RaydiumAmm;
 use super::raydium_clmm::RaydiumCLMM;
 use super::raydium_cpmm::RaydiumCPMM;
 
+/// Numeric pool type discriminant — replaces string matching for O(1) dispatch.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolKind {
+    PumpAmm = 0,
+    RaydiumAmm = 1,
+    RaydiumCLMM = 2,
+    RaydiumCPMM = 3,
+    MeteoraDammV1 = 4,
+    MeteoraDammV2 = 5,
+    OrcaWhirlpool = 6,
+    MeteoraDlmm = 7,
+}
+
 /// Enum dispatch replaces Box<dyn ProgramMeta> — eliminates heap allocation + vtable overhead.
 pub enum ProgramInstance<'info> {
     PumpAmm(PumpAmm),
@@ -66,6 +80,19 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
 
     fn name(&self) -> &'static str {
         dispatch!(self, name())
+    }
+
+    fn pool_kind(&self) -> PoolKind {
+        match self {
+            ProgramInstance::PumpAmm(_) => PoolKind::PumpAmm,
+            ProgramInstance::RaydiumAmm(_) => PoolKind::RaydiumAmm,
+            ProgramInstance::RaydiumCLMM(_) => PoolKind::RaydiumCLMM,
+            ProgramInstance::RaydiumCPMM(_) => PoolKind::RaydiumCPMM,
+            ProgramInstance::MeteoraDammV1(_) => PoolKind::MeteoraDammV1,
+            ProgramInstance::MeteoraDammV2(_) => PoolKind::MeteoraDammV2,
+            ProgramInstance::OrcaWhirlpool(_) => PoolKind::OrcaWhirlpool,
+            ProgramInstance::MeteoraDlmm(_) => PoolKind::MeteoraDlmm,
+        }
     }
 
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
@@ -224,6 +251,9 @@ pub trait ProgramMeta {
 
     /// Human-readable program name (e.g. "PumpAmm", "MeteoraDLMM")
     fn name(&self) -> &'static str;
+
+    /// Numeric pool type — single u8 comparison instead of string matching.
+    fn pool_kind(&self) -> PoolKind;
 
     /// Get base and quote token mints
     fn get_mints(&self) -> (&Pubkey, &Pubkey);

@@ -3,14 +3,14 @@ pub mod states;
 
 use self::libraries::{swap_math, tick_math};
 use self::states::{OracleSimple, TickArraySimple, WhirlpoolSimple, FEE_RATE_HARD_LIMIT};
-use crate::programs::ProgramMeta;
+use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
 use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     pubkey::Pubkey,
 };
 
@@ -79,6 +79,8 @@ pub struct OrcaWhirlpool {
     /// Pre-computed once in new() to avoid recalculation during swaps.
     pub fee_rate: u32,
     pub protocol_fee_rate: u16,
+    /// Pre-computed fee factor: 1 - fee_rate/1_000_000
+    pub fee_factor: (f64, f64),
     pub price: f64,
     pub static_base: usize,
     pub dyn_start: usize,
@@ -107,16 +109,10 @@ impl ProgramMeta for OrcaWhirlpool {
         (&self.base_token_pk, &self.quote_token_pk)
     }
 
-    fn name(&self) -> &'static str {
-        "OrcaWhirlpool"
-    }
+    fn name(&self) -> &'static str { "OrcaWhirlpool" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::OrcaWhirlpool }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        // Orca fee_rate is in hundredths of basis point (1_000_000 = 100%)
-        // Symmetric fee: same rate for both A->B and B->A
-        let f = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
-        Ok((f, f))
-    }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn swap_base_in<'a>(
         &mut self,
@@ -290,7 +286,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke(&swap_ix, &accounts_arr)?;
+        invoke_unchecked(&swap_ix, &accounts_arr)?;
         Ok(())
     }
 
@@ -394,7 +390,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke(&swap_ix, &accounts_arr)?;
+        invoke_unchecked(&swap_ix, &accounts_arr)?;
         Ok(())
     }
 
@@ -477,7 +473,6 @@ impl OrcaWhirlpool {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
-        pool_fees: &[u32],
     ) -> Result<Self> {
         let pool_account = &accounts[dyn_start + D_POOL];
 
@@ -487,8 +482,13 @@ impl OrcaWhirlpool {
 
         let price = sqrt_price_to_f64(pool.sqrt_price);
 
-        // fee_rate from client-side pool_fees[0] (already in hundredths of basis point, same unit as Orca)
-        let total_fee_rate = pool_fees[0];
+        // Compute total fee rate (static + adaptive from oracle)
+        let oracle_data = accounts.get(dyn_start + D_ORACLE)
+            .and_then(|a| a.try_borrow_data().ok());
+        let total_fee_rate = compute_total_fee_rate(
+            pool.fee_rate,
+            oracle_data.as_deref().map(|d| &**d),
+        );
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = OrcaWhirlpool {
@@ -504,6 +504,7 @@ impl OrcaWhirlpool {
             tick_spacing: pool.tick_spacing,
             fee_rate: total_fee_rate,
             protocol_fee_rate: pool.protocol_fee_rate,
+            fee_factor: { let f = 1.0 - (total_fee_rate as f64 / 1_000_000.0); (f, f) },
             price,
             static_base,
             dyn_start,
@@ -783,7 +784,7 @@ impl OrcaWhirlpool {
         }
         self.prepared = true;
 
-        let fee_factor = 1.0 - (self.fee_rate as f64 / 1_000_000.0);
+        let fee_factor = self.fee_factor.0;
         let vault_b_amount = read_token_amount(&accounts[self.dyn_start + D_VAULT_B])
             .unwrap_or(0);
         let vault_a_amount = read_token_amount(&accounts[self.dyn_start + D_VAULT_A])
@@ -996,9 +997,7 @@ mod tests {
         let dyn_start: usize = 1;
         let dyn_end: usize = accounts.len();
 
-        let pool_fees = [total_fee_rate];
-
-        let mut orca = OrcaWhirlpool::new(&accounts, static_base, dyn_start, dyn_end, &pool_fees)
+        let mut orca = OrcaWhirlpool::new(&accounts, static_base, dyn_start, dyn_end)
             .expect("OrcaWhirlpool::new failed");
 
         orca.prepare_for_execution(&accounts);

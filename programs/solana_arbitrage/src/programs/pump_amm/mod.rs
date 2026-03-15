@@ -1,4 +1,4 @@
-use crate::programs::ProgramMeta;
+use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
@@ -116,6 +116,8 @@ pub struct PumpAmm {
     pub price: f64,
     /// Fee in millionths (e.g. 12500 = 1.25%). Integer replacement for fee_rate f64.
     pub fee_numerator: u64,
+    /// Pre-computed fee factor: (1 - fee_rate, 1 - fee_rate)
+    pub fee_factor: (f64, f64),
     pub static_base: usize,
     pub dyn_start: usize,
     /// Cached max amounts from init
@@ -143,8 +145,9 @@ impl ProgramMeta for PumpAmm {
     }
 
     fn name(&self) -> &'static str { "PumpAmm" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::PumpAmm }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - (self.fee_numerator as f64 / FEE_DENOM as f64); Ok((f, f)) }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
@@ -701,6 +704,7 @@ impl PumpAmm {
         let instance = PumpAmm {
             price,
             fee_numerator,
+            fee_factor: { let f = 1.0 - (fee_numerator as f64 / FEE_DENOM as f64); (f, f) },
             pool_id: *pool_acc.key,
             base_token_pk,
             quote_token_pk,

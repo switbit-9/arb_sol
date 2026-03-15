@@ -13,13 +13,13 @@ use crate::utils::{
     utils::read_vault_data,
 };
 use crate::{
-    programs::ProgramMeta,
+    programs::{PoolKind, ProgramMeta},
 };
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -81,6 +81,8 @@ pub struct RaydiumCPMM {
     pub protocol_fee_rate: u64,
     pub fund_fee_rate: u64,
     pub total_fee_numerator: u64,
+    /// Pre-computed fee factor: 1 - total_fee_numerator/1_000_000
+    pub fee_factor: (f64, f64),
     pub buy_max_in: u64,
     pub buy_max_out: u64,
     pub sell_max_in: u64,
@@ -114,8 +116,9 @@ impl ProgramMeta for RaydiumCPMM {
     }
 
     fn name(&self) -> &'static str { "RaydiumCPMM" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::RaydiumCPMM }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> { let f = 1.0 - self.total_fee_numerator as f64 / 1_000_000.0; Ok((f, f)) }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         Ok((self.base_vault_amount, self.quote_vault_amount))
@@ -419,7 +422,7 @@ impl RaydiumCPMM {
             observation_account.clone(),
         ];
 
-        invoke(&swap_ix, &accounts_arr)?;
+        invoke_unchecked(&swap_ix, &accounts_arr)?;
         Ok(())
     }
 
@@ -433,14 +436,17 @@ impl RaydiumCPMM {
         pool_acc: &AccountInfo<'a>,
         base_vault_key: &Pubkey,
     ) -> Result<(u64, u64, u64, u64, u64, u64, bool, u8, bool)> {
-        // Read fee rates from AmmConfig
+        // Read fee rates directly from AmmConfig bytes
+        // Layout after 8-byte discriminator: bump(1) + disable_create_pool(1) + index(2) = 4 bytes
+        // then trade_fee_rate(8), protocol_fee_rate(8), fund_fee_rate(8), create_pool_fee(8),
+        // protocol_owner(32), fund_owner(32), creator_fee_rate(8)
         let config_data = amm_config_acc.try_borrow_data()
             .map_err(|_| ProgramError::InvalidAccountData)?;
-        let config = states::config::AmmConfig::try_from_bytes(&config_data)?;
-        let trade_fee_rate = config.trade_fee_rate;
-        let creator_fee_rate = config.creator_fee_rate;
-        let protocol_fee_rate = config.protocol_fee_rate;
-        let fund_fee_rate = config.fund_fee_rate;
+        let d = &*config_data;
+        let trade_fee_rate = u64::from_le_bytes(d[12..20].try_into().unwrap());
+        let protocol_fee_rate = u64::from_le_bytes(d[20..28].try_into().unwrap());
+        let fund_fee_rate = u64::from_le_bytes(d[28..36].try_into().unwrap());
+        let creator_fee_rate = u64::from_le_bytes(d[108..116].try_into().unwrap());
         drop(config_data);
 
         // Read accumulated fees and pool flags from PoolState (zero-copy)
@@ -469,7 +475,6 @@ impl RaydiumCPMM {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
-        _pool_fees: &[u32],
     ) -> Result<Self> {
         let pool_acc = &accounts[dyn_start + D_POOL];
         let base_vault = &accounts[dyn_start + D_BASE_VAULT];
@@ -514,6 +519,7 @@ impl RaydiumCPMM {
             protocol_fee_rate,
             fund_fee_rate,
             total_fee_numerator,
+            fee_factor: { let f = 1.0 - total_fee_numerator as f64 / 1_000_000.0; (f, f) },
             buy_max_in: 0,
             buy_max_out: 0,
             sell_max_in: 0,
@@ -689,7 +695,7 @@ mod tests {
         let dyn_end: usize = accounts.len();
 
         // Fees are now read directly from accounts in new() via read_fees()
-        let mut cpmm = RaydiumCPMM::new(&accounts, static_base, dyn_start, dyn_end, &[])
+        let mut cpmm = RaydiumCPMM::new(&accounts, static_base, dyn_start, dyn_end)
             .expect("RaydiumCPMM::new failed");
 
         cpmm.prepare_for_execution(&accounts);

@@ -8,7 +8,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
 use super::formulas::{analytical_estimate, analytical_estimate_nhop, analytical_optimal_multibin};
-use super::pool_model::{extract_pool_model, extract_pool_model_both, PoolModel};
+use super::pool_model::{extract_pool_model, PoolModel};
 
 /// Minimum search amount in lamports
 const MIN_SEARCH_AMOUNT: u64 = 1_000;
@@ -123,42 +123,68 @@ struct AnalyticalCandidate {
     sell_model: PoolModel,
 }
 
-/// Pre-extracted pool model with its instance index, direction, and marginal price.
-struct PoolEntry {
-    idx: usize,
-    model: PoolModel,
-    marginal_price: f64,
+/// Pool with both directional marginal prices for Phase 1 ranking.
+struct PoolPrices {
+    pool_index: usize,
+    buy_price: f64,   // start_token → middle_mint (higher = better to buy from)
+    sell_price: f64,   // middle_mint → start_token (higher = better to sell to)
 }
 
-/// Find top-2 entries by marginal_price from a slice. Returns (best, second_best).
-#[inline]
-fn top2_by_marginal_price(entries: &[PoolEntry]) -> [Option<usize>; 2] {
-    let mut best: Option<(usize, f64)> = None;
-    let mut second: Option<(usize, f64)> = None;
+/// Ranked index into PoolPrices: [best, second_best] by the given price direction.
+struct Ranked {
+    best: Option<usize>,
+    second: Option<usize>,
+}
 
-    for (i, entry) in entries.iter().enumerate() {
-        let score = entry.marginal_price;
-        match best {
-            Some((_, bp)) if score <= bp => {
-                if second.map_or(true, |(_, sp)| score > sp) {
-                    second = Some((i, score));
+impl Ranked {
+    fn insert(&mut self, idx: usize, score: f64, pools: &[PoolPrices], get_price: fn(&PoolPrices) -> f64) {
+        match self.best {
+            Some(b) if score <= get_price(&pools[b]) => {
+                if self.second.map_or(true, |s| score > get_price(&pools[s])) {
+                    self.second = Some(idx);
                 }
             }
             _ => {
-                second = best;
-                best = Some((i, score));
+                self.second = self.best;
+                self.best = Some(idx);
             }
         }
     }
-
-    [best.map(|(i, _)| i), second.map(|(i, _)| i)]
 }
 
-/// Build edges from instance pairs and find the best candidate using
-/// pure analytical formulas — no fast_quote, no swap_base_in.
+/// Compute marginal prices for both directions of a pool (buy + sell).
+/// Only calls get_prices() + get_fee_factor() — no vault reads, no model extraction.
+#[inline]
+fn compute_marginal_prices(
+    instance: &dyn ProgramMeta,
+    start_token: Pubkey,
+    middle_mint: Pubkey,
+) -> (f64, f64) {
+    let (base_mint, _) = instance.get_mints();
+    let (price_base_to_quote, price_quote_to_base) = instance.get_prices().unwrap_or((0.0, 0.0));
+    let (fee_base_to_quote, fee_quote_to_base) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
+
+    let buy_marginal = if start_token == *base_mint {
+        price_base_to_quote * fee_base_to_quote
+    } else {
+        price_quote_to_base * fee_quote_to_base
+    };
+    let sell_marginal = if middle_mint == *base_mint {
+        price_base_to_quote * fee_base_to_quote
+    } else {
+        price_quote_to_base * fee_quote_to_base
+    };
+
+    (buy_marginal, sell_marginal)
+}
+
+/// Two-phase candidate search using analytical formulas.
 ///
-/// O(n) approach: extract all pool models in a single pass, group by middle_mint,
-/// then test only the top-2 buy × top-2 sell combos per group (≤ 4 pairs).
+/// Phase 1 (O(n), cheap): compute both directional marginal prices per pool,
+///   track best/second-best buy and sell in a single pass.
+/// Phase 2 (≤ 2 pairs): try (best_buy, best_sell) first — if same pool, fall back
+///   to the better of (best_buy, 2nd_sell) or (2nd_buy, best_sell).
+///   Only extract full PoolModel for the pair actually tested.
 fn find_best_candidate_analytical(
     instances: &[ProgramInstance],
     config: &BotConfig,
@@ -166,198 +192,91 @@ fn find_best_candidate_analytical(
     let start_token = config.start_token.unwrap_or(WSOL);
     let max_amount_in = config.max_amount_in;
 
-    // ── Single pass: extract models, group by middle_mint ────────────────
-    // Each instance that involves start_token produces:
-    //   - a buy entry (input=start_token, output=middle_mint)
-    //   - a sell entry (input=middle_mint, output=start_token)
-    let n = instances.len();
-    let mut group_mints: Vec<Pubkey> = Vec::with_capacity(n);
-    let mut buy_groups: Vec<Vec<PoolEntry>> = Vec::with_capacity(n);
-    let mut sell_groups: Vec<Vec<PoolEntry>> = Vec::with_capacity(n);
+    // Resolve the middle_mint from the first instance
+    let (base_mint, quote_mint) = instances.first()?.get_mints();
+    let middle_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
 
-    for (i, inst) in instances.iter().enumerate() {
-        let (base, quote) = inst.get_mints();
+    // Phase 1: single pass — compute marginal prices, track top-2 buy and sell
+    let mut pools: Vec<PoolPrices> = Vec::with_capacity(instances.len());
+    let mut buy_rank = Ranked { best: None, second: None };
+    let mut sell_rank = Ranked { best: None, second: None };
 
-        let middle_mint = if *base == start_token {
-            *quote
-        } else if *quote == start_token {
-            *base
-        } else {
-            continue;
-        };
+    for (pool_index, instance) in instances.iter().enumerate() {
+        let (buy_marginal, sell_marginal) = compute_marginal_prices(instance, start_token, middle_mint);
 
-        // Find or create the group for this middle_mint
-        let group_idx = if let Some(pos) = group_mints.iter().position(|m| *m == middle_mint) {
-            pos
-        } else {
-            group_mints.push(middle_mint);
-            buy_groups.push(Vec::with_capacity(4));
-            sell_groups.push(Vec::with_capacity(4));
-            group_mints.len() - 1
-        };
-
-        // Extract both directions from shared data in one pass
-        let (buy_model, sell_model) = extract_pool_model_both(inst, start_token, middle_mint);
-
-        if !matches!(buy_model, PoolModel::Opaque { .. }) {
-            let mp = buy_model.marginal_price();
-            buy_groups[group_idx].push(PoolEntry { idx: i, model: buy_model, marginal_price: mp });
-        }
-
-        if !matches!(sell_model, PoolModel::Opaque { .. }) {
-            let mp = sell_model.marginal_price();
-            sell_groups[group_idx].push(PoolEntry { idx: i, model: sell_model, marginal_price: mp });
-        }
-    }
-
-    // ── Per group: top-2 buy × top-2 sell, test ≤ 4 combos ─────────────
-    let mut best: Option<AnalyticalCandidate> = None;
-
-    for (g, middle_mint) in group_mints.iter().enumerate() {
-        let buys = &buy_groups[g];
-        let sells = &sell_groups[g];
-        if buys.is_empty() || sells.is_empty() {
+        if buy_marginal <= 0.0 && sell_marginal <= 0.0 {
             continue;
         }
 
-        let top_buys = top2_by_marginal_price(buys);
-        let top_sells = top2_by_marginal_price(sells);
+        let idx = pools.len();
+        pools.push(PoolPrices { pool_index, buy_price: buy_marginal, sell_price: sell_marginal });
 
-        for buy_local in top_buys.into_iter().flatten() {
-            let buy = &buys[buy_local];
-            for sell_local in top_sells.into_iter().flatten() {
-                let sell = &sells[sell_local];
-
-                // Cannot use the same pool for both legs
-                if buy.idx == sell.idx {
-                    continue;
-                }
-
-                let Some((opt_amount, est_profit, dlmm_capped)) =
-                    analytical_estimate(&buy.model, &sell.model, max_amount_in)
-                else {
-                    continue;
-                };
-
-                if opt_amount < MIN_SEARCH_AMOUNT || est_profit <= config.min_profit {
-                    continue;
-                }
-
-                // msg! removed — runs on every candidate pair, wastes ~200+ CU each
-                // (f64 formatting + Pubkey::to_string heap alloc + sol_log syscall)
-
-
-                if best.as_ref().map_or(true, |b| est_profit > b.estimated_profit) {
-                    best = Some(AnalyticalCandidate {
-                        buy_idx: buy.idx,
-                        sell_idx: sell.idx,
-                        input_mint: start_token,
-                        middle_mint: *middle_mint,
-                        optimal_amount: opt_amount,
-                        estimated_profit: est_profit,
-                        dlmm_capped,
-                        buy_model: buy.model.clone(),
-                        sell_model: sell.model.clone(),
-                    });
-                }
-            }
+        if buy_marginal > 0.0 {
+            buy_rank.insert(idx, buy_marginal, &pools, |p| p.buy_price);
+        }
+        if sell_marginal > 0.0 {
+            sell_rank.insert(idx, sell_marginal, &pools, |p| p.sell_price);
         }
     }
 
-    best
-}
+    let best_buy = buy_rank.best?;
+    let best_sell = sell_rank.best?;
 
-/// Find the best candidate within a group of instance indices sharing the same token.
-/// Uses top-2 pruning by marginal price to test ≤ 4 combos instead of O(k²).
-fn find_best_candidate_for_group(
-    instances: &[ProgramInstance],
-    group: &[usize],
-    start_token: Pubkey,
-    middle_mint: Pubkey,
-    max_amount_in: u64,
-    min_profit: i128,
-) -> Option<AnalyticalCandidate> {
-    // Extract models + marginal prices for buy and sell directions (shared lookups)
-    let mut buy_entries: Vec<PoolEntry> = Vec::with_capacity(group.len());
-    let mut sell_entries: Vec<PoolEntry> = Vec::with_capacity(group.len());
-
-    for &i in group {
-        let (buy_model, sell_model) = extract_pool_model_both(&instances[i], start_token, middle_mint);
-
-        if matches!(buy_model, PoolModel::Opaque { .. }) {
-            debug_eprintln!("  pair: buy_pool[{}]={} -> Opaque, skip", i, instances[i].name());
-        } else {
-            let mp = buy_model.marginal_price();
-            buy_entries.push(PoolEntry { idx: i, model: buy_model, marginal_price: mp });
+    // Phase 2: build candidate pairs — try best first, fall back on collision
+    // If best_buy and best_sell are different pools, that's the only pair to check.
+    // If same pool, try both alternatives and pick the better one.
+    let pairs: Vec<(usize, usize)> = if pools[best_buy].pool_index != pools[best_sell].pool_index {
+        vec![(best_buy, best_sell)]
+    } else {
+        let mut fallbacks = Vec::with_capacity(2);
+        if let Some(sb) = buy_rank.second {
+            fallbacks.push((sb, best_sell));
         }
-
-        if matches!(sell_model, PoolModel::Opaque { .. }) {
-            debug_eprintln!("  pair: sell_pool[{}]={} -> Opaque, skip", i, instances[i].name());
-        } else {
-            let mp = sell_model.marginal_price();
-            sell_entries.push(PoolEntry { idx: i, model: sell_model, marginal_price: mp });
+        if let Some(ss) = sell_rank.second {
+            fallbacks.push((best_buy, ss));
         }
-    }
-
-    if buy_entries.is_empty() || sell_entries.is_empty() {
-        return None;
-    }
-
-    let top_buys = top2_by_marginal_price(&buy_entries);
-    let top_sells = top2_by_marginal_price(&sell_entries);
+        fallbacks
+    };
 
     let mut best: Option<AnalyticalCandidate> = None;
 
-    for buy_local in top_buys.into_iter().flatten() {
-        let buy = &buy_entries[buy_local];
-        for sell_local in top_sells.into_iter().flatten() {
-            let sell = &sell_entries[sell_local];
+    for (bi, si) in pairs {
+        let buy = &pools[bi];
+        let sell = &pools[si];
 
-            if buy.idx == sell.idx {
-                continue;
-            }
+        if buy.buy_price * sell.sell_price <= 1.0 {
+            continue;
+        }
 
-            let estimate = analytical_estimate(&buy.model, &sell.model, max_amount_in);
+        let buy_model = extract_pool_model(&instances[buy.pool_index], start_token);
+        let sell_model = extract_pool_model(&instances[sell.pool_index], middle_mint);
 
-            match &estimate {
-                Some((optimal_amount, estimated_profit, dlmm_capped)) => {
-                    debug_eprintln!(
-                        "  pair: buy_pool[{}]={} sell_pool[{}]={} -> optimal_amount={} estimated_profit={} dlmm_capped={}",
-                        buy.idx, buy.model.label(), sell.idx, sell.model.label(),
-                        *optimal_amount as f64 / 1e9, *estimated_profit as f64 / 1e9, dlmm_capped
-                    );
-                }
-                None => {
-                    debug_eprintln!(
-                        "  pair: buy_pool[{}]={} sell_pool[{}]={} -> analytical_estimate=None",
-                        buy.idx, buy.model.label(), sell.idx, sell.model.label()
-                    );
-                }
-            }
+        if matches!(buy_model, PoolModel::Opaque { .. }) || matches!(sell_model, PoolModel::Opaque { .. }) {
+            continue;
+        }
 
-            let Some((opt_amount, est_profit, dlmm_capped)) = estimate else {
-                continue;
-            };
+        let Some((optimal_amount, estimated_profit, dlmm_capped)) =
+            analytical_estimate(&buy_model, &sell_model, max_amount_in)
+        else {
+            continue;
+        };
 
-            if opt_amount < MIN_SEARCH_AMOUNT || est_profit <= min_profit {
-                debug_eprintln!("  pair: filtered (optimal_amount={} < MIN or estimated_profit={} <= min_profit={})",
-                    opt_amount, est_profit, min_profit);
-                continue;
-            }
+        if optimal_amount < MIN_SEARCH_AMOUNT || estimated_profit <= config.min_profit {
+            continue;
+        }
 
-            if best.as_ref().map_or(true, |b| est_profit > b.estimated_profit) {
-                best = Some(AnalyticalCandidate {
-                    buy_idx: buy.idx,
-                    sell_idx: sell.idx,
-                    input_mint: start_token,
-                    middle_mint,
-                    optimal_amount: opt_amount,
-                    estimated_profit: est_profit,
-                    dlmm_capped,
-                    buy_model: buy.model.clone(),
-                    sell_model: sell.model.clone(),
-                });
-            }
+        if best.as_ref().map_or(true, |b| estimated_profit > b.estimated_profit) {
+            best = Some(AnalyticalCandidate {
+                buy_idx: buy.pool_index,
+                sell_idx: sell.pool_index,
+                input_mint: start_token,
+                middle_mint,
+                optimal_amount,
+                estimated_profit,
+                dlmm_capped,
+                buy_model,
+                sell_model,
+            });
         }
     }
 
@@ -617,31 +536,7 @@ fn validate_and_build_path<'info>(
 
 /// Fully independent analytical arbitrage with mode dispatch.
 ///
-/// - Mode 0 (SINGLE_PAIR_MULTI_MARKET): 2-hop pair search across all instances
-/// - Mode 1 (MULTI_HOP_CHAIN): 3-hop chain search with N-pool closed-form
-/// - Mode 2 (MULTIPLE_TRADES): group by token, run 2-hop per group, pick best
-#[inline(never)]
-pub fn run_arbitrage_analytical<'info>(
-    accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
-    config: &mut BotConfig,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<Option<ArbitragePath>> {
-    match config.mode {
-        arb_mode::SINGLE_PAIR_MULTI_MARKET => {
-            run_analytical_2hop(accounts, instances, config, mint_fees)
-        }
-        arb_mode::MULTI_HOP_CHAIN => {
-            run_analytical_multihop(accounts, instances, config, mint_fees)
-        }
-        arb_mode::MULTIPLE_TRADES => {
-            run_analytical_multi_trade(accounts, instances, config, mint_fees)
-        }
-        _ => Err(error!(SolarBError::InvalidMode)),
-    }
-}
-
-/// 2-hop analytical arbitrage (mode 0: single pair, multi-market).
+/// 2-hop analytical arbitrage (single pair, multi-market).
 ///
 /// 1. Iterates all instance pairs, extracts PoolModels
 /// 2. Uses analytical formulas to find optimal amount + estimated profit per pair
@@ -649,7 +544,7 @@ pub fn run_arbitrage_analytical<'info>(
 /// 4. Validates with swap_base_in (1 call, or 8-iter golden section if DLMM-capped)
 /// 5. Returns ArbitragePath
 #[inline(never)]
-fn run_analytical_2hop<'info>(
+pub fn run_analytical_2hop<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -675,119 +570,6 @@ fn run_analytical_2hop<'info>(
 
 // ─── Multiple trades analytical (mode 2) ────────────────────────────────────
 
-/// Mode 2: group instances by their non-start token, run 2-hop per group, pick best.
-#[inline(never)]
-fn run_analytical_multi_trade<'info>(
-    accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
-    config: &mut BotConfig,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<Option<ArbitragePath>> {
-    let start_token = config.start_token.unwrap_or(WSOL);
-
-    // Group instance indices by their "other" mint (the one that's not start_token)
-    let n = instances.len();
-    let mut group_mints: Vec<Pubkey> = Vec::with_capacity(n);
-    let mut groups: Vec<Vec<usize>> = Vec::with_capacity(n);
-
-    for (idx, inst) in instances.iter().enumerate() {
-        let (base, quote) = inst.get_mints();
-        let other_mint = if *base == start_token {
-            *quote
-        } else if *quote == start_token {
-            *base
-        } else {
-            continue;
-        };
-
-        if let Some(pos) = group_mints.iter().position(|m| *m == other_mint) {
-            groups[pos].push(idx);
-        } else {
-            group_mints.push(other_mint);
-            groups.push(vec![idx]);
-        }
-    }
-
-    debug_eprintln!("[ANA-MULTI]: {} token groups", groups.len());
-
-    // Track top-3 candidates by estimated profit — avoids Vec + sort overhead.
-    const MAX_CANDIDATES: usize = 3;
-    let mut top_candidates: [Option<AnalyticalCandidate>; MAX_CANDIDATES] = [None, None, None];
-
-    for (group_idx, group) in groups.iter().enumerate() {
-        if group.len() < 2 {
-            continue;
-        }
-
-        debug_eprintln!(
-            "[ANA-MULTI]: evaluating group {} (mint={}, {} pools)",
-            group_idx, group_mints[group_idx], group.len()
-        );
-
-        if let Some(candidate) = find_best_candidate_for_group(
-            instances, group, start_token, group_mints[group_idx],
-            config.max_amount_in, config.min_profit,
-        ) {
-            debug_eprintln!(
-                "[ANA-MULTI]: {} candidate: buy_model={} sell_model={} optimal_amount={} estimated_profit={} dlmm_capped={}",
-                group_idx, candidate.buy_model.label(), candidate.sell_model.label(),
-                candidate.optimal_amount as f64 / 1e9, candidate.estimated_profit as f64 / 1e9, candidate.dlmm_capped
-            );
-            if candidate.estimated_profit > 0 {
-                // Insert into top-N sorted array (descending by profit)
-                let profit = candidate.estimated_profit;
-                let mut slot = MAX_CANDIDATES;
-                for j in (0..MAX_CANDIDATES).rev() {
-                    if top_candidates[j].as_ref().map_or(true, |c| profit > c.estimated_profit) {
-                        slot = j;
-                    } else {
-                        break;
-                    }
-                }
-                if slot < MAX_CANDIDATES {
-                    // Shift lower entries down
-                    for j in (slot + 1..MAX_CANDIDATES).rev() {
-                        top_candidates[j] = top_candidates[j - 1].take();
-                    }
-                    top_candidates[slot] = Some(candidate);
-                }
-            }
-        } else {
-            debug_eprintln!("Analytical multi-trade: group {} no candidate found", group_idx);
-        }
-    }
-
-    if top_candidates[0].is_none() {
-        debug_eprintln!("Analytical multi-trade: no candidate found");
-        return Ok(None);
-    }
-
-    // Try each candidate (best first): if it validates with profit, return it
-    for candidate_opt in top_candidates.iter() {
-        let Some(candidate) = candidate_opt else { break };
-
-        debug_eprintln!(
-            "Analytical multi-trade: buy_model={}, sell_model={}, optimal_amount={}, estimated_profit={}",
-            candidate.buy_model.label(),
-            candidate.sell_model.label(),
-            candidate.optimal_amount as f64 / 1_000_000_000.0,
-            candidate.estimated_profit as f64 / 1_000_000_000.0
-        );
-
-        if let Some(path) = validate_and_build_path(accounts, instances, candidate, config, "Analytical multi-trade", mint_fees)? {
-            if path.profit > 0 {
-                return Ok(Some(path));
-            }
-            debug_eprintln!("Analytical multi-trade: candidate validated but profit={}, trying next...", path.profit);
-            continue;
-        }
-        debug_eprintln!("Analytical multi-trade: candidate rejected, trying next...");
-    }
-
-    debug_eprintln!("Analytical multi-trade: all candidates rejected");
-    Ok(None)
-}
-
 // ─── Multi-hop analytical (mode 1) ─────────────────────────────────────────
 
 /// A candidate found by the multi-hop analytical search.
@@ -800,71 +582,83 @@ struct MultiHopCandidate {
     dlmm_capped: bool,
 }
 
-/// Pre-extracted pool info for indexed multi-hop search.
-struct HopEntry {
-    idx: usize,        // index into instances
-    other_mint: Pubkey, // the non-input mint (output of this hop)
-    model: PoolModel,
+/// Lightweight hop entry for Phase 1 — marginal prices only, no vault reads.
+struct LightHopEntry {
+    pool_index: usize,
+    other_mint: Pubkey,
+    marginal_price: f64,
 }
 
 /// Find the best 3-hop analytical candidate: start → A → B → start.
 ///
-/// Indexed approach: O(n) pre-pass to build mint→instances adjacency,
-/// then O(hop1 × avg_hop2 × hop3_lookup) instead of O(n³).
+/// Two-phase approach:
+/// Phase 1: build adjacency with marginal prices only (no vault reads).
+/// Phase 2: for each (hop1, hop2, hop3) triple, pre-filter with marginal price product,
+///   then extract full models only for promising triples.
 fn find_best_candidate_analytical_multihop(
     instances: &[ProgramInstance],
     config: &BotConfig,
 ) -> Option<MultiHopCandidate> {
     let start_token = config.start_token.unwrap_or(WSOL);
     let max_amount_in = config.max_amount_in;
-    let n = instances.len();
+    let pool_count = instances.len();
 
-    // ── Pre-pass: build adjacency by input mint ──────────────────────────
-    // hop1_entries: pools that accept start_token (start → mint_a)
-    // mid_entries: for each mint, pools that accept that mint (mint_a → mint_b)
-    // hop3_entries: pools that accept some mint and output start_token (mint_b → start)
-    let mut hop1_entries: Vec<HopEntry> = Vec::with_capacity(n);
-    // For hop3: index by the non-start mint (the input to hop3)
-    let mut hop3_mints: Vec<Pubkey> = Vec::with_capacity(n);
-    let mut hop3_groups: Vec<Vec<HopEntry>> = Vec::with_capacity(n);
+    // ── Phase 1: lightweight adjacency with marginal prices only ──────────
+    let mut hop1_entries: Vec<LightHopEntry> = Vec::with_capacity(pool_count);
+    let mut hop3_mints: Vec<Pubkey> = Vec::with_capacity(pool_count);
+    let mut hop3_groups: Vec<Vec<LightHopEntry>> = Vec::with_capacity(pool_count);
 
-    for (i, inst) in instances.iter().enumerate() {
-        let (base, quote) = inst.get_mints();
+    for (pool_index, instance) in instances.iter().enumerate() {
+        let (base_mint, quote_mint) = instance.get_mints();
 
-        // Check if this pool involves start_token
-        if *base == start_token || *quote == start_token {
-            let other = if *base == start_token { *quote } else { *base };
+        if *base_mint != start_token && *quote_mint != start_token {
+            continue;
+        }
+        let other_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
 
-            // Hop 1: start_token → other
-            let model = extract_pool_model(inst, start_token);
-            if !matches!(model, PoolModel::Opaque { .. }) {
-                hop1_entries.push(HopEntry { idx: i, other_mint: other, model });
-            }
+        let (price_base_to_quote, price_quote_to_base) = instance.get_prices().unwrap_or((0.0, 0.0));
+        let (fee_base_to_quote, fee_quote_to_base) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
 
-            // Hop 3: other → start_token (reverse direction)
-            let model3 = extract_pool_model(inst, other);
-            if !matches!(model3, PoolModel::Opaque { .. }) {
-                let pos = hop3_mints.iter().position(|m| *m == other);
-                let gidx = if let Some(p) = pos { p } else {
-                    hop3_mints.push(other);
+        // Hop 1 marginal price: start_token → other_mint
+        let hop1_marginal = if start_token == *base_mint {
+            price_base_to_quote * fee_base_to_quote
+        } else {
+            price_quote_to_base * fee_quote_to_base
+        };
+        if hop1_marginal > 0.0 {
+            hop1_entries.push(LightHopEntry { pool_index, other_mint, marginal_price: hop1_marginal });
+        }
+
+        // Hop 3 marginal price: other_mint → start_token
+        let hop3_marginal = if other_mint == *base_mint {
+            price_base_to_quote * fee_base_to_quote
+        } else {
+            price_quote_to_base * fee_quote_to_base
+        };
+        if hop3_marginal > 0.0 {
+            let group_index = match hop3_mints.iter().position(|m| *m == other_mint) {
+                Some(pos) => pos,
+                None => {
+                    hop3_mints.push(other_mint);
                     hop3_groups.push(Vec::with_capacity(4));
                     hop3_mints.len() - 1
-                };
-                hop3_groups[gidx].push(HopEntry { idx: i, other_mint: start_token, model: model3 });
-            }
+                }
+            };
+            hop3_groups[group_index].push(LightHopEntry {
+                pool_index, other_mint: start_token, marginal_price: hop3_marginal,
+            });
         }
     }
 
-    // ── Search: hop1 × hop2 × hop3 (hop3 via index lookup) ──────────────
+    // ── Phase 2: search with marginal price pre-filter, defer model extraction ──
     let mut best: Option<MultiHopCandidate> = None;
 
     for h1 in &hop1_entries {
         let mint_a = h1.other_mint;
 
-        // Hop 2: find all pools that accept mint_a and output mint_b != start_token
-        for (j, inst_2) in instances.iter().enumerate() {
-            if j == h1.idx { continue; }
-            let (base_2, quote_2) = inst_2.get_mints();
+        for (hop2_index, hop2_instance) in instances.iter().enumerate() {
+            if hop2_index == h1.pool_index { continue; }
+            let (base_2, quote_2) = hop2_instance.get_mints();
 
             let mint_b = if *base_2 == mint_a {
                 *quote_2
@@ -875,34 +669,58 @@ fn find_best_candidate_analytical_multihop(
             };
             if mint_b == start_token { continue; }
 
-            let model_2 = extract_pool_model(inst_2, mint_a);
-            if matches!(model_2, PoolModel::Opaque { .. }) { continue; }
-
-            // Hop 3: look up pools that accept mint_b and output start_token
+            // Hop 3: look up pools that accept mint_b
             let hop3_group = match hop3_mints.iter().position(|m| *m == mint_b) {
                 Some(pos) => &hop3_groups[pos],
                 None => continue,
             };
 
+            // Compute hop2 marginal price cheaply
+            let (p2_btq, p2_qtb) = hop2_instance.get_prices().unwrap_or((0.0, 0.0));
+            let (f2_btq, f2_qtb) = hop2_instance.get_fee_factor().unwrap_or((1.0, 1.0));
+            let hop2_marginal = if mint_a == *base_2 {
+                p2_btq * f2_btq
+            } else {
+                p2_qtb * f2_qtb
+            };
+            if hop2_marginal <= 0.0 { continue; }
+
             for h3 in hop3_group {
-                if h3.idx == h1.idx || h3.idx == j { continue; }
+                if h3.pool_index == h1.pool_index || h3.pool_index == hop2_index { continue; }
 
-                let models = [h1.model, model_2, h3.model];
-                let Some((opt_amount, est_profit, dlmm_capped)) =
-                    analytical_estimate_nhop(&models, max_amount_in)
-                else { continue };
-
-                if opt_amount < MIN_SEARCH_AMOUNT || est_profit <= config.min_profit {
+                // Cheap pre-filter: combined marginal prices must suggest profitability
+                if h1.marginal_price * hop2_marginal * h3.marginal_price <= 1.0 {
                     continue;
                 }
 
-                if best.as_ref().map_or(true, |b| est_profit > b.estimated_profit) {
+                // NOW extract full models — only for promising triples
+                let model_1 = extract_pool_model(&instances[h1.pool_index], start_token);
+                let model_2 = extract_pool_model(&instances[hop2_index], mint_a);
+                let model_3 = extract_pool_model(&instances[h3.pool_index], mint_b);
+
+                if matches!(model_1, PoolModel::Opaque { .. })
+                    || matches!(model_2, PoolModel::Opaque { .. })
+                    || matches!(model_3, PoolModel::Opaque { .. })
+                {
+                    continue;
+                }
+
+                let models = [model_1, model_2, model_3];
+                let Some((optimal_amount, estimated_profit, dlmm_capped)) =
+                    analytical_estimate_nhop(&models, max_amount_in)
+                else { continue };
+
+                if optimal_amount < MIN_SEARCH_AMOUNT || estimated_profit <= config.min_profit {
+                    continue;
+                }
+
+                if best.as_ref().map_or(true, |b| estimated_profit > b.estimated_profit) {
                     best = Some(MultiHopCandidate {
-                        indices: [h1.idx, j, h3.idx],
+                        indices: [h1.pool_index, hop2_index, h3.pool_index],
                         mints: [start_token, mint_a, mint_b, start_token],
                         models,
-                        optimal_amount: opt_amount,
-                        estimated_profit: est_profit,
+                        optimal_amount,
+                        estimated_profit,
                         dlmm_capped,
                     });
                 }
@@ -1032,9 +850,9 @@ fn build_edges_multihop(
     Ok(edges)
 }
 
-/// 3-hop analytical arbitrage (mode 1: MULTI_HOP_CHAIN).
+/// 3-hop analytical arbitrage (MULTI_HOP_CHAIN).
 #[inline(never)]
-fn run_analytical_multihop<'info>(
+pub fn run_analytical_multihop<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,

@@ -79,22 +79,9 @@ pub fn get_delta_amount_1_unsigned(
         }
         Some(final_result as u64)
     } else {
-        // Use U256 for large products
-        let product = mul_u256(liquidity, sqrt_price_diff);
-        let result = product.shift_right(64);
-
-        let has_remainder = (product.as_u128() & ((1u128 << 64) - 1)) > 0;
-        let final_result = if round_up && has_remainder {
-            result.add(U256::from(1u128))
-        } else {
-            result
-        };
-
-        let result_u128 = final_result.try_into_u128()?;
-        if result_u128 > u64::MAX as u128 {
-            return None;
-        }
-        Some(result_u128 as u64)
+        // u128 multiplication overflowed — match on-chain behavior which treats this
+        // as ExceedsMax (the swap step will treat it as "can't reach target")
+        None
     }
 }
 

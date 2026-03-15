@@ -1,9 +1,9 @@
-use crate::programs::ProgramMeta;
+use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke,
+    program::invoke_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -87,6 +87,8 @@ pub struct MeteoraDammV2<'info> {
     pub inverse_price: f64,
     pub fee_rate_a_to_b: f64,
     pub fee_rate_b_to_a: f64,
+    /// Pre-computed fee factor: (1 - fee_rate_a_to_b, 1 - fee_rate_b_to_a)
+    pub fee_factor: (f64, f64),
     pub buy_max_in: u128,
     pub buy_max_out: u64,
     pub sell_max_in: u128,
@@ -118,6 +120,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
     }
 
     fn name(&self) -> &'static str { "MeteoraDammV2" }
+    fn pool_kind(&self) -> PoolKind { PoolKind::MeteoraDammV2 }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         // Virtual reserves from concentrated liquidity parameters.
@@ -148,7 +151,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok((1.0 - self.fee_rate_a_to_b, 1.0 - self.fee_rate_b_to_a)) }
+    fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_in.min(u64::MAX as u128) as u64) } else { Ok(self.sell_max_in.min(u64::MAX as u128) as u64) }
@@ -176,7 +179,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
     fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
-        eprintln!("max_in: {}, max_out: {}", max_in, max_out);
+        debug_eprintln!("max_in: {}, max_out: {}", max_in, max_out);
         let amount_in = amount_in.min(max_in);
         debug_eprintln!("[DAMM V2] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
 
@@ -386,7 +389,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke(&swap_ix, accounts_slice)?;
+            invoke_unchecked(&swap_ix, accounts_slice)?;
         }
 
         Ok(())
@@ -493,7 +496,7 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke(&swap_ix, accounts_slice)?;
+            invoke_unchecked(&swap_ix, accounts_slice)?;
         }
         Ok(())
     }
@@ -527,17 +530,17 @@ impl<'info> MeteoraDammV2<'info> {
         dyn_start: usize,
         dyn_end: usize,
         clock: &Clock,
-        pool_fees: &[(Pubkey, f64)],
     ) -> Result<Self> {
         // Access accounts by indices
         let pool_id = accounts[dyn_start + D_POOL].clone();
         let pool_data = pool_id.try_borrow_data()?;
         // Read fields directly at byte offsets (after 8-byte discriminator) to avoid deserializing entire Pool
-        // Offsets: liquidity=352, sqrt_price=448, activation_type=464, collect_fee_mode=468
+        // Pool-relative offsets: liquidity=352, sqrt_price=448, activation_type=472, collect_fee_mode=476
+        // Raw offsets (with 8-byte disc): 360, 456, 480, 484
         let sqrt_price = u128::from_le_bytes(pool_data[456..472].try_into().unwrap());
         let liquidity = u128::from_le_bytes(pool_data[360..376].try_into().unwrap());
-        let activation_type = pool_data[472];
-        let collect_fee_mode = pool_data[476];
+        let activation_type = pool_data[480];
+        let collect_fee_mode = pool_data[484];
         // Read base/quote token pubkeys from pool state (no longer passed as accounts)
 
 
@@ -550,40 +553,13 @@ impl<'info> MeteoraDammV2<'info> {
         // debug_eprintln!("base_vault_amount: {:?}", base_vault_amount);
         // debug_eprintln!("quote_vault_amount: {:?}", quote_vault_amount);
 
-        // Compute actual fee using the full fee pipeline (base fee scheduler + dynamic fee)
-        // cliff_fee_numerator is the initial/max fee, but the actual fee decays over time
-        // via FeeSchedulerLinear/Exponential, and dynamic (volatility) fee is added on top
-        let fee_rate_a_to_b = pool_fees[0].1 / 10_000.0;
-        let fee_rate_b_to_a = pool_fees[1].1 / 10_000.0;
-
-        // let current_point = get_current_point(
-        //     pool.activation_type,
-        //     clock.slot,
-        //     clock.unix_timestamp as u64,
-        // )
-        // .unwrap_or(0);
-        // let max_fee = get_max_fee_numerator(pool.version).unwrap_or(500_000_000);
-        // let fallback_fee = pool.pool_fees.base_fee.cliff_fee_numerator as f64 / 1_000_000_000.0;
-        // let fee_rate_a_to_b = pool.pool_fees
-        //     .get_total_trading_fee_from_excluded_fee_amount(
-        //         current_point,
-        //         pool.activation_point,
-        //         0,
-        //         TradeDirection::AtoB,
-        //         max_fee,
-        //     )
-        //     .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
-        //     .unwrap_or(fallback_fee);
-        // let fee_rate_b_to_a = pool.pool_fees
-        //     .get_total_trading_fee_from_excluded_fee_amount(
-        //         current_point,
-        //         pool.activation_point,
-        //         0,
-        //         TradeDirection::BtoA,
-        //         max_fee,
-        //     )
-        //     .map(|fee_num| fee_num as f64 / 1_000_000_000.0)
-        //     .unwrap_or(fallback_fee);
+        // Read cliff_fee_numerator (Pool offset 0, raw offset 8) as conservative fee approximation.
+        // This is the initial/max base fee before schedule decay; actual fee may be lower.
+        // The full fee pipeline (schedule + dynamic) runs in fast_quote/swap_base_in via Pool methods.
+        let cliff_fee_numerator = u64::from_le_bytes(pool_data[8..16].try_into().unwrap());
+        let fee_rate = cliff_fee_numerator as f64 / 1_000_000_000.0;
+        let fee_rate_a_to_b = fee_rate;
+        let fee_rate_b_to_a = fee_rate;
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV2 {
@@ -603,6 +579,7 @@ impl<'info> MeteoraDammV2<'info> {
             dyn_start,
             fee_rate_a_to_b,
             fee_rate_b_to_a,
+            fee_factor: (1.0 - fee_rate_a_to_b, 1.0 - fee_rate_b_to_a),
             buy_max_in: 0,
             buy_max_out: 0,
             sell_max_in: 0,
@@ -774,7 +751,7 @@ mod tests {
 
         let clock = get_clock_from_rpc(&rpc_client).await;
 
-        let mut meteora = MeteoraDammV2::new(&accounts, static_base, dyn_start, dyn_end, &clock, &[])
+        let mut meteora = MeteoraDammV2::new(&accounts, static_base, dyn_start, dyn_end, &clock)
             .expect("MeteoraDammV2::new failed");
 
         meteora.prepare_for_execution(&accounts);
@@ -789,7 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_damm_v2_round_trip() {
-        let pool_id = Pubkey::from_str_const("EHxQbaBa2Mc4MjgGnTuf9iv2yZnzugwq4RcMEMgujN9d");
+        let pool_id = Pubkey::from_str_const("8CjMpwjfEePgyqKjwq62oSyTAR5JPiwFWCWNxCC9j7tH");
         let (mut meteora, accounts, clock) = build_from_pool_id(pool_id).await;
 
         let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
