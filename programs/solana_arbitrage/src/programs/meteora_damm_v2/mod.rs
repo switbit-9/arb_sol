@@ -19,7 +19,6 @@ pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
 use damm_v2::curve::{get_delta_amount_a_unsigned, get_delta_amount_a_unsigned_unchecked, get_delta_amount_b_unsigned, get_delta_amount_b_unsigned_unchecked};
 use ruint::aliases::U256;
 use damm_v2::u128x128_math::Rounding;
-use std::marker::PhantomData;
 
 const SWAP_DISC: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
 pub const PROGRAM_ID: Pubkey =
@@ -63,7 +62,7 @@ pub fn get_prices(sqrt_price: u128) -> Result<(f64, f64)> {
 }
 
 #[derive(Clone)]
-pub struct MeteoraDammV2<'info> {
+pub struct MeteoraDammV2 {
     // pub program_id: AccountInfo<'info>,
     // pub pool_id: AccountInfo<'info>,
     // pub base_vault: AccountInfo<'info>,
@@ -94,10 +93,9 @@ pub struct MeteoraDammV2<'info> {
     pub sell_max_in: u128,
     pub sell_max_out: u64,
     pub prepared: bool,
-    pub phantom: PhantomData<&'info ()>,
 }
 
-impl<'info> ProgramMeta for MeteoraDammV2<'info> {
+impl ProgramMeta for MeteoraDammV2 {
     fn get_id(&self) -> &Pubkey {
         &PROGRAM_ID
     }
@@ -177,11 +175,20 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         }
     }
 
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         debug_eprintln!("max_in: {}, max_out: {}", max_in, max_out);
         let amount_in = amount_in.min(max_in);
         debug_eprintln!("[DAMM V2] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
+
+        if amount_in == 0 {
+            return Ok((0, 0));
+        }
+
+        let pool = match self.pool.as_ref() {
+            Some(p) => p,
+            None => return Ok((0, 0)),
+        };
 
         let trade_direction = if input_mint == self.base_token_pk {
             TradeDirection::AtoB
@@ -191,7 +198,6 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
         // No referral for fast_quote, use u64::MAX as current_point (always past activation)
         let fee_mode = FeeMode::get_fee_mode(self.collect_fee_mode, trade_direction, false)?;
-        let pool = self.pool.as_ref().unwrap();
         let results = pool.get_swap_result_from_exact_input(
             amount_in,
             &fee_mode,
@@ -211,6 +217,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
+        if self.pool.is_none() {
+            let pool_id = &accounts[self.dyn_start + D_POOL];
+            let pool_data = pool_id.try_borrow_data()?;
+            self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
+        }
         let trade_direction = if input_mint == self.base_token_pk {
             TradeDirection::AtoB
         } else {
@@ -254,6 +265,11 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
+        if self.pool.is_none() {
+            let pool_id = &accounts[self.dyn_start + D_POOL];
+            let pool_data = pool_id.try_borrow_data()?;
+            self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
+        }
         let trade_direction = if output_mint == self.base_token_pk {
             TradeDirection::BtoA
         } else {
@@ -522,9 +538,9 @@ impl<'info> ProgramMeta for MeteoraDammV2<'info> {
 
 }
 
-impl<'info> MeteoraDammV2<'info> {
+impl MeteoraDammV2 {
 
-    pub fn new(
+    pub fn new<'info>(
         accounts: &[AccountInfo<'info>],
         static_base: usize,
         dyn_start: usize,
@@ -561,6 +577,8 @@ impl<'info> MeteoraDammV2<'info> {
         let fee_rate_a_to_b = fee_rate;
         let fee_rate_b_to_a = fee_rate;
 
+        debug_eprintln!("MeteoraDammV2: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_id.key, price, inverse_price, fee_rate);
+
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV2 {
             base_token_pk,
@@ -585,7 +603,6 @@ impl<'info> MeteoraDammV2<'info> {
             sell_max_in: 0,
             sell_max_out: 0,
             prepared: false,
-            phantom: PhantomData,
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)
@@ -593,7 +610,7 @@ impl<'info> MeteoraDammV2<'info> {
 
     /// Compute deferred fields: max amounts, transfer fee rates.
     /// Called only for instances that participate in a profitable arb path.
-    pub fn prepare_for_execution(
+    pub fn prepare_for_execution<'info>(
         &mut self,
         accounts: &[AccountInfo<'info>],
     ) {
@@ -700,7 +717,7 @@ mod tests {
     /// Returns (instance, accounts_vec, clock) ready for testing.
     async fn build_from_pool_id(
         pool_id: Pubkey,
-    ) -> (MeteoraDammV2<'static>, Vec<AccountInfo<'static>>, Clock) {
+    ) -> (MeteoraDammV2, Vec<AccountInfo<'static>>, Clock) {
         let rpc_client = get_rpc_client();
 
         // Fetch pool account

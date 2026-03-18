@@ -98,6 +98,7 @@ pub fn get_fees_int(base_vault: u64, quote_vault: u64) -> u64 {
     3000 // 0.30% default (> 98240 SOL market cap)
 }
 
+#[derive(Clone)]
 pub struct PumpAmm {
     // pub program_id: AccountInfo<'info>,
     // pub pool_id: AccountInfo<'info>,
@@ -149,7 +150,7 @@ impl ProgramMeta for PumpAmm {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = if max_in > 0 { amount_in.min(max_in) } else { amount_in };
         let max_out = if max_out > 0 { max_out } else { u64::MAX };
@@ -673,7 +674,7 @@ impl PumpAmm {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
-        pool_fees: &[u32],
+        pool_fee: u32,
     ) -> Result<Self> {
         let base_vault = &accounts[dyn_start + D_BASE_VAULT];
         let quote_vault = &accounts[dyn_start + D_QUOTE_VAULT];
@@ -693,12 +694,17 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
         // TODO: maket to run in test
         #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.04) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.02) as u64;
         let price = get_price_f64(base_vault_amount, quote_vault_amount);
-        // fee from client-side pool_fees[0] (millionths, e.g. 12500 = 1.25%)
-        let fee_numerator: u64 = pool_fees[0] as u64;
+        // fee from client-side pool_fee (millionths, e.g. 12500 = 1.25%)
+        // 0 = calculate from vault amounts on-chain
+        let fee_numerator: u64 = if pool_fee > 0 {
+            pool_fee as u64
+        } else {
+            get_fees_int(base_vault_amount, quote_vault_amount)
+        };
         
-        debug_eprintln!("pool_id {} , price {}, inverse_price {}",  *pool_acc.key, price, 1.0 / price);
+        debug_eprintln!("PumpAMM: pool_id {} , price {}, inverse_price {}, fee_rate {}",  *pool_acc.key, price, 1.0 / price, fee_numerator as f64 / FEE_DENOM as f64);
 
         // Defer max amounts, transfer fees, and is_merhem to prepare_for_execution()
         let instance = PumpAmm {
@@ -1062,7 +1068,7 @@ mod tests {
         ];
 
         let dyn_end = accounts.len();
-        let pump_amm = PumpAmm::new(accounts.as_slice(), static_base, dyn_start, dyn_end, &[fee as u32]).unwrap();
+        let pump_amm = PumpAmm::new(accounts.as_slice(), static_base, dyn_start, dyn_end, fee as u32).unwrap();
 
         (pump_amm, accounts)
     }

@@ -45,6 +45,7 @@ fn checked_ceil_div(a: u128, b: u128) -> Option<u128> {
     }
 }
 
+#[derive(Clone)]
 pub struct RaydiumAmm {
     pub pool_id: Pubkey,
     pub base_token_pk: Pubkey,   // coin_vault_mint
@@ -103,7 +104,7 @@ impl ProgramMeta for RaydiumAmm {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = amount_in.min(max_in);
 
@@ -476,6 +477,8 @@ impl RaydiumAmm {
 
         // Placeholder: fee rate will be read from on-chain account data
         let fee_rate = 0.0;
+
+        debug_eprintln!("RaydiumAmm: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_acc.key, price, 1.0 / price, fee_rate);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = RaydiumAmm {

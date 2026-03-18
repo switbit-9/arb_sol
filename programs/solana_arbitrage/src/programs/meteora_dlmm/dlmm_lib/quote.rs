@@ -349,6 +349,14 @@ pub fn quote_exact_in<'a>(
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
+            // debug_eprintln!(
+            //     "[DLMM] Bin {}: amount_x={} amount_y={} empty={}",
+            //     slim.active_id,
+            //     active_bin.amount_x,
+            //     active_bin.amount_y,
+            //     active_bin.is_empty(!swap_for_y),
+            // );
+
             // Incremental price computation
             let price = if active_bin.price != 0 {
                 let p = active_bin.price;
@@ -402,6 +410,15 @@ pub fn quote_exact_in<'a>(
                     (amount_left, std::cmp::min(amt_out, max_amount_out), fee_amt)
                 };
 
+                // debug_eprintln!(
+                //     "[DLMM] Bin {}: in={} out={} fee={} | remaining={}",
+                //     slim.active_id,
+                //     amount_in_with_fees,
+                //     amount_out,
+                //     bin_fee,
+                //     amount_left.saturating_sub(amount_in_with_fees),
+                // );
+
                 amount_left = amount_left.checked_sub(amount_in_with_fees).context("MathOverflow")?;
                 total_amount_out = total_amount_out.checked_add(amount_out).context("MathOverflow")?;
                 total_fee = total_fee.checked_add(bin_fee).context("MathOverflow")?;
@@ -417,7 +434,7 @@ pub fn quote_exact_in<'a>(
                 }
             } else {
                 #[cfg(any(test, feature = "debug"))]
-                debug_eprintln!("loop: slim.active_id: {}", slim.active_id);
+                // debug_eprintln!("loop: slim.active_id: {}", slim.active_id);
                 let old_active_id = slim.active_id;
                 // Inlined advance_active_bin
                 slim.active_id = if swap_for_y {

@@ -34,8 +34,7 @@ use programs::{
     RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
 };
 use utils::bot_config::BotConfig;
-use utils::token::{extract_mint_fee, get_transfer_fees, MintFee};
-use utils::utils::parse_token_account;
+use utils::token::{get_transfer_fees, MintFee};
 
 #[cfg(test)]
 use crate::utils::test_utils::write_results_to_file;
@@ -87,6 +86,13 @@ pub struct InstructionData {
     /// e.g. [3, 2, 0, 0] = group 0 has 3 pools (pool_types[0..3]), group 1 has 2 pools (pool_types[3..5]).
     /// All zeros = fall back to parsing all pools at once.
     pub group_sizes: [u8; 4],
+    /// Transfer fee basis points per mint (same order as mints in remaining accounts)
+    pub mint_fee_bps: Vec<u16>,
+    /// Transfer fee max per mint (same order as mints in remaining accounts)
+    pub mint_fee_max: Vec<u64>,
+    /// Static pool fee per pool in millionths (denominator = 1_000_000).
+    /// Same order as pool_types. 0 = use on-chain fee.
+    pub pool_fees: Vec<u32>,
 }
 
 #[derive(Accounts)]
@@ -116,7 +122,11 @@ fn start_bot<'info>(
     let pool_start = shared_statics_start + data.shared_statics_len as usize;
 
     let user_token_account = &accounts[5];
-    let max_amount_in = parse_token_account(user_token_account)?.amount;
+    let max_amount_in = u64::from_le_bytes(
+        user_token_account.try_borrow_data()?[64..72]
+            .try_into()
+            .unwrap(),
+    );
     if max_amount_in == 0 {
         return Err(error!(SolarBError::InsufficientFunds));
     }
@@ -136,6 +146,87 @@ fn start_bot<'info>(
     }
 }
 
+/// Compare the analytical optimal against a high-precision golden section search
+/// that uses real `swap_base_in` calls — the ground truth.
+#[cfg(test)]
+fn compare_golden_vs_analytical<'info>(
+    accounts: &[AccountInfo<'info>],
+    instances: &mut [ProgramInstance],
+    config: &BotConfig,
+    mint_fees: &[(Pubkey, MintFee)],
+    actual_path: &Option<ArbitragePath>,
+) {
+
+    debug_eprintln!("==============================================");
+    use arbitrage::golden_search::golden_search_2hop;
+    
+    let golden_result = golden_search_2hop(accounts, instances, config, mint_fees);
+
+    let (golden_amount, golden_profit) = match &golden_result {
+        Some(golden) => (golden.optimal_amount, golden.profit),
+        None => (0, 0),
+    };
+
+    let (actual_amount, actual_profit) = match actual_path {
+        Some(actual) => (actual.start_amount, actual.profit),
+        None => (0, 0),
+    };
+
+    let profit_gap_pct = if golden_profit > 0 {
+        ((golden_profit - actual_profit) as f64 / golden_profit as f64).abs() * 100.0
+    } else { 0.0 };
+
+    let amount_diff_pct = if golden_amount > 0 {
+        ((actual_amount as f64 - golden_amount as f64) / golden_amount as f64).abs() * 100.0
+    } else { 0.0 };
+
+    eprintln!("\n╔══════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  GOLDEN (swap_base_in) vs ACTUAL (run_analytical_2hop)          ║");
+    eprintln!("╠══════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  Golden:      amount={:>15}     profit={:>12.6} SOL{}",
+        golden_amount, golden_profit as f64 / 1e9,
+        if golden_result.is_none() { "  (no path)" } else { "" });
+    eprintln!("║  Actual(2hop): amount={:>15}     profit={:>12.6} SOL{}",
+        actual_amount, actual_profit as f64 / 1e9,
+        if actual_path.is_none() { "  (no path)" } else { "" });
+    eprintln!("╠══════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  Amount diff:  {:.4}%", amount_diff_pct);
+    eprintln!("║  Profit gap:   {:.4}%", profit_gap_pct);
+    eprintln!("║  Same path:    {}", match (&golden_result, actual_path) {
+        (Some(g), Some(a)) if a.edges.len() >= 2 =>
+            if *instances[g.buy_idx].get_pool_id() == a.edges[0].pool_id
+                && *instances[g.sell_idx].get_pool_id() == a.edges[1].pool_id { "YES" } else { "NO" },
+        _ => "N/A",
+    });
+    eprintln!("║  Result:       {}", if profit_gap_pct < 5.0 { "PASS" } else { "CHECK" });
+    eprintln!("╠══════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  GOLDEN PATH:");
+    if let Some(g) = &golden_result {
+        let buy = &instances[g.buy_idx];
+        let sell = &instances[g.sell_idx];
+        let start_token = config.start_token.unwrap_or(WSOL);
+        let (base_mint, quote_mint) = buy.get_mints();
+        let middle_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
+        eprintln!("║    buy:  [{}] {} -> {} (pool {})",
+            buy.name(), start_token, middle_mint, buy.get_pool_id());
+        eprintln!("║    sell: [{}] {} -> {} (pool {})",
+            sell.name(), middle_mint, start_token, sell.get_pool_id());
+    } else {
+        eprintln!("║    (none)");
+    }
+    eprintln!("║  ACTUAL PATH:");
+    if let Some(actual) = actual_path {
+        for (i, edge) in actual.edges.iter().enumerate() {
+            let label = if i == 0 { "buy" } else { "sell" };
+            eprintln!("║    {}:  {} -> {} (pool {})",
+                label, edge.left.mint_account, edge.right.mint_account, edge.pool_id);
+        }
+    } else {
+        eprintln!("║    (none)");
+    }
+    eprintln!("╚══════════════════════════════════════════════════════════════════╝\n");
+}
+
 /// Grouped flow for SINGLE_PAIR and MULTIPLE_TRADES modes.
 /// Iterates mint groups lazily: parse + evaluate group 0 first, only parse group 1 if no profit.
 /// SINGLE_PAIR is just 1 iteration (all pools in one group).
@@ -150,7 +241,6 @@ fn start_bot_grouped<'info>(
     max_amount_in: u64,
 ) -> Result<Option<ArbitragePath>> {
     let test_mode = data.test;
-    let epoch = clock.epoch;
 
     // Determine groups: for MULTIPLE_TRADES use group_sizes, for SINGLE_PAIR = 1 group with all pools
     let effective_groups: [u8; 4] = if data.mode == arb_mode::MULTIPLE_TRADES && data.group_sizes[0] > 0 {
@@ -160,9 +250,9 @@ fn start_bot_grouped<'info>(
         [total_pools, 0, 0, 0]
     };
 
-    // WSOL mint fee is shared across all groups
+    // WSOL never has Token-2022 transfer fees
     let wsol_mint_acc = &accounts[4];
-    let wsol_fee = extract_mint_fee(wsol_mint_acc, epoch)?;
+    let wsol_fee = MintFee::ZERO;
 
     let mut pool_idx_offset = 0usize;
     for g in 0..4usize {
@@ -178,7 +268,10 @@ fn start_bot_grouped<'info>(
         // Mint fees: WSOL + this group's mint (mint index g+1 for MULTIPLE_TRADES, mint index 1 for SINGLE_PAIR)
         let group_mint_idx = if data.mode == arb_mode::MULTIPLE_TRADES { g + 1 } else { 1 };
         let group_mint_acc = &accounts[4 + group_mint_idx * 2];
-        let group_mint_fee = extract_mint_fee(group_mint_acc, epoch)?;
+        let group_mint_fee = MintFee {
+            bps: data.mint_fee_bps.get(group_mint_idx).copied().unwrap_or(0),
+            max: data.mint_fee_max.get(group_mint_idx).copied().unwrap_or(0),
+        };
         let mint_fees = vec![
             (*wsol_mint_acc.key, wsol_fee),
             (*group_mint_acc.key, group_mint_fee),
@@ -199,9 +292,17 @@ fn start_bot_grouped<'info>(
             test_mode,
         );
 
+        #[cfg(test)]
+        let mut comparison_instances = instances.clone();
+        #[cfg(test)]
+        let mut simulation_instances = instances.clone();
+
         let arbitrage_path = run_analytical_2hop(
             accounts, &mut instances, &mut group_config, &mint_fees,
         )?;
+
+        #[cfg(test)]
+        compare_golden_vs_analytical(accounts, &mut comparison_instances, &group_config, &mint_fees, &arbitrage_path);
 
         let Some(mut arb_path) = arbitrage_path else {
             continue;
@@ -209,17 +310,18 @@ fn start_bot_grouped<'info>(
 
         for edge in &arb_path.edges {
             if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-                inst.prepare_for_execution(accounts);
+                inst.prepare_for_execution(accounts, &group_config.clock);
             }
         }
 
         let sim_profit = run_simulation(
-            accounts, &arb_path, &mut instances, &mut group_config, &mint_fees,
+            accounts, &arb_path, &mut simulation_instances, &mut group_config, &mint_fees,
         )?;
 
         if sim_profit <= group_config.min_profit
             || (!test_mode && arb_path.profit <= group_config.min_profit)
         {
+            debug_eprintln!("No Profit");
             continue;
         }
 
@@ -253,12 +355,12 @@ fn start_bot_multihop<'info>(
 ) -> Result<Option<ArbitragePath>> {
     let test_mode = data.test;
     let num_mints = data.mints as usize;
-    let epoch = clock.epoch;
 
     let mut mint_fees: Vec<(Pubkey, MintFee)> = Vec::with_capacity(num_mints);
     for i in 0..num_mints {
         let mint_acc = &accounts[4 + i * 2];
-        let fee = extract_mint_fee(mint_acc, epoch)?;
+        // WSOL (index 0) never has Token-2022 transfer fees
+        let fee = if i == 0 { MintFee::ZERO } else { MintFee { bps: data.mint_fee_bps[i], max: data.mint_fee_max[i] } };
         mint_fees.push((*mint_acc.key, fee));
     }
 
@@ -299,7 +401,7 @@ fn start_bot_multihop<'info>(
 
     for edge in &arbitrage_path.edges {
         if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-            inst.prepare_for_execution(accounts);
+            inst.prepare_for_execution(accounts, &bot_config.clock);
         }
     }
 
@@ -339,7 +441,7 @@ fn parse_accounts<'info>(
     clock: &Clock,
     pool_idx_start: usize,
     pool_idx_end: usize,
-) -> Result<Vec<ProgramInstance<'info>>> {
+) -> Result<Vec<ProgramInstance>> {
     // Compute dynamic account offset by skipping pools before pool_idx_start
     let mut index: usize = pool_start;
     for i in 0..pool_idx_start {
@@ -357,6 +459,8 @@ fn parse_accounts<'info>(
 
     for i in pool_idx_start..pool_idx_end {
         let span = data.pool_lengths[i] as usize;
+        let pool_fee = if i < data.pool_fees.len() { data.pool_fees[i] } else { 0 };
+
         if span == 0 {
             continue;
         }
@@ -372,7 +476,7 @@ fn parse_accounts<'info>(
         let instance = match dex_type {
             dex_type::PUMP_AMM => {
                 debug_eprintln!("PumpAmm");
-                create_pump_amm(accounts, static_base, index, end_index, &[])?
+                create_pump_amm(accounts, static_base, index, end_index, pool_fee)?
             }
             dex_type::METEORA_DAMM_V1 | dex_type::METEORA_DBC => {
                 debug_eprintln!("MeteoraDammV1");
@@ -426,9 +530,9 @@ fn create_pump_amm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-    pool_fees: &[u32],
-) -> Result<ProgramInstance<'info>> {
-    Ok(ProgramInstance::PumpAmm(PumpAmm::new(accounts, static_base, dyn_start, dyn_end, pool_fees)?))
+    pool_fee: u32,
+) -> Result<ProgramInstance> {
+    Ok(ProgramInstance::PumpAmm(PumpAmm::new(accounts, static_base, dyn_start, dyn_end, pool_fee)?))
 }
 
 #[inline(never)]
@@ -438,7 +542,7 @@ fn create_meteora_damm_v1<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::MeteoraDammV1(MeteoraDammV1::new(accounts, static_base, dyn_start, dyn_end, clock)?))
 }
 
@@ -449,7 +553,7 @@ fn create_meteora_damm_v2<'info>(
     dyn_start: usize,
     dyn_end: usize,
     clock: &Clock,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::MeteoraDammV2(MeteoraDammV2::new(accounts, static_base, dyn_start, dyn_end, clock)?))
 }
 
@@ -459,7 +563,7 @@ fn create_meteora_dlmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::MeteoraDlmm(MeteoraDlmm::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
@@ -469,7 +573,7 @@ fn create_orca_whirlpool<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::OrcaWhirlpool(OrcaWhirlpool::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
@@ -479,7 +583,7 @@ fn create_raydium_amm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::RaydiumAmm(RaydiumAmm::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
@@ -489,7 +593,7 @@ fn create_raydium_clmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::RaydiumCLMM(RaydiumCLMM::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
@@ -499,14 +603,14 @@ fn create_raydium_cpmm<'info>(
     static_base: usize,
     dyn_start: usize,
     dyn_end: usize,
-) -> Result<ProgramInstance<'info>> {
+) -> Result<ProgramInstance> {
     Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
 #[inline(never)]
 pub fn run_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     match config.mode {
@@ -525,7 +629,7 @@ pub fn run_arbitrage<'info>(
 #[inline(never)]
 fn run_single_pair_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     // Run both methods for testing
@@ -538,7 +642,7 @@ fn run_single_pair_arbitrage<'info>(
     debug_eprintln!("");
     debug_eprintln!("");
 
-    let candidate = find_cross_arbitrage_optimized(&edge_refs, instances, config)?;
+    let candidate = find_cross_arbitrage_optimized(accounts, &edge_refs, instances, config)?;
 
     // msg!("candidate={}", candidate.is_some());
 
@@ -621,7 +725,7 @@ fn run_single_pair_arbitrage<'info>(
 #[inline(never)]
 fn run_multi_hop_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     debug_eprintln!("Multi-hop chain: {} mints", config.mints);
@@ -631,7 +735,7 @@ fn run_multi_hop_arbitrage<'info>(
 
     // Use triangular arbitrage finder for 3+ hop chains
     let (path_edges, profit, _) =
-        find_triangular_arbitrage_iterative(&edge_refs, instances, config)?;
+        find_triangular_arbitrage_iterative(accounts, &edge_refs, instances, config)?;
 
     debug_eprintln!("Hop: edges={}, est_profit={}", path_edges.len(), profit);
 
@@ -702,7 +806,7 @@ fn run_multi_hop_arbitrage<'info>(
 #[inline(never)]
 fn run_multiple_trades_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance<'info>],
+    instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<Option<ArbitragePath>> {
     #[cfg(any(test, feature = "debug"))]
@@ -765,7 +869,7 @@ fn run_multiple_trades_arbitrage<'info>(
         debug_eprintln!("");
         debug_eprintln!("");
 
-        let candidate = find_cross_arbitrage_optimized(&group_edge_refs, instances, config)?;
+        let candidate = find_cross_arbitrage_optimized(accounts, &group_edge_refs, instances, config)?;
 
         // msg!("Multi grp: candidate={}", candidate.is_some());
 
@@ -861,7 +965,7 @@ fn run_multiple_trades_arbitrage<'info>(
 pub fn execute_arbitrage_path<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
-    instances: &mut Vec<ProgramInstance<'info>>,
+    instances: &mut Vec<ProgramInstance>,
     payer: &AccountInfo<'info>,
     num_mints: u8,
 ) -> Result<()> {
@@ -1011,7 +1115,7 @@ fn format_amount_i128(amount: i128, decimals: u8) -> String {
 fn run_simulation<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
-    instances: &mut Vec<ProgramInstance<'info>>,
+    instances: &mut Vec<ProgramInstance>,
     bot_config: &mut BotConfig,
     mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<i128> {
@@ -1169,6 +1273,9 @@ mod tests {
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
             test: false,
             group_sizes: [0; 4],
+            mint_fee_bps: vec![0; 2],
+            mint_fee_max: vec![0; 2],
+            pool_fees: vec![],
         }
     }
 

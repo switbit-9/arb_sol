@@ -38,7 +38,8 @@ impl PoolIndex {
 /// profit_pct is the arb cycle's profit fraction — DLMM uses it for bin-crossing decisions.
 /// Returns (0, 0) if the pool is not found or the quote fails.
 #[inline]
-fn edge_fast_quote(
+fn edge_fast_quote<'a>(
+    accounts: &[AccountInfo<'a>],
     edge: &Edge,
     amount_in: u64,
     instances: &mut [ProgramInstance],
@@ -47,7 +48,7 @@ fn edge_fast_quote(
 ) -> (u64, u64) {
     pool_index
         .find(&edge.pool_id)
-        .and_then(|idx| instances[idx].fast_quote(edge.left.mint_account, amount_in, profit_pct).ok())
+        .and_then(|idx| instances[idx].fast_quote(accounts, edge.left.mint_account, amount_in, profit_pct).ok())
         .unwrap_or((0, 0))
 }
 
@@ -89,7 +90,8 @@ fn top2_by_price<'a>(edges: &[&'a Edge]) -> (Option<&'a Edge>, Option<&'a Edge>)
 /// The caller should run `find_optimal_amount_in_v2` on it to find the real optimum.
 ///
 /// Path: Root -> Token B -> Root
-pub fn find_cross_arbitrage_optimized(
+pub fn find_cross_arbitrage_optimized<'info>(
+    accounts: &[AccountInfo<'info>],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -224,7 +226,7 @@ pub fn find_cross_arbitrage_optimized(
                             }
 
                             // ── Leg 1 (Buy): swap start_amount of root → token B ──
-                            let (buy_actual_in, amount_out) = edge_fast_quote(buy, start_amount, instances, &pool_index, profit_pct);
+                            let (buy_actual_in, amount_out) = edge_fast_quote(accounts, buy, start_amount, instances, &pool_index, profit_pct);
                             debug_eprintln!(
                                 "[ARB] Buy:  {:.9} SOL ({}) -> {:.6} tokens ({})",
                                 buy_actual_in as f64 / 1_000_000_000.0, buy_actual_in,
@@ -238,7 +240,7 @@ pub fn find_cross_arbitrage_optimized(
 
                             // ── Leg 2 (Sell): swap amount_b of token B → root ──
                             // The sell pool may clamp amount_b down to its own max.
-                            let (sell_actual_in, final_out) = edge_fast_quote(sell, amount_out, instances, &pool_index, profit_pct);
+                            let (sell_actual_in, final_out) = edge_fast_quote(accounts, sell, amount_out, instances, &pool_index, profit_pct);
                             debug_eprintln!(
                                 "[ARB] Sell: {:.6} tokens ({}) -> {:.9} SOL ({})",
                                 sell_actual_in as f64 / 1_000_000.0, sell_actual_in,
@@ -260,7 +262,7 @@ pub fn find_cross_arbitrage_optimized(
                                     continue;
                                 }
                                 let (re_actual_in, _) = edge_fast_quote(
-                                    buy, scaled_input as u64, instances, &pool_index, profit_pct,
+                                    accounts, buy, scaled_input as u64, instances, &pool_index, profit_pct,
                                 );
                                 effective_amount = re_actual_in as u128;
                                 if effective_amount == 0 {

@@ -73,6 +73,7 @@ fn read_vault_unlocked_amount(vault_account: &AccountInfo, current_time: u64) ->
     Ok(total_amount.saturating_sub(locked_profit))
 }
 
+#[derive(Clone)]
 pub struct MeteoraDammV1 {
     pub pool_id: Pubkey,
     pub base_token_pk: Pubkey,
@@ -134,7 +135,7 @@ impl ProgramMeta for MeteoraDammV1 {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = amount_in.min(max_in);
 
@@ -540,6 +541,8 @@ impl MeteoraDammV1 {
         } else {
             0.0
         };
+
+        debug_eprintln!("MeteoraDammV1: pool_id {} , price {}, inverse_price {}, fee {}/{}", *pool_account.key, price, 1.0 / price, trade_fee_numerator, trade_fee_denominator);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV1 {

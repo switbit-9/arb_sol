@@ -143,16 +143,20 @@ pub fn extract_pool_model_both(
                 if price <= 0.0 || !price.is_finite() {
                     return PoolModel::Opaque { marginal_price };
                 }
-                let active_bin_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(u64::MAX);
+                let active_bin_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
                 let bin_step_frac = instance.get_bin_step_frac();
-                let (max_in, price) = if active_bin_capacity == 0 {
+                let max_in = if active_bin_capacity > 0 {
+                    active_bin_capacity
+                } else {
+                    // Active bin depleted — multibin walker will skip to next bin.
+                    // Use a conservative 1-bin estimate from total so candidate isn't discarded.
                     let (total_max_in, _) = instance.get_cached_max_amounts(input_mint);
                     if total_max_in == 0 {
                         return PoolModel::Opaque { marginal_price };
                     }
-                    (total_max_in, price / (1.0 + bin_step_frac))
-                } else {
-                    (active_bin_capacity, price)
+                    // Cap to ~1 bin worth so single-bin fallback doesn't wildly overestimate
+                    let one_bin_est = (total_max_in as f64 * bin_step_frac).max(1.0) as u64;
+                    one_bin_est.min(total_max_in)
                 };
                 PoolModel::Linear { price, fee: fee_base_to_quote, max_in, bin_step_frac, marginal_price }
             };
@@ -185,20 +189,37 @@ pub fn extract_pool_model_both(
             (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
         }
 
-        PoolKind::OrcaWhirlpool | PoolKind::RaydiumCLMM => {
-            let (base_reserve, quote_reserve) = match instance.get_vault_amounts() {
-                Ok(v) => v,
-                Err(_) => return (buy_opaque, sell_opaque),
-            };
-            let base_reserve_f = base_reserve as f64;
-            let quote_reserve_f = quote_reserve as f64;
-            if base_reserve_f <= 0.0 || quote_reserve_f <= 0.0 {
-                return (buy_opaque, sell_opaque);
-            }
-
+        PoolKind::OrcaWhirlpool => {
+            let bin_step_frac = instance.get_bin_step_frac();
             let build_model = |input_mint: Pubkey, marginal_price: f64| -> PoolModel {
-                let (reserve_in, reserve_out) = if input_mint == *base_mint { (base_reserve_f, quote_reserve_f) } else { (quote_reserve_f, base_reserve_f) };
-                PoolModel::CpFeeOnInput { reserve_in, reserve_out, fee: fee_base_to_quote, marginal_price }
+                let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
+                if price <= 0.0 || !price.is_finite() {
+                    return PoolModel::Opaque { marginal_price };
+                }
+                let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
+                if active_capacity == 0 {
+                    return PoolModel::Opaque { marginal_price };
+                }
+                // Orca fee is symmetric; fee_base_to_quote == fee_quote_to_base
+                PoolModel::Linear { price, fee: fee_base_to_quote, max_in: active_capacity, bin_step_frac, marginal_price }
+            };
+            (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
+        }
+
+        // RaydiumCLMM: treat as Linear (like OrcaWhirlpool) — tick-based concentrated liquidity.
+        PoolKind::RaydiumCLMM => {
+            let bin_step_frac = instance.get_bin_step_frac();
+            let build_model = |input_mint: Pubkey, marginal_price: f64| -> PoolModel {
+                let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
+                if price <= 0.0 || !price.is_finite() {
+                    return PoolModel::Opaque { marginal_price };
+                }
+                let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
+                if active_capacity == 0 {
+                    return PoolModel::Opaque { marginal_price };
+                }
+                let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
+                PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
             };
             (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
         }
@@ -283,18 +304,17 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
                 return opaque;
             }
 
-            let active_bin_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(u64::MAX);
+            let active_bin_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
             let bin_step_frac = instance.get_bin_step_frac();
-
-            let (max_in, price) = if active_bin_capacity == 0 {
+            let max_in = if active_bin_capacity > 0 {
+                active_bin_capacity
+            } else {
                 let (total_max_in, _) = instance.get_cached_max_amounts(input_mint);
                 if total_max_in == 0 {
                     return opaque;
                 }
-                let conservative_price = price / (1.0 + bin_step_frac);
-                (total_max_in, conservative_price)
-            } else {
-                (active_bin_capacity, price)
+                let one_bin_est = (total_max_in as f64 * bin_step_frac).max(1.0) as u64;
+                one_bin_est.min(total_max_in)
             };
 
             PoolModel::Linear { price, fee: fee_factor, max_in, bin_step_frac, marginal_price }
@@ -323,24 +343,37 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
             }
         }
 
-        PoolKind::OrcaWhirlpool | PoolKind::RaydiumCLMM => {
-            let (base_reserve, quote_reserve) = match instance.get_vault_amounts() {
-                Ok(v) => v,
-                Err(_) => return opaque,
-            };
-            let fee_factor = fee_base_to_quote;
-
-            let (reserve_in, reserve_out) = if input_mint == *base_mint {
-                (base_reserve as f64, quote_reserve as f64)
-            } else {
-                (quote_reserve as f64, base_reserve as f64)
-            };
-
-            if reserve_in <= 0.0 || reserve_out <= 0.0 {
+        // OrcaWhirlpool: approximate as Linear using the active tick range.
+        // get_active_bin_max_in computes capacity analytically (no account reads).
+        // get_bin_segment walks tick arrays for the multi-bin walker.
+        PoolKind::OrcaWhirlpool => {
+            let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
+            if price <= 0.0 || !price.is_finite() {
                 return opaque;
             }
+            let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
+            if active_capacity == 0 {
+                return opaque;
+            }
+            let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
+            let bin_step_frac = instance.get_bin_step_frac();
+            PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
+        }
 
-            PoolModel::CpFeeOnInput { reserve_in, reserve_out, fee: fee_factor, marginal_price }
+        // RaydiumCLMM: treat as Linear (like OrcaWhirlpool) — tick-based concentrated liquidity.
+        // Active bin capacity from current tick range; geometric mean price over the range.
+        PoolKind::RaydiumCLMM => {
+            let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
+            if price <= 0.0 || !price.is_finite() {
+                return opaque;
+            }
+            let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
+            if active_capacity == 0 {
+                return opaque;
+            }
+            let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
+            let bin_step_frac = instance.get_bin_step_frac();
+            PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
         }
     }
 }

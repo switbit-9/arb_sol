@@ -1,286 +1,113 @@
-use crate::arb_mode;
 use crate::arbitrage::algo_2::ArbitragePath;
 use crate::arbitrage::base::Edge;
-use crate::programs::{ProgramInstance, ProgramMeta, SolarBError};
+use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use crate::utils::token::{get_transfer_fees, MintFee};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
-use super::formulas::{analytical_estimate, analytical_estimate_nhop, analytical_optimal_multibin};
-use super::pool_model::{extract_pool_model, PoolModel};
+use super::formulas::{analytical_estimate_nhop, analytical_optimal_multibin, analytical_optimal_2pool, pool_output};
+use super::pool_model::{extract_pool_model, extract_pool_model_both, PoolModel};
 
 /// Minimum search amount in lamports
 const MIN_SEARCH_AMOUNT: u64 = 1_000;
-/// Max golden section iterations for DLMM refinement
-/// 5 iterations narrows a 4x range to ~6.8% — sufficient precision for DLMM paths.
-const DLMM_REFINE_ITERATIONS: usize = 5;
-/// Convergence threshold for golden section (lamports)
-const CONVERGENCE: u64 = 50_000;
-
-/// Integer approximation of x / golden_ratio ≈ x * 0.6180339...
-/// Uses x * 6180 / 10000 (accurate to 0.005%, avoids f64 entirely).
-#[inline(always)]
-fn golden_div(x: u64) -> u64 {
-    ((x as u128) * 6180 / 10000) as u64
-}
-
-// ─── Simulation helpers ─────────────────────────────────────────────────────
-
-/// Simulate a 2-hop path: pool1(buy) -> pool2(sell) and return profit.
-#[inline]
-fn simulate_2hop<'info>(
-    accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
-    buy_idx: usize,
-    sell_idx: usize,
-    input_mint: Pubkey,
-    middle_mint: Pubkey,
-    amount_in: u64,
-    clock: &Clock,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<i128> {
-    let (base1, quote1) = instances[buy_idx].get_mints();
-    let (in_fee_1, out_fee_1) = get_transfer_fees(input_mint, base1, quote1, mint_fees);
-    let middle_amount = instances[buy_idx].swap_base_in(accounts, input_mint, amount_in, in_fee_1, out_fee_1, clock)?;
-    let (base2, quote2) = instances[sell_idx].get_mints();
-    let (in_fee_2, out_fee_2) = get_transfer_fees(middle_mint, base2, quote2, mint_fees);
-    let final_amount = instances[sell_idx].swap_base_in(accounts, middle_mint, middle_amount, in_fee_2, out_fee_2, clock)?;
-    Ok(final_amount as i128 - amount_in as i128)
-}
-
-/// Golden section search over [hint/2, min(hint*2, max_amount)] range,
-/// centered around the analytical optimal amount.
-fn golden_section_refine<'info>(
-    accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
-    buy_idx: usize,
-    sell_idx: usize,
-    input_mint: Pubkey,
-    middle_mint: Pubkey,
-    hint: u64,
-    max_amount: u64,
-    clock: &Clock,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<(u64, i128)> {
-    let mut a = (hint / 2).max(MIN_SEARCH_AMOUNT);
-    let mut b = (hint.saturating_mul(2)).min(max_amount);
-    let mut c = b - golden_div(b - a);
-    let mut d = a + golden_div(b - a);
-    let mut fc = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock, mint_fees,
-    )
-    .unwrap_or(i128::MIN);
-    let mut fd = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock, mint_fees,
-    )
-    .unwrap_or(i128::MIN);
-
-    for _ in 0..DLMM_REFINE_ITERATIONS {
-        if b - a < CONVERGENCE {
-            break;
-        }
-        if fc > fd {
-            b = d;
-            d = c;
-            fd = fc;
-            c = b - golden_div(b - a);
-            fc = simulate_2hop(
-                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, c, clock, mint_fees,
-            )
-            .unwrap_or(i128::MIN);
-        } else {
-            a = c;
-            c = d;
-            fc = fd;
-            d = a + golden_div(b - a);
-            fd = simulate_2hop(
-                accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, d, clock, mint_fees,
-            )
-            .unwrap_or(i128::MIN);
-        }
-    }
-
-    let optimal = (a + b) / 2;
-    let profit = simulate_2hop(
-        accounts, instances, buy_idx, sell_idx, input_mint, middle_mint, optimal, clock, mint_fees,
-    )?;
-    Ok((optimal, profit))
-}
 
 // ─── Candidate search ───────────────────────────────────────────────────────
 
-/// A candidate found by the analytical search.
+/// A candidate found by the marginal price search.
+#[derive(Clone, Copy)]
 struct AnalyticalCandidate {
     buy_idx: usize,  // index into instances
     sell_idx: usize,  // index into instances
     input_mint: Pubkey,
     middle_mint: Pubkey,
-    optimal_amount: u64,
-    estimated_profit: i128,
-    dlmm_capped: bool,
+    price_product: f64, // buy_price * sell_price — used for ranking
     buy_model: PoolModel,
     sell_model: PoolModel,
 }
 
-/// Pool with both directional marginal prices for Phase 1 ranking.
-struct PoolPrices {
-    pool_index: usize,
-    buy_price: f64,   // start_token → middle_mint (higher = better to buy from)
-    sell_price: f64,   // middle_mint → start_token (higher = better to sell to)
-}
 
-/// Ranked index into PoolPrices: [best, second_best] by the given price direction.
-struct Ranked {
-    best: Option<usize>,
-    second: Option<usize>,
-}
-
-impl Ranked {
-    fn insert(&mut self, idx: usize, score: f64, pools: &[PoolPrices], get_price: fn(&PoolPrices) -> f64) {
-        match self.best {
-            Some(b) if score <= get_price(&pools[b]) => {
-                if self.second.map_or(true, |s| score > get_price(&pools[s])) {
-                    self.second = Some(idx);
-                }
-            }
-            _ => {
-                self.second = self.best;
-                self.best = Some(idx);
-            }
-        }
-    }
-}
-
-/// Compute marginal prices for both directions of a pool (buy + sell).
-/// Only calls get_prices() + get_fee_factor() — no vault reads, no model extraction.
-#[inline]
-fn compute_marginal_prices(
-    instance: &dyn ProgramMeta,
-    start_token: Pubkey,
-    middle_mint: Pubkey,
-) -> (f64, f64) {
-    let (base_mint, _) = instance.get_mints();
-    let (price_base_to_quote, price_quote_to_base) = instance.get_prices().unwrap_or((0.0, 0.0));
-    let (fee_base_to_quote, fee_quote_to_base) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
-
-    let buy_marginal = if start_token == *base_mint {
-        price_base_to_quote * fee_base_to_quote
-    } else {
-        price_quote_to_base * fee_quote_to_base
-    };
-    let sell_marginal = if middle_mint == *base_mint {
-        price_base_to_quote * fee_base_to_quote
-    } else {
-        price_quote_to_base * fee_quote_to_base
-    };
-
-    (buy_marginal, sell_marginal)
-}
-
-/// Two-phase candidate search using analytical formulas.
+/// Candidate search using marginal prices only — no analytical formulas.
 ///
-/// Phase 1 (O(n), cheap): compute both directional marginal prices per pool,
-///   track best/second-best buy and sell in a single pass.
-/// Phase 2 (≤ 2 pairs): try (best_buy, best_sell) first — if same pool, fall back
-///   to the better of (best_buy, 2nd_sell) or (2nd_buy, best_sell).
-///   Only extract full PoolModel for the pair actually tested.
-fn find_best_candidate_analytical(
+/// 1. Extract both-direction PoolModels for every pool upfront in O(n).
+/// 2. Check all pairs (O(n²)) — marginal check (buy_price * sell_price > 1.0)
+///    eliminates unprofitable pairs. Opaque pools are filtered before the loop.
+/// 3. Rank by price product (buy_price * sell_price), keep top 3.
+///
+/// Optimal amounts and real profits are computed later via multibin/fast_quote.
+const MAX_CANDIDATES: usize = 3;
+
+fn find_candidates_analytical(
     instances: &[ProgramInstance],
     config: &BotConfig,
-) -> Option<AnalyticalCandidate> {
+) -> Vec<AnalyticalCandidate> {
     let start_token = config.start_token.unwrap_or(WSOL);
-    let max_amount_in = config.max_amount_in;
 
-    // Resolve the middle_mint from the first instance
-    let (base_mint, quote_mint) = instances.first()?.get_mints();
+    let Some(first) = instances.first() else { return Vec::new() };
+    let (base_mint, quote_mint) = first.get_mints();
     let middle_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
 
-    // Phase 1: single pass — compute marginal prices, track top-2 buy and sell
-    let mut pools: Vec<PoolPrices> = Vec::with_capacity(instances.len());
-    let mut buy_rank = Ranked { best: None, second: None };
-    let mut sell_rank = Ranked { best: None, second: None };
+    // Extract both directions per pool in a single call — get_prices(), get_fee_factor(),
+    // and get_vault_amounts() are shared between buy and sell instead of being repeated.
+    let models: Vec<(PoolModel, PoolModel)> = instances
+        .iter()
+        .map(|inst: &ProgramInstance| extract_pool_model_both(inst, start_token, middle_mint))
+        .collect();
 
-    for (pool_index, instance) in instances.iter().enumerate() {
-        let (buy_marginal, sell_marginal) = compute_marginal_prices(instance, start_token, middle_mint);
+    // Build price list from marginal_price() already stored in the model — no extra reads.
+    let mut prices: Vec<(usize, f64, f64)> = models
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (buy_model, sell_model))| {
+            let buy = buy_model.marginal_price();
+            let sell = sell_model.marginal_price();
+            if buy > 0.0 || sell > 0.0 { Some((idx, buy, sell)) } else { None }
+        })
+        .collect();
 
-        if buy_marginal <= 0.0 && sell_marginal <= 0.0 {
-            continue;
-        }
+    // Outer loop: highest buy_price first (cheapest pool to buy middle from).
+    prices.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Inner loop: separate sort by sell_price descending.
+    let mut sell_order = prices.clone();
+    sell_order.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        let idx = pools.len();
-        pools.push(PoolPrices { pool_index, buy_price: buy_marginal, sell_price: sell_marginal });
+    // Pre-filter Opaque entries so the nested loop never checks them.
+    prices.retain(|(idx, _, _)| !matches!(models[*idx].0, PoolModel::Opaque { .. }));
+    sell_order.retain(|(idx, _, _)| !matches!(models[*idx].1, PoolModel::Opaque { .. }));
 
-        if buy_marginal > 0.0 {
-            buy_rank.insert(idx, buy_marginal, &pools, |p| p.buy_price);
-        }
-        if sell_marginal > 0.0 {
-            sell_rank.insert(idx, sell_marginal, &pools, |p| p.sell_price);
-        }
-    }
+    let mut candidates: Vec<AnalyticalCandidate> = Vec::with_capacity(MAX_CANDIDATES + 1);
 
-    let best_buy = buy_rank.best?;
-    let best_sell = sell_rank.best?;
+    for &(buy_idx, buy_price, _) in &prices {
+        if sell_order.first().map_or(true, |e| buy_price * e.2 <= 1.0) { break; }
 
-    // Phase 2: build candidate pairs — try best first, fall back on collision
-    // If best_buy and best_sell are different pools, that's the only pair to check.
-    // If same pool, try both alternatives and pick the better one.
-    let pairs: Vec<(usize, usize)> = if pools[best_buy].pool_index != pools[best_sell].pool_index {
-        vec![(best_buy, best_sell)]
-    } else {
-        let mut fallbacks = Vec::with_capacity(2);
-        if let Some(sb) = buy_rank.second {
-            fallbacks.push((sb, best_sell));
-        }
-        if let Some(ss) = sell_rank.second {
-            fallbacks.push((best_buy, ss));
-        }
-        fallbacks
-    };
+        let buy_model = models[buy_idx].0;
 
-    let mut best: Option<AnalyticalCandidate> = None;
+        for &(sell_idx, _, sell_price) in &sell_order {
+            if buy_idx == sell_idx { continue; }
+            let product = buy_price * sell_price;
+            if product <= 1.0 { break; }
 
-    for (bi, si) in pairs {
-        let buy = &pools[bi];
-        let sell = &pools[si];
+            let sell_model = models[sell_idx].1;
 
-        if buy.buy_price * sell.sell_price <= 1.0 {
-            continue;
-        }
-
-        let buy_model = extract_pool_model(&instances[buy.pool_index], start_token);
-        let sell_model = extract_pool_model(&instances[sell.pool_index], middle_mint);
-
-        if matches!(buy_model, PoolModel::Opaque { .. }) || matches!(sell_model, PoolModel::Opaque { .. }) {
-            continue;
-        }
-
-        let Some((optimal_amount, estimated_profit, dlmm_capped)) =
-            analytical_estimate(&buy_model, &sell_model, max_amount_in)
-        else {
-            continue;
-        };
-
-        if optimal_amount < MIN_SEARCH_AMOUNT || estimated_profit <= config.min_profit {
-            continue;
-        }
-
-        if best.as_ref().map_or(true, |b| estimated_profit > b.estimated_profit) {
-            best = Some(AnalyticalCandidate {
-                buy_idx: buy.pool_index,
-                sell_idx: sell.pool_index,
-                input_mint: start_token,
-                middle_mint,
-                optimal_amount,
-                estimated_profit,
-                dlmm_capped,
-                buy_model,
-                sell_model,
-            });
+            // Insert into sorted candidates list (descending by price product)
+            let pos = candidates.iter().position(|c| product > c.price_product)
+                .unwrap_or(candidates.len());
+            if pos < MAX_CANDIDATES {
+                candidates.insert(pos, AnalyticalCandidate {
+                    buy_idx,
+                    sell_idx,
+                    input_mint: start_token,
+                    middle_mint,
+                    price_product: product,
+                    buy_model,
+                    sell_model,
+                });
+                candidates.truncate(MAX_CANDIDATES);
+            }
         }
     }
 
-    best
+    candidates
 }
 
 // ─── Build edges for the result ─────────────────────────────────────────────
@@ -365,68 +192,33 @@ fn build_edges(
     Ok(vec![buy_edge, sell_edge])
 }
 
-// ─── Shared validate / refine / build ────────────────────────────────────────
+// ─── Compute optimal amount for a candidate ─────────────────────────────────
 
-/// Validate an analytical candidate with actual swap simulation, optionally
-/// refine via multi-bin or golden-section search, then build the ArbitragePath.
+/// Compute the optimal input amount and estimated profit for a candidate.
 ///
-/// This is the shared second half of both `run_analytical_2hop` and
-/// `run_analytical_multi_trade`.
-fn validate_and_build_path<'info>(
+/// - CP+Linear (or Linear+CP): uses multibin tick-walking for accuracy.
+/// - CP+CP: uses closed-form analytical formula (exact for constant-product).
+/// - Linear+Linear: maximizes input up to bin capacity (profit is linear).
+///
+/// Returns `(optimal_amount, estimated_profit)`.
+fn compute_optimal_amount<'info>(
     accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
+    instances: &[ProgramInstance],
     candidate: &AnalyticalCandidate,
-    config: &BotConfig,
-    log_prefix: &str,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<Option<ArbitragePath>> {
-    #[cfg(any(test, feature = "debug"))]
-    {
-        let buy_inst = &instances[candidate.buy_idx];
-        let sell_inst = &instances[candidate.sell_idx];
-        let buy_price = buy_inst.get_prices().unwrap_or((0.0, 0.0)).0;
-        let sell_price = sell_inst.get_prices().unwrap_or((0.0, 0.0)).0;
-        let buy_fee = buy_inst.get_fee_factor().unwrap_or((1.0, 1.0)).0;
-        let sell_fee = sell_inst.get_fee_factor().unwrap_or((1.0, 1.0)).0;
-        debug_eprintln!("");
-        debug_eprintln!(
-            "[{}] Best candidate | estimated_profit: {} SOL | input: {} SOL | output: {} SOL",
-            log_prefix,
-            candidate.estimated_profit as f64 / 1_000_000_000.0,
-            candidate.optimal_amount as f64 / 1_000_000_000.0,
-            (candidate.optimal_amount as i128 + candidate.estimated_profit) as f64 / 1_000_000_000.0,
-        );
-        debug_eprintln!(
-            "  buy:  {} -> {} (pool {} @ price={:.6} fee={:.4})",
-            candidate.input_mint,
-            candidate.middle_mint,
-            buy_inst.get_pool_id(),
-            buy_price,
-            buy_fee,
-        );
-        debug_eprintln!(
-            "  sell: {} -> {} (pool {} @ price={:.6} fee={:.4})",
-            candidate.middle_mint,
-            candidate.input_mint,
-            sell_inst.get_pool_id(),
-            sell_price,
-            sell_fee,
-        );
-        debug_eprintln!("");
-    }
-
-    let has_dlmm = matches!(candidate.buy_model, PoolModel::Linear { .. })
+    max_amount_in: u64,
+) -> Option<(u64, i128)> {
+    let has_linear = matches!(candidate.buy_model, PoolModel::Linear { .. })
         || matches!(candidate.sell_model, PoolModel::Linear { .. });
+    let both_linear = matches!((&candidate.buy_model, &candidate.sell_model),
+        (PoolModel::Linear { .. }, PoolModel::Linear { .. }));
 
-    let buy_idx = candidate.buy_idx;
-    let sell_idx = candidate.sell_idx;
-
-    let (optimal_amount, profit) = if candidate.dlmm_capped || has_dlmm {
+    if has_linear && !both_linear {
+        // CP + Linear pair: multibin tick-walking for accurate optimal
         let dlmm_instance: &dyn ProgramMeta =
             if matches!(candidate.buy_model, PoolModel::Linear { .. }) {
-                &instances[buy_idx]
+                &instances[candidate.buy_idx]
             } else {
-                &instances[sell_idx]
+                &instances[candidate.sell_idx]
             };
         let dlmm_input_mint = if matches!(candidate.buy_model, PoolModel::Linear { .. }) {
             candidate.input_mint
@@ -440,132 +232,130 @@ fn validate_and_build_path<'info>(
             dlmm_input_mint,
             &candidate.buy_model,
             &candidate.sell_model,
-            config.max_amount_in,
+            max_amount_in,
         );
 
-        if let Some((multibin_amount, multibin_profit)) = multibin_result {
-            if multibin_profit > candidate.estimated_profit {
-                debug_eprintln!(
-                    "{}: multibin optimal_amount={}, estimated_profit={}",
-                    log_prefix, multibin_amount, multibin_profit
-                );
-                let profit = simulate_2hop(
-                    accounts,
-                    instances,
-                    buy_idx,
-                    sell_idx,
-                    candidate.input_mint,
-                    candidate.middle_mint,
-                    multibin_amount,
-                    &config.clock,
-                    mint_fees,
-                )?;
-                (multibin_amount, profit)
-            } else {
-                golden_section_refine(
-                    accounts,
-                    instances,
-                    buy_idx,
-                    sell_idx,
-                    candidate.input_mint,
-                    candidate.middle_mint,
-                    candidate.optimal_amount,
-                    config.max_amount_in,
-                    &config.clock,
-                    mint_fees,
-                )?
-            }
+        if let Some((amount, profit)) = multibin_result {
+            debug_eprintln!(
+                "  multibin optimal_amount={:.4} SOL, estimated_profit={:.4} SOL",
+                amount as f64 / 1e9, profit as f64 / 1e9
+            );
+            Some((amount, profit))
         } else {
-            golden_section_refine(
-                accounts,
-                instances,
-                buy_idx,
-                sell_idx,
-                candidate.input_mint,
-                candidate.middle_mint,
-                candidate.optimal_amount,
-                config.max_amount_in,
-                &config.clock,
-                mint_fees,
-            )?
+            // Multibin failed — fall back to analytical_optimal_2pool
+            analytical_optimal_2pool(&candidate.buy_model, &candidate.sell_model, max_amount_in)
+                .map(|r| r.optimal_amount)
+                .filter(|&a| a >= MIN_SEARCH_AMOUNT)
+                .map(|a| {
+                    let mid = pool_output(&candidate.buy_model, a as f64);
+                    let out = pool_output(&candidate.sell_model, mid);
+                    (a, (out - a as f64) as i128)
+                })
         }
     } else {
-        // Pure CP+CP: analytical formula gives exact optimal — validate with
-        // a single simulate_2hop instead of ~18 swap_base_in calls via golden section.
-        let profit = simulate_2hop(
-            accounts,
-            instances,
-            buy_idx,
-            sell_idx,
-            candidate.input_mint,
-            candidate.middle_mint,
-            candidate.optimal_amount,
-            &config.clock,
-            mint_fees,
-        )?;
-        (candidate.optimal_amount, profit)
-    };
-
-    // msg!("{} optimal_in={}, profit={}", log_prefix, optimal_amount, profit);
-
-    if !config.test && (profit <= 0 || optimal_amount == 0) {
-        debug_eprintln!("{}: rejected, profit={}", log_prefix, profit);
-        return Ok(None);
+        // CP+CP or Linear+Linear: analytical formula gives the optimal directly
+        analytical_optimal_2pool(&candidate.buy_model, &candidate.sell_model, max_amount_in)
+            .map(|r| r.optimal_amount)
+            .filter(|&a| a >= MIN_SEARCH_AMOUNT)
+            .map(|a| {
+                let mid = pool_output(&candidate.buy_model, a as f64);
+                let out = pool_output(&candidate.sell_model, mid);
+                (a, (out - a as f64) as i128)
+            })
     }
-
-    let edges = build_edges(
-        &instances[buy_idx],
-        &instances[sell_idx],
-        candidate.input_mint,
-        candidate.middle_mint,
-    )?;
-
-
-
-    let final_amount = (optimal_amount as i128).checked_add(profit).unwrap_or(0) as u128;
-
-    Ok(Some(ArbitragePath {
-        edges,
-        profit,
-        final_amount,
-        start_amount: optimal_amount,
-    }))
 }
 
 // ─── Main entry point ───────────────────────────────────────────────────────
 
-/// Fully independent analytical arbitrage with mode dispatch.
-///
 /// 2-hop analytical arbitrage (single pair, multi-market).
 ///
-/// 1. Iterates all instance pairs, extracts PoolModels
-/// 2. Uses analytical formulas to find optimal amount + estimated profit per pair
-/// 3. Picks best candidate by estimated profit
-/// 4. Validates with swap_base_in (1 call, or 8-iter golden section if DLMM-capped)
-/// 5. Returns ArbitragePath
+/// Pipeline:
+/// 1. Marginal price filter → rank by price product → top 3 candidates
+/// 2. Compute optimal amount per candidate (multibin for DLMM, analytical for CP)
+/// 3. fast_quote for real profit estimation and ranking
+/// 4. Build path for best candidate; run_simulation in lib.rs validates before execution
 #[inline(never)]
 pub fn run_analytical_2hop<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
-    mint_fees: &[(Pubkey, MintFee)],
+    _mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<Option<ArbitragePath>> {
-    let candidate = find_best_candidate_analytical(instances, config);
+    let candidates = find_candidates_analytical(instances, config);
 
-    let Some(candidate) = candidate else {
+    if candidates.is_empty() {
         debug_eprintln!("Analytical 2hop: no candidate found");
         return Ok(None);
-    };
+    }
 
-    debug_eprintln!(
-        "Analytical 2hop: buy_model={}, sell_model={}, optimal_amount={}, estimated_profit={}",
-        candidate.buy_model.label(),
-        candidate.sell_model.label(),
-        candidate.optimal_amount,
-        candidate.estimated_profit
-    );
+    // Prepare all unique candidate pools upfront (loads full pool data, computes max amounts).
+    {
+        let mut prepared_indices: [usize; MAX_CANDIDATES * 2] = [usize::MAX; MAX_CANDIDATES * 2];
+        let mut count = 0;
+        for c in &candidates {
+            for idx in [c.buy_idx, c.sell_idx] {
+                if !prepared_indices[..count].contains(&idx) {
+                    instances[idx].prepare_for_execution(accounts, &config.clock);
+                    prepared_indices[count] = idx;
+                    count += 1;
+                }
+            }
+        }
+    }
 
-    validate_and_build_path(accounts, instances, &candidate, config, "Analytical 2hop", mint_fees)
+    // For each candidate: compute optimal amount and estimated profit.
+    // Track the best by estimated profit.
+    let mut best_path: Option<ArbitragePath> = None;
+    let mut best_profit: i128 = config.min_profit;
+
+    for (i, c) in candidates.iter().enumerate() {
+        let (optimal_amount, estimated_profit) = match compute_optimal_amount(accounts, instances, c, config.max_amount_in) {
+            Some((a, p)) if a >= MIN_SEARCH_AMOUNT => {
+                debug_eprintln!(
+                    "Analytical 2hop[{}/{}]: optimal_amount={:.4} SOL, estimated_profit={:.4} SOL for {}+{} (pool {} -> pool {}), price_product={:.6}",
+                    i + 1, candidates.len(),
+                    a as f64 / 1e9, p as f64 / 1e9,
+                    c.buy_model.label(), c.sell_model.label(),
+                    instances[c.buy_idx].get_pool_id(), instances[c.sell_idx].get_pool_id(),
+                    c.price_product
+                );
+                (a, p)
+            }
+            _ => {
+                debug_eprintln!(
+                    "Analytical 2hop[{}/{}]: no optimal amount for {}+{} (pool {} -> pool {}), price_product={:.6}",
+                    i + 1, candidates.len(), c.buy_model.label(), c.sell_model.label(),
+                    instances[c.buy_idx].get_pool_id(), instances[c.sell_idx].get_pool_id(),
+                    c.price_product
+                );
+                continue;
+            }
+        };
+
+
+        if !config.test && (estimated_profit <= best_profit || optimal_amount == 0) {
+            continue;
+        }
+
+        let edges = build_edges(
+            &instances[c.buy_idx],
+            &instances[c.sell_idx],
+            c.input_mint,
+            c.middle_mint,
+        )?;
+
+        let final_amount = (optimal_amount as i128).checked_add(estimated_profit).unwrap_or(0) as u128;
+
+        best_profit = estimated_profit;
+        best_path = Some(ArbitragePath {
+            edges,
+            profit: estimated_profit,
+            final_amount,
+            start_amount: optimal_amount,
+        });
+    }
+
+    Ok(best_path)
 }
 
 // ─── Multiple trades analytical (mode 2) ────────────────────────────────────
@@ -751,49 +541,51 @@ fn simulate_nhop<'info>(
     Ok(current as i128 - amount_in as i128)
 }
 
-/// Golden section refinement for a 3-hop path.
-fn golden_section_refine_nhop<'info>(
-    accounts: &[AccountInfo<'info>],
-    instances: &mut [ProgramInstance],
-    indices: &[usize; 3],
-    mints: &[Pubkey; 4],
-    hint: u64,
-    max_amount: u64,
-    clock: &Clock,
-    mint_fees: &[(Pubkey, MintFee)],
-) -> Result<(u64, i128)> {
-    let mut a = (hint / 2).max(MIN_SEARCH_AMOUNT);
-    let mut b = (hint.saturating_mul(2)).min(max_amount);
-    let mut c = b - golden_div(b - a);
-    let mut d = a + golden_div(b - a);
-    let mut fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees).unwrap_or(i128::MIN);
-    let mut fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees).unwrap_or(i128::MIN);
-
-    for _ in 0..DLMM_REFINE_ITERATIONS {
-        if b - a < CONVERGENCE {
-            break;
-        }
-        if fc > fd {
-            b = d;
-            d = c;
-            fd = fc;
-            c = b - golden_div(b - a);
-            fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees)
-                .unwrap_or(i128::MIN);
-        } else {
-            a = c;
-            c = d;
-            fc = fd;
-            d = a + golden_div(b - a);
-            fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees)
-                .unwrap_or(i128::MIN);
-        }
-    }
-
-    let optimal = (a + b) / 2;
-    let profit = simulate_nhop(accounts, instances, indices, mints, optimal, clock, mint_fees)?;
-    Ok((optimal, profit))
-}
+// Golden section refinement for 3-hop — commented out in favor of single simulate_nhop validation.
+// The analytical estimate already finds the optimal; we validate with one simulation call.
+//
+// fn golden_section_refine_nhop<'info>(
+//     accounts: &[AccountInfo<'info>],
+//     instances: &mut [ProgramInstance],
+//     indices: &[usize; 3],
+//     mints: &[Pubkey; 4],
+//     hint: u64,
+//     max_amount: u64,
+//     clock: &Clock,
+//     mint_fees: &[(Pubkey, MintFee)],
+// ) -> Result<(u64, i128)> {
+//     let mut a = (hint / 2).max(MIN_SEARCH_AMOUNT);
+//     let mut b = (hint.saturating_mul(2)).min(max_amount);
+//     let mut c = b - golden_div(b - a);
+//     let mut d = a + golden_div(b - a);
+//     let mut fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees).unwrap_or(i128::MIN);
+//     let mut fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees).unwrap_or(i128::MIN);
+//
+//     for _ in 0..DLMM_REFINE_ITERATIONS {
+//         if b - a < CONVERGENCE {
+//             break;
+//         }
+//         if fc > fd {
+//             b = d;
+//             d = c;
+//             fd = fc;
+//             c = b - golden_div(b - a);
+//             fc = simulate_nhop(accounts, instances, indices, mints, c, clock, mint_fees)
+//                 .unwrap_or(i128::MIN);
+//         } else {
+//             a = c;
+//             c = d;
+//             fc = fd;
+//             d = a + golden_div(b - a);
+//             fd = simulate_nhop(accounts, instances, indices, mints, d, clock, mint_fees)
+//                 .unwrap_or(i128::MIN);
+//         }
+//     }
+//
+//     let optimal = (a + b) / 2;
+//     let profit = simulate_nhop(accounts, instances, indices, mints, optimal, clock, mint_fees)?;
+//     Ok((optimal, profit))
+// }
 
 /// Build Edge structs for a 3-hop chain.
 fn build_edges_multihop(
@@ -866,22 +658,23 @@ pub fn run_analytical_multihop<'info>(
     };
 
     debug_eprintln!(
-        "Analytical multihop: hop1_model={}, hop2_model={}, hop3_model={}, optimal_amount={}, estimated_profit={}",
+        "Analytical multihop: hop1_model={}, hop2_model={}, hop3_model={}, optimal_amount={:.4} SOL, estimated_profit={:.4} SOL",
         candidate.models[0].label(),
         candidate.models[1].label(),
         candidate.models[2].label(),
-        candidate.optimal_amount,
-        candidate.estimated_profit
+        candidate.optimal_amount as f64 / 1e9,
+        candidate.estimated_profit as f64 / 1e9
     );
 
-    // Validate / refine with actual swap simulation
-    let (optimal_amount, profit) = golden_section_refine_nhop(
+    // Validate with a single simulate_nhop — no golden section needed.
+    // The analytical estimate already found the optimal amount.
+    let optimal_amount = candidate.optimal_amount;
+    let profit = simulate_nhop(
         accounts,
         instances,
         &candidate.indices,
         &candidate.mints,
-        candidate.optimal_amount,
-        config.max_amount_in,
+        optimal_amount,
         &config.clock,
         mint_fees,
     )?;

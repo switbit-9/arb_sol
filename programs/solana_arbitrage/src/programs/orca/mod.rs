@@ -465,6 +465,123 @@ impl ProgramMeta for OrcaWhirlpool {
         let v_b = (l * sqrt_p).min(u64::MAX as f64) as u64;
         Ok((v_a, v_b))
     }
+
+    /// Swap estimate using cached state with CP math and tick-crossing support.
+    /// Within the active tick range, uses the constant-product formula with virtual
+    /// reserves (exact for concentrated liquidity). If the amount exceeds the active
+    /// range and profit justifies crossing, estimates the next tick linearly.
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
+        let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
+        if max_in == 0 || max_out == 0 {
+            return Ok((0, 0));
+        }
+        let max_in_active = self.get_active_bin_max_in(input_mint).unwrap_or(u64::MAX);
+        let a_to_b = input_mint == self.base_token_pk;
+        let fee_factor = self.fee_factor.0;
+
+        // Virtual reserves for CP formula within active tick range
+        let (v_a, v_b) = self.get_vault_amounts().unwrap_or((0, 0));
+        let (res_in, res_out) = if a_to_b { (v_a as u128, v_b as u128) } else { (v_b as u128, v_a as u128) };
+        if res_in == 0 || res_out == 0 {
+            return Ok((0, 0));
+        }
+
+        // CP quote: out = res_out * in_after_fee / (res_in + in_after_fee)
+        let cp_quote = |amt: u64| -> u64 {
+            let in_after_fee = (amt as f64 * fee_factor) as u128;
+            let denom = res_in.saturating_add(in_after_fee);
+            if denom == 0 { return 0; }
+            (res_out.saturating_mul(in_after_fee) / denom).min(u64::MAX as u128) as u64
+        };
+
+        // Cross into next tick range if amount exceeds active range and profit justifies it
+        if max_in_active < amount_in && max_in > max_in_active {
+            let tick_step_bps = self.tick_spacing as u64;
+            let profit_bps = (profit_pct * 10000.0) as u64;
+
+            if profit_bps > tick_step_bps {
+                debug_eprintln!(
+                    "[Orca] Crossing ticks: profit {:.2}% > tick step {:.2}%",
+                    profit_pct * 100.0, tick_step_bps as f64 / 100.0
+                );
+                let out_active = cp_quote(max_in_active);
+
+                let remaining = amount_in.min(max_in) - max_in_active;
+                // Linear estimate at next tick's marginal price
+                let (price, inverse_price) = self.get_prices()?;
+                let tick_step_frac = self.tick_spacing as f64 * 0.0001;
+                let next_price = if a_to_b {
+                    price / (1.0 + tick_step_frac)
+                } else {
+                    inverse_price / (1.0 + tick_step_frac)
+                };
+                let out_next = (remaining as f64 * next_price * fee_factor) as u64;
+
+                let total_in = max_in_active + remaining;
+                let total_out = (out_active + out_next).min(max_out);
+                return Ok((total_in, total_out));
+            }
+        }
+
+        let clamped_in = amount_in.min(max_in).min(max_in_active);
+        let out = cp_quote(clamped_in);
+        Ok((clamped_in, out.min(max_out)))
+    }
+
+    /// Tick step fraction: each Orca tick = 0.01% price change (1.0001),
+    /// so tick_spacing ticks ≈ tick_spacing × 0.01%.
+    fn get_bin_step_frac(&self) -> f64 {
+        self.tick_spacing as f64 * 0.0001
+    }
+
+    /// Gross input capacity of the active tick range (before fee deduction).
+    /// Computed analytically from sqrt_price + liquidity — no account reads.
+    fn get_active_bin_max_in(&self, input_mint: Pubkey) -> Result<u64> {
+        if self.liquidity == 0 {
+            return Ok(0);
+        }
+        let a_to_b = input_mint == self.base_token_pk;
+        let tick_spacing = self.tick_spacing as i32;
+        let tick_lower = floor_to_tick_spacing(self.tick_current_index, tick_spacing);
+        let tick_boundary = if a_to_b { tick_lower } else { tick_lower + tick_spacing };
+        let sqrt_price_boundary = tick_math::get_sqrt_price_at_tick(tick_boundary)
+            .map_err(|_| error!(crate::programs::SolarBError::InsufficientAccounts))?;
+        let net_cap = libraries::liquidity_math::get_amount_in_for_liquidity(
+            self.sqrt_price, sqrt_price_boundary, self.liquidity, a_to_b,
+        )
+        .unwrap_or(0);
+        // Convert net → gross (what the user actually sends, including the fee portion)
+        let fee_factor = self.fee_factor.0;
+        let gross_cap = if fee_factor > 0.0 {
+            (net_cap as f64 / fee_factor) as u64
+        } else {
+            0
+        };
+        Ok(gross_cap)
+    }
+
+    /// Per-tick-range segment data for the analytical multi-bin walker.
+    /// Mirrors DLMM `get_bin_segment`, treating each tick range as a linear segment.
+    fn get_bin_segment<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        bin_offset: i32,
+    ) -> Result<Option<(f64, u64, f64)>> {
+        self.get_tick_segment_impl(accounts, input_mint, bin_offset)
+    }
+}
+
+/// Floor `tick_index` to the nearest multiple of `tick_spacing` towards −∞.
+fn floor_to_tick_spacing(tick_index: i32, tick_spacing: i32) -> i32 {
+    if tick_spacing <= 0 {
+        return tick_index;
+    }
+    let mut lower = (tick_index / tick_spacing) * tick_spacing;
+    if tick_index < 0 && tick_index % tick_spacing != 0 {
+        lower -= tick_spacing;
+    }
+    lower
 }
 
 impl OrcaWhirlpool {
@@ -489,6 +606,8 @@ impl OrcaWhirlpool {
             pool.fee_rate,
             oracle_data.as_deref().map(|d| &**d),
         );
+
+        debug_eprintln!("OrcaWhirlpool: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_account.key, price, 1.0 / price, total_fee_rate);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = OrcaWhirlpool {
@@ -771,6 +890,103 @@ impl OrcaWhirlpool {
 
         // No tick array covers the current tick — tick arrays exhausted
         None
+    }
+
+    /// Per-tick-range segment for the analytical multi-bin walker.
+    ///
+    /// Walks tick arrays from the current position, advancing `bin_offset` tick ranges.
+    /// Each Orca tick range is approximated as linear using the geometric mean of the
+    /// two sqrt-price bounds as the effective exchange rate.
+    ///
+    /// Returns `(slope, net_capacity, fee_factor)` where:
+    ///   slope        = geometric_mean_price × fee_factor
+    ///   net_capacity = net input tokens (after fee) to push price to the tick boundary
+    ///   fee_factor   = 1 − fee_rate
+    ///
+    /// The multi-bin walker converts net_capacity → gross via `c / fee_factor`.
+    fn get_tick_segment_impl<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        bin_offset: i32,
+    ) -> Result<Option<(f64, u64, f64)>> {
+        if self.liquidity == 0 {
+            return Ok(None);
+        }
+        let a_to_b = input_mint == self.base_token_pk;
+        let fee_factor = self.fee_factor.0;
+
+        let data_0 = accounts[self.dyn_start + D_TICK_ARRAY_0].try_borrow_data().ok();
+        let data_1 = accounts[self.dyn_start + D_TICK_ARRAY_1].try_borrow_data().ok();
+        let data_2 = accounts[self.dyn_start + D_TICK_ARRAY_2].try_borrow_data().ok();
+
+        let mut current_sqrt_price = self.sqrt_price;
+        let mut current_liquidity = self.liquidity;
+        let mut current_tick = self.tick_current_index;
+
+        const Q64: f64 = (1u128 << 64) as f64;
+
+        for i in 0..=bin_offset {
+            let (next_tick_index, next_tick_opt) = match self.find_next_initialized_tick_lazy(
+                current_tick, a_to_b, &data_0, &data_1, &data_2,
+            ) {
+                Some(r) => r,
+                None => return Ok(None),
+            };
+
+            let sqrt_price_target_raw = match tick_math::get_sqrt_price_at_tick(next_tick_index) {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            };
+            let sqrt_price_target = if a_to_b {
+                sqrt_price_target_raw.max(tick_math::MIN_SQRT_PRICE_X64 + 1)
+            } else {
+                sqrt_price_target_raw.min(tick_math::MAX_SQRT_PRICE_X64 - 1)
+            };
+
+            if i == bin_offset {
+                // Net capacity: tokens that push price exactly to this tick boundary
+                let capacity = libraries::liquidity_math::get_amount_in_for_liquidity(
+                    current_sqrt_price, sqrt_price_target, current_liquidity, a_to_b,
+                )
+                .unwrap_or(0);
+                if capacity == 0 {
+                    return Ok(None);
+                }
+                // Geometric mean price = sqrt_P_curr × sqrt_P_target (as Q64 fractions).
+                // For a_to_b:  delta_B / delta_A = sqrt_P_curr × sqrt_P_target
+                // For b_to_a:  delta_A / delta_B = 1 / (sqrt_P_curr × sqrt_P_target)
+                let sqrt_p_curr_f = current_sqrt_price as f64 / Q64;
+                let sqrt_p_target_f = sqrt_price_target as f64 / Q64;
+                let geo_mean = sqrt_p_curr_f * sqrt_p_target_f;
+                if geo_mean <= 0.0 {
+                    return Ok(None);
+                }
+                let price_mid = if a_to_b { geo_mean } else { 1.0 / geo_mean };
+                return Ok(Some((price_mid * fee_factor, capacity, fee_factor)));
+            }
+
+            // Advance state: cross this tick boundary and update active liquidity
+            if let Some(tick) = next_tick_opt {
+                if tick.initialized {
+                    current_liquidity = if a_to_b {
+                        libraries::liquidity_math::add_delta(current_liquidity, -tick.liquidity_net)
+                            .unwrap_or(0)
+                    } else {
+                        libraries::liquidity_math::add_delta(current_liquidity, tick.liquidity_net)
+                            .unwrap_or(current_liquidity)
+                    };
+                }
+            }
+            current_sqrt_price = sqrt_price_target;
+            current_tick = if a_to_b { next_tick_index - 1 } else { next_tick_index };
+
+            if current_liquidity == 0 {
+                return Ok(None);
+            }
+        }
+
+        Ok(None)
     }
 
     /// Compute deferred fields: max amounts, transfer fee rates.

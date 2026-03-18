@@ -48,7 +48,8 @@ fn build_pool_index(
 /// Call fast_quote on the program instance for the given edge.
 /// Returns (actual_amount_in, amount_out) — programs clamp to their max amounts.
 #[inline]
-fn edge_fast_quote(
+fn edge_fast_quote<'a>(
+    accounts: &[AccountInfo<'a>],
     edge: &Edge,
     amount_in: u64,
     pool_index: &HashMap<Pubkey, usize>,
@@ -56,14 +57,15 @@ fn edge_fast_quote(
 ) -> (u64, u64) {
     pool_index
         .get(&edge.pool_id)
-        .and_then(|&idx| instances[idx].fast_quote(edge.left.mint_account, amount_in, 0.0).ok())
+        .and_then(|&idx| instances[idx].fast_quote(accounts, edge.left.mint_account, amount_in, 0.0).ok())
         .unwrap_or((0, 0))
 }
 
 /// Highly efficient iterative check for 2-hop (Cross) Arbitrage.
 /// O(E) complexity. Safe for on-chain execution (no recursion).
 /// Path: Start -> Token B -> Start
-pub fn find_cross_arbitrage_iterative(
+pub fn find_cross_arbitrage_iterative<'info>(
+    accounts: &[AccountInfo<'info>],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -102,7 +104,7 @@ pub fn find_cross_arbitrage_iterative(
         if let Some(root_edges) = adj.get(&root) {
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_index, instances);
+                let (_, amount_b) = edge_fast_quote(accounts, edge1, start_amount, &pool_index, instances);
 
                 if let Some(b_edges) = adj.get(&token_b) {
                     for edge2 in b_edges {
@@ -112,7 +114,7 @@ pub fn find_cross_arbitrage_iterative(
                             continue;
                         }
 
-                        let (_, final_out) = edge_fast_quote(edge2, amount_b, &pool_index, instances);
+                        let (_, final_out) = edge_fast_quote(accounts, edge2, amount_b, &pool_index, instances);
                         let final_amount = final_out as u128;
                         let profit = final_amount as i128 - start_amount as i128;
 
@@ -186,7 +188,8 @@ pub fn find_cross_arbitrage_iterative(
 /// Optimized O(E) check for 3-hop (Triangular) Arbitrage using Map lookup.
 /// Best performance for on-chain execution.
 /// Path: Start -> Token B -> Token C -> Start
-pub fn find_triangular_arbitrage_iterative(
+pub fn find_triangular_arbitrage_iterative<'info>(
+    accounts: &[AccountInfo<'info>],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -228,7 +231,7 @@ pub fn find_triangular_arbitrage_iterative(
             // Hop 1: Root -> B
             for edge1 in root_edges {
                 let token_b = edge1.right.mint_account;
-                let (_, amount_b) = edge_fast_quote(edge1, start_amount, &pool_index, instances);
+                let (_, amount_b) = edge_fast_quote(accounts, edge1, start_amount, &pool_index, instances);
 
                 // Hop 2: B -> C (single lookup instead of contains_key + get)
                 if let Some(b_edges) = adj.get(&token_b) {
@@ -240,7 +243,7 @@ pub fn find_triangular_arbitrage_iterative(
                             continue;
                         }
 
-                        let (_, amount_c) = edge_fast_quote(edge2, amount_b, &pool_index, instances);
+                        let (_, amount_c) = edge_fast_quote(accounts, edge2, amount_b, &pool_index, instances);
 
                         // Hop 3: C -> Root (Optimized Lookup)
                         // Instead of iterating adj[token_c] and filtering for 'root',
@@ -248,7 +251,7 @@ pub fn find_triangular_arbitrage_iterative(
                         if let Some(third_leg_edges) = pair_map.get(&(token_c, root)) {
                             for edge3 in third_leg_edges {
                                 // Found 3-hop cycle
-                                let (_, final_out) = edge_fast_quote(edge3, amount_c, &pool_index, instances);
+                                let (_, final_out) = edge_fast_quote(accounts, edge3, amount_c, &pool_index, instances);
                                 let final_amount = final_out as u128;
                                 let profit = final_amount as i128 - start_amount as i128;
 
@@ -400,15 +403,16 @@ pub fn get_edges(instances: &[ProgramInstance]) -> Result<Vec<Edge>> {
     Ok(edges)
 }
 
-pub fn check_arbitrage(
+pub fn check_arbitrage<'info>(
+    accounts: &[AccountInfo<'info>],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {
     let edges = get_edges(instances)?;
     let edge_refs = edges.iter().collect::<Vec<_>>();
     if config.mints == 2 {
-        find_cross_arbitrage_iterative(&edge_refs, instances, config)
+        find_cross_arbitrage_iterative(accounts, &edge_refs, instances, config)
     } else {
-        find_triangular_arbitrage_iterative(&edge_refs, instances, config)
+        find_triangular_arbitrage_iterative(accounts, &edge_refs, instances, config)
     }
 }

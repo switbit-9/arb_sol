@@ -2,6 +2,14 @@ use super::pool_model::PoolModel;
 use crate::programs::ProgramMeta;
 use anchor_lang::prelude::*;
 
+/// Debug context for analytical_estimate logging.
+pub struct EstimateDebugCtx {
+    pub pool1_id: Pubkey,
+    pub pool2_id: Pubkey,
+    pub start_mint: Pubkey,
+    pub middle_mint: Pubkey,
+}
+
 /// Result of an analytical computation.
 #[derive(Debug)]
 pub struct AnalyticalResult {
@@ -363,6 +371,7 @@ pub fn analytical_estimate(
     pool1: &PoolModel,
     pool2: &PoolModel,
     max_amount_in: u64,
+    debug_ctx: Option<&EstimateDebugCtx>,
 ) -> Option<(u64, i128, bool)> {
     let result_opt = analytical_optimal_2pool(pool1, pool2, max_amount_in);
     let result = match result_opt {
@@ -388,7 +397,6 @@ pub fn analytical_estimate(
     let profit = output_amount - input_amount;
 
     
-    #[cfg(test)]
     {
         let f1 = pool1.fee();
         let f2 = pool2.fee();
@@ -399,14 +407,27 @@ pub fn analytical_estimate(
         } else {
             0.0
         };
+        let p1_buy = if p1_raw > 1.0 { 1.0 / p1_raw } else { p1_raw };
+        let p2_buy = if p2_raw > 1.0 { 1.0 / p2_raw } else { p2_raw };
 
-        debug_eprintln!("");
-        debug_eprintln!(
-            "ESTIMATE {}+{} P={:.4}%, F1={:.4}, F2={:.4}, profit={:.6} (input={:.6} mid={:.6} out={:.6} dlmm={})",
-            pool1.label(), pool2.label(), price_diff_pct, f1, f2, profit / 1e9,
-            input_amount / 1e9, middle_amount / 1e9, output_amount / 1e9, result.dlmm_capped
-        );
-        debug_eprintln!("");
+        if let Some(ctx) = debug_ctx {
+            debug_eprintln!("");
+            debug_eprintln!(
+                "ESTIMATE {}+{} pool1={} pool2={} {} -> {} P={:.4}%, fee1={:.4}%, fee2={:.4}%, p1={:.6}, p2={:.6}, profit={:.6} (input={:.6} mid={:.6} out={:.6} dlmm={})",
+                pool1.label(), pool2.label(), ctx.pool1_id, ctx.pool2_id, ctx.start_mint, ctx.middle_mint,
+                price_diff_pct, (1.0 - f1) * 100.0, (1.0 - f2) * 100.0, p1_buy, p2_buy, profit / 1e9,
+                input_amount / 1e9, middle_amount / 1e9, output_amount / 1e9, result.dlmm_capped
+            );
+            debug_eprintln!("");
+        } else {
+            debug_eprintln!("");
+            debug_eprintln!(
+                "ESTIMATE {}+{} P={:.4}%, fee1={:.4}%, fee2={:.4}%, p1={:.6}, p2={:.6}, profit={:.6} (input={:.6} mid={:.6} out={:.6} dlmm={})",
+                pool1.label(), pool2.label(), price_diff_pct, (1.0 - f1) * 100.0, (1.0 - f2) * 100.0, p1_buy, p2_buy, profit / 1e9,
+                input_amount / 1e9, middle_amount / 1e9, output_amount / 1e9, result.dlmm_capped
+            );
+            debug_eprintln!("");
+        }
     }
 
     if profit <= 0.0 {
@@ -418,7 +439,7 @@ pub fn analytical_estimate(
 
 /// Compute the output of a single pool for a given input amount.
 /// Uses the analytical model (no on-chain simulation).
-fn pool_output(model: &PoolModel, dx: f64) -> f64 {
+pub(crate) fn pool_output(model: &PoolModel, dx: f64) -> f64 {
     match model {
         PoolModel::CpFeeOnInput { reserve_in: r_in, reserve_out: r_out, fee, .. } => {
             let u = dx * fee;
@@ -636,7 +657,7 @@ pub fn analytical_optimal_multibin<'info>(
     max_amount_in: u64,
 ) -> Option<(u64, i128)> {
     // Determine which pool is DLMM and extract CP params
-    let (dlmm_pos, cp_fee_type, r_in, r_out, f_amm, bin_step_frac) = match (pool1, pool2) {
+    let (dlmm_pos, cp_fee_type, r_in, r_out, f_amm, _bin_step_frac) = match (pool1, pool2) {
         (
             PoolModel::CpFeeOnInput { reserve_in: r_in, reserve_out: r_out, fee, .. },
             PoolModel::Linear { bin_step_frac, .. },
@@ -660,7 +681,7 @@ pub fn analytical_optimal_multibin<'info>(
         _ => return None, // Not a CP+DLMM pair
     };
 
-    if bin_step_frac <= 0.0 {
+    if _bin_step_frac <= 0.0 {
         return None;
     }
 
@@ -671,8 +692,9 @@ pub fn analytical_optimal_multibin<'info>(
     let max_f = max_amount_in as f64;
 
     for bin_offset in 0..70i32 {  // max 70 bins per array, safety limit
-        let (bin_slope, bin_capacity) = match dlmm_instance.get_bin_segment(accounts, input_mint, bin_offset) {
-            Ok(Some((s, c))) if s > 0.0 && c > 0 => (s, c as f64),
+        let (bin_slope, gross_capacity) = match dlmm_instance.get_bin_segment(accounts, input_mint, bin_offset) {
+            Ok(Some((s, c, f))) if s > 0.0 && c > 0 && f > 0.0 => (s, c as f64 / f),
+            Ok(Some(_)) => continue, // empty bin — skip to next
             _ => break,
         };
 
@@ -730,25 +752,26 @@ pub fn analytical_optimal_multibin<'info>(
             break;
         }
 
-        // Check segment validity: does segment_optimal fall within this bin's range?
+        // Clamp before the bin check — the profit is computed at clamped_amount,
+        // so the bin check must also use clamped_amount. Otherwise when
+        // segment_optimal >> max_f the walker accumulates bins that the
+        // clamped amount would never reach, inflating profit.
+        let clamped_amount = segment_optimal.min(max_f);
+
         let in_segment = match dlmm_pos {
             DlmmPosition::Pool2 => {
-                // mid-amount must fall in [cumulative_input, cumulative_input + bin_capacity]
                 let mid = match cp_fee_type {
-                    CpFeeType::OnInput => r_out * segment_optimal * f_amm / (r_in + segment_optimal * f_amm),
-                    CpFeeType::OnOutput => f_amm * r_out * segment_optimal / (r_in + segment_optimal),
+                    CpFeeType::OnInput => r_out * clamped_amount * f_amm / (r_in + clamped_amount * f_amm),
+                    CpFeeType::OnOutput => f_amm * r_out * clamped_amount / (r_in + clamped_amount),
                 };
-                mid >= cumulative_input && mid <= cumulative_input + bin_capacity
+                mid >= cumulative_input && mid <= cumulative_input + gross_capacity
             }
             DlmmPosition::Pool1 => {
-                // dx must fall in [cumulative_input, cumulative_input + bin_capacity]
-                segment_optimal >= cumulative_input && segment_optimal <= cumulative_input + bin_capacity
+                clamped_amount >= cumulative_input && clamped_amount <= cumulative_input + gross_capacity
             }
         };
 
         if in_segment {
-            // Found the optimal segment — compute profit
-            let clamped_amount = segment_optimal.min(max_f);
             let profit = compute_multibin_profit(
                 dlmm_pos, cp_fee_type, r_in, r_out, f_amm,
                 cumulative_input, cumulative_output, bin_slope, clamped_amount,
@@ -761,8 +784,9 @@ pub fn analytical_optimal_multibin<'info>(
         }
 
         // This bin is fully consumed — accumulate and check if we should continue
-        cumulative_output += bin_capacity * bin_slope;
-        cumulative_input += bin_capacity;
+        // gross_capacity = pre_fee_capacity / fee_factor; output = slope * gross (since slope = price * fee_factor)
+        cumulative_output += gross_capacity * bin_slope;
+        cumulative_input += gross_capacity;
 
         // Compute profit at the bin boundary to check if it's still worth continuing
         let boundary_amount = match dlmm_pos {
@@ -794,9 +818,41 @@ pub fn analytical_optimal_multibin<'info>(
             best_profit = boundary_profit;
         }
 
-        // Check: can the arb margin survive the next bin step?
-        let profit_pct = if boundary_amount > 0.0 { boundary_profit / boundary_amount } else { 0.0 };
-        if profit_pct <= bin_step_frac {
+        // Marginal rate early-exit: check if the composed marginal rate at the
+        // boundary can still exceed 1.0 with the current bin's slope.
+        // If the marginal is already <= 1 at this slope, no future bin (with
+        // worse slope) can improve things.
+        //
+        // CP marginal at boundary:
+        //   Pool2 (CP→DLMM): d(mid)/d(dx) evaluated at dx = boundary_amount
+        //   Pool1 (DLMM→CP): d(out)/d(mid) evaluated at mid = cumulative_output
+        let cp_marginal = match (dlmm_pos, cp_fee_type) {
+            (DlmmPosition::Pool2, CpFeeType::OnInput) => {
+                // d(mid)/d(dx) = f_amm * r_in * r_out / (r_in + dx * f_amm)^2
+                let denom = r_in + boundary_amount * f_amm;
+                f_amm * r_in * r_out / (denom * denom)
+            }
+            (DlmmPosition::Pool2, CpFeeType::OnOutput) => {
+                // d(mid)/d(dx) = f_amm * r_in * r_out / (r_in + dx)^2
+                let denom = r_in + boundary_amount;
+                f_amm * r_in * r_out / (denom * denom)
+            }
+            (DlmmPosition::Pool1, CpFeeType::OnInput) => {
+                // d(out)/d(mid) = f_amm * r_in * r_out / (r_in + mid * f_amm)^2
+                let mid = cumulative_output;
+                let denom = r_in + mid * f_amm;
+                f_amm * r_in * r_out / (denom * denom)
+            }
+            (DlmmPosition::Pool1, CpFeeType::OnOutput) => {
+                // d(out)/d(mid) = f_amm * r_in * r_out / (r_in + mid)^2
+                let mid = cumulative_output;
+                let denom = r_in + mid;
+                f_amm * r_in * r_out / (denom * denom)
+            }
+        };
+        // Composed marginal: DLMM_slope × CP_marginal (or CP_marginal × DLMM_slope).
+        // Must exceed 1.0 for the next unit to be profitable.
+        if bin_slope * cp_marginal <= 1.0 {
             break;
         }
 
@@ -848,6 +904,704 @@ fn compute_multibin_profit(
                 CpFeeType::OnOutput => f_amm * r_out * middle_amount / (r_in + middle_amount),
             };
             output_amount - input_amount
+        }
+    }
+}
+
+// ─── Tests: Golden section vs Analytical comparison ──────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// High-precision golden section search over pool_output chain.
+    /// Runs many iterations to find the true optimal input amount.
+    fn golden_search_optimal(
+        pool1: &PoolModel,
+        pool2: &PoolModel,
+        max_amount_in: u64,
+    ) -> Option<(u64, f64)> {
+        let max_f = max_amount_in as f64;
+        let mut a: f64 = 1.0;
+        let mut b: f64 = max_f;
+
+        let profit_at = |x: f64| -> f64 {
+            let mid = pool_output(pool1, x);
+            if mid <= 0.0 { return f64::NEG_INFINITY; }
+            let out = pool_output(pool2, mid);
+            out - x
+        };
+
+        // Quick check: is there any profit in the range?
+        let samples = [a, b, (a + b) / 2.0, (a + b) / 4.0, (a + b) * 3.0 / 4.0];
+        if samples.iter().all(|&x| profit_at(x) <= 0.0) {
+            return None;
+        }
+
+        let phi: f64 = 1.618033988749895;
+        let mut c = b - (b - a) / phi;
+        let mut d = a + (b - a) / phi;
+        let mut fc = profit_at(c);
+        let mut fd = profit_at(d);
+
+        // 100 iterations for very high precision
+        for _ in 0..100 {
+            if (b - a) < 1.0 { break; }
+            if fc > fd {
+                b = d;
+                d = c;
+                fd = fc;
+                c = b - (b - a) / phi;
+                fc = profit_at(c);
+            } else {
+                a = c;
+                c = d;
+                fc = fd;
+                d = a + (b - a) / phi;
+                fd = profit_at(d);
+            }
+        }
+
+        let optimal = (a + b) / 2.0;
+        let profit = profit_at(optimal);
+        if profit <= 0.0 || optimal <= 0.0 {
+            return None;
+        }
+        Some((optimal as u64, profit))
+    }
+
+    /// High-precision golden section search for N-hop chain.
+    fn golden_search_optimal_nhop(
+        models: &[PoolModel],
+        max_amount_in: u64,
+    ) -> Option<(u64, f64)> {
+        let max_f = max_amount_in as f64;
+        let mut a: f64 = 1.0;
+        let mut b: f64 = max_f;
+
+        let profit_at = |x: f64| -> f64 { pool_chain_output(models, x) - x };
+
+        let samples = [a, b, (a + b) / 2.0, (a + b) / 4.0, (a + b) * 3.0 / 4.0];
+        if samples.iter().all(|&x| profit_at(x) <= 0.0) {
+            return None;
+        }
+
+        let phi: f64 = 1.618033988749895;
+        let mut c = b - (b - a) / phi;
+        let mut d = a + (b - a) / phi;
+        let mut fc = profit_at(c);
+        let mut fd = profit_at(d);
+
+        for _ in 0..100 {
+            if (b - a) < 1.0 { break; }
+            if fc > fd {
+                b = d;
+                d = c;
+                fd = fc;
+                c = b - (b - a) / phi;
+                fc = profit_at(c);
+            } else {
+                a = c;
+                c = d;
+                fc = fd;
+                d = a + (b - a) / phi;
+                fd = profit_at(d);
+            }
+        }
+
+        let optimal = (a + b) / 2.0;
+        let profit = profit_at(optimal);
+        if profit <= 0.0 || optimal <= 0.0 {
+            return None;
+        }
+        Some((optimal as u64, profit))
+    }
+
+    /// Helper to compare analytical vs golden section results.
+    /// Asserts that the analytical optimal amount is within `amount_tolerance_pct` of golden,
+    /// and that analytical profit is within `profit_tolerance_pct` of golden.
+    fn assert_analytical_matches_golden(
+        label: &str,
+        pool1: &PoolModel,
+        pool2: &PoolModel,
+        max_amount_in: u64,
+        amount_tolerance_pct: f64,
+        profit_tolerance_pct: f64,
+    ) {
+        let analytical = analytical_estimate(pool1, pool2, max_amount_in, None);
+        let golden = golden_search_optimal(pool1, pool2, max_amount_in);
+
+        match (analytical, golden) {
+            (None, None) => {
+                // Both agree: no arb. OK.
+                eprintln!("  [{}] Both agree: no arb", label);
+            }
+            (Some((a_amt, a_profit, _)), Some((g_amt, g_profit))) => {
+                let amount_diff_pct = ((a_amt as f64 - g_amt as f64) / g_amt as f64).abs() * 100.0;
+                let profit_diff_pct = ((a_profit as f64 - g_profit) / g_profit).abs() * 100.0;
+
+                eprintln!(
+                    "  [{}] analytical: amount={}, profit={:.2} | golden: amount={}, profit={:.2} | diff: amount={:.4}%, profit={:.4}%",
+                    label, a_amt, a_profit as f64 / 1e9, g_amt, g_profit / 1e9, amount_diff_pct, profit_diff_pct
+                );
+
+                // The analytical profit should be very close to the golden search profit.
+                // Amount can differ slightly due to rounding, but profit at the analytical
+                // optimum should be near-optimal.
+                let analytical_profit_at_analytical_amount = {
+                    let mid = pool_output(pool1, a_amt as f64);
+                    let out = pool_output(pool2, mid);
+                    out - a_amt as f64
+                };
+                let golden_profit_at_golden_amount = g_profit;
+                let profit_gap_pct = ((golden_profit_at_golden_amount - analytical_profit_at_analytical_amount)
+                    / golden_profit_at_golden_amount).abs() * 100.0;
+
+                assert!(
+                    profit_gap_pct < profit_tolerance_pct,
+                    "[{}] Profit gap too large: analytical_profit={:.6}, golden_profit={:.6}, gap={:.4}% (max {:.1}%)",
+                    label,
+                    analytical_profit_at_analytical_amount / 1e9,
+                    golden_profit_at_golden_amount / 1e9,
+                    profit_gap_pct,
+                    profit_tolerance_pct,
+                );
+
+                assert!(
+                    amount_diff_pct < amount_tolerance_pct,
+                    "[{}] Amount diff too large: analytical={}, golden={}, diff={:.4}% (max {:.1}%)",
+                    label, a_amt, g_amt, amount_diff_pct, amount_tolerance_pct,
+                );
+            }
+            (Some((a_amt, a_profit, _)), None) => {
+                // Analytical found arb but golden didn't — likely tiny profit
+                eprintln!(
+                    "  [{}] analytical found arb (amount={}, profit={}) but golden didn't — likely marginal",
+                    label, a_amt, a_profit
+                );
+            }
+            (None, Some((g_amt, g_profit))) => {
+                panic!(
+                    "[{}] Golden found arb (amount={}, profit={:.6}) but analytical returned None!",
+                    label, g_amt, g_profit / 1e9,
+                );
+            }
+        }
+    }
+
+    // ─── 2-pool tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cp_fee_on_input_plus_cp_fee_on_input() {
+        eprintln!("\n=== CpFeeOnInput + CpFeeOnInput ===");
+
+        // Scenario 1: Large price difference, typical Raydium AMM + Meteora DAMM V1
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 500_000_000_000.0,  // 500 SOL
+            reserve_out: 1_000_000_000_000_000.0, // 1M tokens
+            fee: 0.9975,  // 0.25% fee
+            marginal_price: 2_000_000.0 * 0.9975,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 950_000_000_000_000.0, // tokens
+            reserve_out: 520_000_000_000.0,    // 520 SOL (price diff ~4%)
+            fee: 0.997,   // 0.3% fee
+            marginal_price: (520.0 / 950_000.0) * 1e9 * 0.997,
+        };
+        assert_analytical_matches_golden("large_diff", &pool1, &pool2, 10_000_000_000, 1.0, 0.5);
+
+        // Scenario 2: Small price difference (marginal arb)
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 1_000_000_000_000.0,
+            reserve_out: 5_000_000_000_000_000.0,
+            fee: 0.9975,
+            marginal_price: 5_000_000.0 * 0.9975,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 4_950_000_000_000_000.0,
+            reserve_out: 1_010_000_000_000.0, // ~1% diff
+            fee: 0.9975,
+            marginal_price: (1_010.0 / 4_950_000.0) * 1e9 * 0.9975,
+        };
+        assert_analytical_matches_golden("small_diff", &pool1, &pool2, 5_000_000_000, 1.0, 0.5);
+
+        // Scenario 3: Asymmetric reserves (large vs tiny pool)
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 10_000_000_000.0,   // 10 SOL (tiny pool)
+            reserve_out: 50_000_000_000_000.0,
+            fee: 0.99,
+            marginal_price: 5_000_000.0 * 0.99,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 40_000_000_000_000.0,
+            reserve_out: 100_000_000_000.0, // 100 SOL (big pool)
+            fee: 0.997,
+            marginal_price: (100.0 / 40_000.0) * 1e9 * 0.997,
+        };
+        assert_analytical_matches_golden("asymmetric", &pool1, &pool2, 5_000_000_000, 1.0, 0.5);
+
+        // Scenario 4: No arb (prices aligned)
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 500_000_000_000.0,
+            reserve_out: 1_000_000_000_000_000.0,
+            fee: 0.997,
+            marginal_price: 2_000_000.0 * 0.997,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 1_000_000_000_000_000.0,
+            reserve_out: 500_000_000_000.0,
+            fee: 0.997,
+            marginal_price: 0.0000005 * 1e9 * 0.997,
+        };
+        assert_analytical_matches_golden("no_arb", &pool1, &pool2, 10_000_000_000, 1.0, 0.5);
+    }
+
+    #[test]
+    fn test_cp_fee_on_input_plus_cp_fee_on_output() {
+        eprintln!("\n=== CpFeeOnInput + CpFeeOnOutput (e.g. Raydium → PumpAmm sell) ===");
+
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 300_000_000_000.0,   // 300 SOL
+            reserve_out: 900_000_000_000_000.0,
+            fee: 0.9975,
+            marginal_price: 3_000_000.0 * 0.9975,
+        };
+        let pool2 = PoolModel::CpFeeOnOutput {
+            reserve_in: 850_000_000_000_000.0,
+            reserve_out: 320_000_000_000.0,   // 320 SOL (~6.7% diff)
+            fee: 0.99,   // PumpAmm 1% fee
+            marginal_price: (320.0 / 850_000.0) * 1e9 * 0.99,
+        };
+        assert_analytical_matches_golden("raydium_to_pump", &pool1, &pool2, 5_000_000_000, 1.0, 0.5);
+
+        // Reverse: no arb
+        let pool2_no_arb = PoolModel::CpFeeOnOutput {
+            reserve_in: 900_000_000_000_000.0,
+            reserve_out: 290_000_000_000.0,
+            fee: 0.99,
+            marginal_price: (290.0 / 900_000.0) * 1e9 * 0.99,
+        };
+        assert_analytical_matches_golden("no_arb", &pool1, &pool2_no_arb, 5_000_000_000, 1.0, 0.5);
+    }
+
+    #[test]
+    fn test_cp_fee_on_output_plus_cp_fee_on_input() {
+        eprintln!("\n=== CpFeeOnOutput + CpFeeOnInput (e.g. PumpAmm sell → Raydium) ===");
+
+        let pool1 = PoolModel::CpFeeOnOutput {
+            reserve_in: 800_000_000_000_000.0,
+            reserve_out: 250_000_000_000.0,
+            fee: 0.9875,  // PumpAmm 1.25% fee
+            marginal_price: (250.0 / 800_000.0) * 1e9 * 0.9875,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 270_000_000_000.0,   // 270 SOL (price diff)
+            reserve_out: 850_000_000_000_000.0,
+            fee: 0.997,
+            marginal_price: (850_000.0 / 270.0) * 1e6 * 0.997,
+        };
+        assert_analytical_matches_golden("pump_to_raydium", &pool1, &pool2, 5_000_000_000_000, 1.0, 0.5);
+    }
+
+    #[test]
+    fn test_cp_fee_on_output_plus_cp_fee_on_output() {
+        eprintln!("\n=== CpFeeOnOutput + CpFeeOnOutput ===");
+
+        let pool1 = PoolModel::CpFeeOnOutput {
+            reserve_in: 700_000_000_000_000.0,
+            reserve_out: 200_000_000_000.0,
+            fee: 0.99,
+            marginal_price: (200.0 / 700_000.0) * 1e9 * 0.99,
+        };
+        let pool2 = PoolModel::CpFeeOnOutput {
+            reserve_in: 220_000_000_000.0,
+            reserve_out: 750_000_000_000_000.0,
+            fee: 0.9875,
+            marginal_price: (750_000.0 / 220.0) * 1e6 * 0.9875,
+        };
+        assert_analytical_matches_golden("pump_to_pump", &pool1, &pool2, 5_000_000_000_000, 1.0, 0.5);
+    }
+
+    #[test]
+    fn test_cp_fee_on_input_plus_linear() {
+        eprintln!("\n=== CpFeeOnInput + Linear (e.g. Raydium → DLMM) ===");
+
+        // DLMM sells at higher price than Raydium buys at
+        let pool1 = PoolModel::CpFeeOnInput {
+            reserve_in: 500_000_000_000.0,   // 500 SOL
+            reserve_out: 1_000_000_000_000_000.0,
+            fee: 0.9975,
+            marginal_price: 2_000_000.0 * 0.9975,
+        };
+        let pool2 = PoolModel::Linear {
+            price: 0.00000055 * 1e9, // slightly higher than pool1's inverse
+            fee: 0.997,
+            max_in: 50_000_000_000_000, // 50K tokens capacity
+            bin_step_frac: 0.008,
+            marginal_price: 0.00000055 * 1e9 * 0.997,
+        };
+        assert_analytical_matches_golden("raydium_to_dlmm", &pool1, &pool2, 10_000_000_000, 2.0, 1.0);
+
+        // Large capacity DLMM
+        let pool2_large = PoolModel::Linear {
+            price: 0.00000056 * 1e9,
+            fee: 0.998,
+            max_in: 500_000_000_000_000, // huge capacity
+            bin_step_frac: 0.001,
+            marginal_price: 0.00000056 * 1e9 * 0.998,
+        };
+        assert_analytical_matches_golden("large_dlmm", &pool1, &pool2_large, 10_000_000_000, 2.0, 1.0);
+    }
+
+    #[test]
+    fn test_cp_fee_on_output_plus_linear() {
+        eprintln!("\n=== CpFeeOnOutput + Linear (e.g. PumpAmm sell → DLMM) ===");
+
+        let pool1 = PoolModel::CpFeeOnOutput {
+            reserve_in: 800_000_000_000_000.0,
+            reserve_out: 250_000_000_000.0,
+            fee: 0.99,
+            marginal_price: (250.0 / 800_000.0) * 1e9 * 0.99,
+        };
+        let pool2 = PoolModel::Linear {
+            price: 0.00000034 * 1e9,
+            fee: 0.997,
+            max_in: 100_000_000_000_000,
+            bin_step_frac: 0.008,
+            marginal_price: 0.00000034 * 1e9 * 0.997,
+        };
+        assert_analytical_matches_golden("pump_sell_to_dlmm", &pool1, &pool2, 5_000_000_000_000, 2.0, 1.0);
+    }
+
+    #[test]
+    fn test_linear_plus_cp_fee_on_input() {
+        eprintln!("\n=== Linear + CpFeeOnInput (e.g. DLMM → Raydium) ===");
+
+        let pool1 = PoolModel::Linear {
+            price: 2_050_000.0, // DLMM price
+            fee: 0.997,
+            max_in: 5_000_000_000, // 5 SOL capacity
+            bin_step_frac: 0.008,
+            marginal_price: 2_050_000.0 * 0.997,
+        };
+        let pool2 = PoolModel::CpFeeOnInput {
+            reserve_in: 950_000_000_000_000.0,
+            reserve_out: 510_000_000_000.0,
+            fee: 0.9975,
+            marginal_price: (510.0 / 950_000.0) * 1e9 * 0.9975,
+        };
+        assert_analytical_matches_golden("dlmm_to_raydium", &pool1, &pool2, 10_000_000_000, 2.0, 1.0);
+    }
+
+    #[test]
+    fn test_linear_plus_cp_fee_on_output() {
+        eprintln!("\n=== Linear + CpFeeOnOutput (e.g. DLMM → PumpAmm) ===");
+
+        let pool1 = PoolModel::Linear {
+            price: 2_050_000.0,
+            fee: 0.998,
+            max_in: 5_000_000_000,
+            bin_step_frac: 0.008,
+            marginal_price: 2_050_000.0 * 0.998,
+        };
+        let pool2 = PoolModel::CpFeeOnOutput {
+            reserve_in: 1_050_000_000_000_000.0,
+            reserve_out: 520_000_000_000.0,
+            fee: 0.99,
+            marginal_price: (520.0 / 1_050_000.0) * 1e9 * 0.99,
+        };
+        assert_analytical_matches_golden("dlmm_to_pump", &pool1, &pool2, 10_000_000_000, 2.0, 1.0);
+    }
+
+    #[test]
+    fn test_linear_plus_linear() {
+        eprintln!("\n=== Linear + Linear (DLMM + DLMM) ===");
+
+        // Profitable: combined factor > 1
+        let pool1 = PoolModel::Linear {
+            price: 2_100_000.0,
+            fee: 0.998,
+            max_in: 3_000_000_000, // 3 SOL
+            bin_step_frac: 0.008,
+            marginal_price: 2_100_000.0 * 0.998,
+        };
+        let pool2 = PoolModel::Linear {
+            price: 0.00000049 * 1e9,
+            fee: 0.998,
+            max_in: 5_000_000_000_000,
+            bin_step_frac: 0.008,
+            marginal_price: 0.00000049 * 1e9 * 0.998,
+        };
+
+        let analytical = analytical_estimate(&pool1, &pool2, 10_000_000_000, None);
+        let golden = golden_search_optimal(&pool1, &pool2, 10_000_000_000);
+
+        match (analytical, golden) {
+            (Some((a_amt, a_profit, _)), Some((g_amt, g_profit))) => {
+                eprintln!(
+                    "  [linear+linear] analytical: amount={}, profit={:.6} | golden: amount={}, profit={:.6}",
+                    a_amt, a_profit as f64 / 1e9, g_amt, g_profit / 1e9,
+                );
+                // For linear+linear the profit is strictly linear, so the optimal is max capacity.
+                // Both should agree on maximizing input.
+                let a_profit_f = pool_output(&pool1, a_amt as f64);
+                let a_profit_f = pool_output(&pool2, a_profit_f) - a_amt as f64;
+                let g_profit_f = g_profit;
+                let gap = ((g_profit_f - a_profit_f) / g_profit_f).abs() * 100.0;
+                assert!(gap < 1.0, "Linear+Linear profit gap too large: {:.4}%", gap);
+            }
+            (None, None) => eprintln!("  [linear+linear] Both agree: no arb"),
+            (a, g) => eprintln!("  [linear+linear] Mismatch: analytical={:?}, golden={:?}", a.is_some(), g.is_some()),
+        }
+
+        // Not profitable: combined factor < 1
+        // p1*f1*p2*f2 must be <= 1: 2_100_000 * 0.998 * p2 * 0.998 <= 1 → p2 < 0.000000478
+        let pool2_no_arb = PoolModel::Linear {
+            price: 0.00000045,
+            fee: 0.998,
+            max_in: 5_000_000_000_000,
+            bin_step_frac: 0.008,
+            marginal_price: 0.00000045 * 0.998,
+        };
+        let analytical = analytical_estimate(&pool1, &pool2_no_arb, 10_000_000_000, None);
+        let golden = golden_search_optimal(&pool1, &pool2_no_arb, 10_000_000_000);
+        assert!(analytical.is_none() && golden.is_none(), "Both should find no arb");
+        eprintln!("  [linear+linear_no_arb] Both agree: no arb");
+    }
+
+    // ─── 3-pool (N-hop) tests ────────────────────────────────────────────────
+
+    fn assert_nhop_matches_golden(
+        label: &str,
+        models: &[PoolModel],
+        max_amount_in: u64,
+        profit_tolerance_pct: f64,
+    ) {
+        let analytical = analytical_estimate_nhop(models, max_amount_in);
+        let golden = golden_search_optimal_nhop(models, max_amount_in);
+
+        match (analytical, golden) {
+            (None, None) => {
+                eprintln!("  [{}] Both agree: no arb", label);
+            }
+            (Some((a_amt, a_profit, _)), Some((g_amt, g_profit))) => {
+                // Evaluate analytical amount through the chain to get real profit
+                let a_real_profit = pool_chain_output(models, a_amt as f64) - a_amt as f64;
+
+                let profit_gap_pct = ((g_profit - a_real_profit) / g_profit).abs() * 100.0;
+
+                eprintln!(
+                    "  [{}] analytical: amount={}, profit={:.6} (real={:.6}) | golden: amount={}, profit={:.6} | gap={:.4}%",
+                    label, a_amt, a_profit as f64 / 1e9, a_real_profit / 1e9,
+                    g_amt, g_profit / 1e9, profit_gap_pct,
+                );
+
+                assert!(
+                    profit_gap_pct < profit_tolerance_pct,
+                    "[{}] N-hop profit gap too large: {:.4}% (max {:.1}%)",
+                    label, profit_gap_pct, profit_tolerance_pct,
+                );
+            }
+            (Some((a_amt, a_profit, _)), None) => {
+                eprintln!(
+                    "  [{}] analytical found arb (amount={}, profit={}) but golden didn't",
+                    label, a_amt, a_profit
+                );
+            }
+            (None, Some((g_amt, g_profit))) => {
+                panic!(
+                    "[{}] Golden found arb (amount={}, profit={:.6}) but analytical returned None!",
+                    label, g_amt, g_profit / 1e9,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_3hop_all_cp_fee_on_input() {
+        eprintln!("\n=== 3-hop: CpFI → CpFI → CpFI (triangle arb) ===");
+
+        // SOL → TokenA via pool1, TokenA → TokenB via pool2, TokenB → SOL via pool3
+        let models = [
+            PoolModel::CpFeeOnInput {
+                reserve_in: 500_000_000_000.0,     // 500 SOL
+                reserve_out: 10_000_000_000_000.0,  // TokenA
+                fee: 0.997,
+                marginal_price: 20_000.0 * 0.997,
+            },
+            PoolModel::CpFeeOnInput {
+                reserve_in: 9_500_000_000_000.0,    // TokenA
+                reserve_out: 2_000_000_000_000_000.0, // TokenB
+                fee: 0.9975,
+                marginal_price: (2_000_000.0 / 9_500.0) * 0.9975,
+            },
+            PoolModel::CpFeeOnInput {
+                reserve_in: 1_900_000_000_000_000.0, // TokenB
+                reserve_out: 520_000_000_000.0,      // 520 SOL (mispriced)
+                fee: 0.997,
+                marginal_price: (520.0 / 1_900_000.0) * 1e9 * 0.997,
+            },
+        ];
+
+        assert_nhop_matches_golden("3hop_cpfi", &models, 10_000_000_000, 1.0);
+    }
+
+    #[test]
+    fn test_3hop_mixed_cp() {
+        eprintln!("\n=== 3-hop: CpFI → CpFO → CpFI (mixed fee types) ===");
+
+        let models = [
+            PoolModel::CpFeeOnInput {
+                reserve_in: 400_000_000_000.0,
+                reserve_out: 8_000_000_000_000.0,
+                fee: 0.9975,
+                marginal_price: 20_000.0 * 0.9975,
+            },
+            PoolModel::CpFeeOnOutput {
+                reserve_in: 7_500_000_000_000.0,
+                reserve_out: 1_500_000_000_000_000.0,
+                fee: 0.99,
+                marginal_price: 200_000.0 * 0.99,
+            },
+            PoolModel::CpFeeOnInput {
+                reserve_in: 1_400_000_000_000_000.0,
+                reserve_out: 430_000_000_000.0,
+                fee: 0.997,
+                marginal_price: (430.0 / 1_400_000.0) * 1e9 * 0.997,
+            },
+        ];
+
+        assert_nhop_matches_golden("3hop_mixed", &models, 5_000_000_000, 1.0);
+    }
+
+    #[test]
+    fn test_3hop_with_linear() {
+        eprintln!("\n=== 3-hop: CpFI → Linear → CpFI (with DLMM in the middle) ===");
+
+        let models = [
+            PoolModel::CpFeeOnInput {
+                reserve_in: 500_000_000_000.0,
+                reserve_out: 10_000_000_000_000.0,
+                fee: 0.997,
+                marginal_price: 20_000.0 * 0.997,
+            },
+            PoolModel::Linear {
+                price: 220.0,  // TokenA → TokenB
+                fee: 0.998,
+                max_in: 200_000_000_000_000, // large capacity
+                bin_step_frac: 0.008,
+                marginal_price: 220.0 * 0.998,
+            },
+            PoolModel::CpFeeOnInput {
+                reserve_in: 2_200_000_000_000_000.0,
+                reserve_out: 520_000_000_000.0,
+                fee: 0.997,
+                marginal_price: (520.0 / 2_200_000.0) * 1e9 * 0.997,
+            },
+        ];
+
+        // 3-hop with linear uses golden section internally, so tolerance is wider
+        assert_nhop_matches_golden("3hop_linear", &models, 10_000_000_000, 2.0);
+    }
+
+    // ─── Stress test with many random-ish scenarios ──────────────────────────
+
+    #[test]
+    fn test_2pool_sweep_varied_reserves_and_fees() {
+        eprintln!("\n=== Sweep: varied reserves and fees ===");
+
+        let reserves_sol = [10_000_000_000.0, 100_000_000_000.0, 1_000_000_000_000.0];
+        let price_diffs = [1.02, 1.05, 1.10, 1.20]; // 2%, 5%, 10%, 20% price advantage
+        let fees = [0.99, 0.995, 0.997, 0.9975];
+
+        let mut count = 0;
+        for &r1_sol in &reserves_sol {
+            let r1_tokens = r1_sol * 2000.0; // ~2000 tokens per SOL
+            for &price_mult in &price_diffs {
+                let r2_sol = r1_sol * price_mult;
+                let r2_tokens = r1_tokens / price_mult;
+                for &f1 in &fees {
+                    for &f2 in &fees {
+                        let pool1 = PoolModel::CpFeeOnInput {
+                            reserve_in: r1_sol,
+                            reserve_out: r1_tokens,
+                            fee: f1,
+                            marginal_price: (r1_tokens / r1_sol) * f1,
+                        };
+                        let pool2 = PoolModel::CpFeeOnInput {
+                            reserve_in: r2_tokens,
+                            reserve_out: r2_sol,
+                            fee: f2,
+                            marginal_price: (r2_sol / r2_tokens) * f2,
+                        };
+                        let label = format!("sweep_{}", count);
+                        assert_analytical_matches_golden(
+                            &label, &pool1, &pool2,
+                            (r1_sol * 0.1) as u64, // max 10% of pool
+                            2.0, 1.0,
+                        );
+                        count += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("  Tested {} scenarios", count);
+    }
+
+    #[test]
+    fn test_2pool_sweep_mixed_fee_types() {
+        eprintln!("\n=== Sweep: mixed fee type combinations ===");
+
+        let r_sol = 500_000_000_000.0;
+        let r_tokens = 1_000_000_000_000_000.0;
+        let r2_sol = 530_000_000_000.0;
+        let r2_tokens = 950_000_000_000_000.0;
+
+        let combos: Vec<(PoolModel, PoolModel, &str)> = vec![
+            (
+                PoolModel::CpFeeOnInput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.997, marginal_price: (r_tokens / r_sol) * 0.997 },
+                PoolModel::CpFeeOnInput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.997, marginal_price: (r2_sol / r2_tokens) * 0.997 },
+                "FI+FI",
+            ),
+            (
+                PoolModel::CpFeeOnInput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.997, marginal_price: (r_tokens / r_sol) * 0.997 },
+                PoolModel::CpFeeOnOutput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.99, marginal_price: (r2_sol / r2_tokens) * 0.99 },
+                "FI+FO",
+            ),
+            (
+                PoolModel::CpFeeOnOutput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.99, marginal_price: (r_tokens / r_sol) * 0.99 },
+                PoolModel::CpFeeOnInput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.997, marginal_price: (r2_sol / r2_tokens) * 0.997 },
+                "FO+FI",
+            ),
+            (
+                PoolModel::CpFeeOnOutput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.99, marginal_price: (r_tokens / r_sol) * 0.99 },
+                PoolModel::CpFeeOnOutput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.99, marginal_price: (r2_sol / r2_tokens) * 0.99 },
+                "FO+FO",
+            ),
+            (
+                PoolModel::CpFeeOnInput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.997, marginal_price: (r_tokens / r_sol) * 0.997 },
+                PoolModel::Linear { price: (r2_sol / r2_tokens), fee: 0.998, max_in: 50_000_000_000_000, bin_step_frac: 0.008, marginal_price: (r2_sol / r2_tokens) * 0.998 },
+                "FI+Linear",
+            ),
+            (
+                PoolModel::CpFeeOnOutput { reserve_in: r_sol, reserve_out: r_tokens, fee: 0.99, marginal_price: (r_tokens / r_sol) * 0.99 },
+                PoolModel::Linear { price: (r2_sol / r2_tokens), fee: 0.998, max_in: 50_000_000_000_000, bin_step_frac: 0.008, marginal_price: (r2_sol / r2_tokens) * 0.998 },
+                "FO+Linear",
+            ),
+            (
+                PoolModel::Linear { price: (r_tokens / r_sol), fee: 0.998, max_in: 5_000_000_000, bin_step_frac: 0.008, marginal_price: (r_tokens / r_sol) * 0.998 },
+                PoolModel::CpFeeOnInput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.997, marginal_price: (r2_sol / r2_tokens) * 0.997 },
+                "Linear+FI",
+            ),
+            (
+                PoolModel::Linear { price: (r_tokens / r_sol), fee: 0.998, max_in: 5_000_000_000, bin_step_frac: 0.008, marginal_price: (r_tokens / r_sol) * 0.998 },
+                PoolModel::CpFeeOnOutput { reserve_in: r2_tokens, reserve_out: r2_sol, fee: 0.99, marginal_price: (r2_sol / r2_tokens) * 0.99 },
+                "Linear+FO",
+            ),
+        ];
+
+        for (pool1, pool2, label) in &combos {
+            assert_analytical_matches_golden(label, pool1, pool2, 10_000_000_000, 2.0, 1.0);
         }
     }
 }

@@ -26,13 +26,14 @@ pub enum PoolKind {
 }
 
 /// Enum dispatch replaces Box<dyn ProgramMeta> — eliminates heap allocation + vtable overhead.
-pub enum ProgramInstance<'info> {
+#[derive(Clone)]
+pub enum ProgramInstance {
     PumpAmm(PumpAmm),
     RaydiumAmm(RaydiumAmm),
     RaydiumCLMM(RaydiumCLMM),
     RaydiumCPMM(RaydiumCPMM),
     MeteoraDammV1(MeteoraDammV1),
-    MeteoraDammV2(MeteoraDammV2<'info>),
+    MeteoraDammV2(MeteoraDammV2),
     OrcaWhirlpool(OrcaWhirlpool),
     MeteoraDlmm(MeteoraDlmm),
 }
@@ -69,7 +70,7 @@ macro_rules! dispatch_mut {
     };
 }
 
-impl<'info> ProgramMeta for ProgramInstance<'info> {
+impl ProgramMeta for ProgramInstance {
     fn get_id(&self) -> &Pubkey {
         dispatch!(self, get_id())
     }
@@ -215,7 +216,7 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64)>> {
+    ) -> Result<Option<(f64, u64, f64)>> {
         dispatch!(self, get_bin_segment(accounts, input_mint, bin_offset))
     }
 
@@ -223,13 +224,11 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
         dispatch!(self, get_bin_step_frac())
     }
 
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
-        dispatch_mut!(self, fast_quote(input_mint, amount_in, profit_pct))
+    fn fast_quote<'a>(&mut self, accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
+        dispatch_mut!(self, fast_quote(accounts, input_mint, amount_in, profit_pct))
     }
 
-    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>]) {
-        // Transmute lifetime to match inner type — safe because accounts outlive the call
-        let accounts: &[AccountInfo<'info>] = unsafe { std::mem::transmute(accounts) };
+    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>], clock: &Clock) {
         match self {
             ProgramInstance::PumpAmm(p) => p.prepare_for_execution(accounts),
             ProgramInstance::RaydiumAmm(p) => p.prepare_for_execution(accounts),
@@ -238,7 +237,7 @@ impl<'info> ProgramMeta for ProgramInstance<'info> {
             ProgramInstance::MeteoraDammV1(p) => p.prepare_for_execution(accounts),
             ProgramInstance::MeteoraDammV2(p) => p.prepare_for_execution(accounts),
             ProgramInstance::OrcaWhirlpool(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::MeteoraDlmm(_) => {} // DLMM computes everything in new()
+            ProgramInstance::MeteoraDlmm(p) => { let _ = p.prepare_for_execution(accounts, clock); }
         }
     }
 }
@@ -371,8 +370,8 @@ pub trait ProgramMeta {
         true
     }
 
-    /// Get the slope (price * fee_factor) and capacity (max_amount_in) for a DLMM bin
-    /// at `bin_offset` from the active bin in the swap direction.
+    /// Get the slope (price * fee_factor), capacity (max_amount_in, pre-fee), and fee_factor
+    /// for a DLMM bin at `bin_offset` from the active bin in the swap direction.
     /// offset=0 is active bin, offset=1 is next bin, etc.
     /// Returns Ok(None) for non-DLMM pools or if bin data is not available.
     fn get_bin_segment<'a>(
@@ -380,7 +379,7 @@ pub trait ProgramMeta {
         _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _bin_offset: i32,
-    ) -> Result<Option<(f64, u64)>> {
+    ) -> Result<Option<(f64, u64, f64)>> {
         Ok(None)
     }
 
@@ -392,7 +391,7 @@ pub trait ProgramMeta {
     /// Compute deferred fields (max amounts, transfer fees, etc.) needed for
     /// simulation and execution. Only called for instances in a profitable path.
     /// Default no-op for programs that compute everything in new().
-    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>]) {}
+    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>], _clock: &Clock) {}
 
     /// Simplified swap estimate from cached state only (no account reads).
     /// Skips transfer fees. Used for candidate ranking, not execution.
@@ -401,7 +400,7 @@ pub trait ProgramMeta {
     /// profit_pct is the arb cycle's profit as a fraction (e.g. 0.02 = 2%).
     /// DLMM uses this to decide whether crossing into the next bin is worthwhile.
     /// Default: linear model from cached price * fee (ignores profit_pct).
-    fn fast_quote(&mut self, input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (price, inverse_price) = self.get_prices()?;
         let (fee_a_to_b, fee_b_to_a) = self.get_fee_factor().unwrap_or((1.0, 1.0));
         let (base_mint, _) = self.get_mints();
