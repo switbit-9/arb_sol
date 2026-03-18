@@ -228,16 +228,16 @@ impl ProgramMeta for ProgramInstance {
         dispatch_mut!(self, fast_quote(accounts, input_mint, amount_in, profit_pct))
     }
 
-    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>], clock: &Clock) {
+    fn prepare_for_execution<'a>(&mut self, accounts: &[AccountInfo<'a>], clock: &Clock) -> bool {
         match self {
-            ProgramInstance::PumpAmm(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::RaydiumAmm(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::RaydiumCLMM(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::RaydiumCPMM(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::MeteoraDammV1(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::MeteoraDammV2(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::OrcaWhirlpool(p) => p.prepare_for_execution(accounts),
-            ProgramInstance::MeteoraDlmm(p) => { let _ = p.prepare_for_execution(accounts, clock); }
+            ProgramInstance::PumpAmm(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::RaydiumAmm(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::RaydiumCLMM(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::RaydiumCPMM(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::MeteoraDammV1(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::MeteoraDammV2(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::OrcaWhirlpool(p) => { p.prepare_for_execution(accounts); true }
+            ProgramInstance::MeteoraDlmm(p) => p.prepare_for_execution(accounts, clock).is_ok()
         }
     }
 }
@@ -391,7 +391,8 @@ pub trait ProgramMeta {
     /// Compute deferred fields (max amounts, transfer fees, etc.) needed for
     /// simulation and execution. Only called for instances in a profitable path.
     /// Default no-op for programs that compute everything in new().
-    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>], _clock: &Clock) {}
+    /// Returns false if the pool should be skipped (e.g. missing bin arrays).
+    fn prepare_for_execution<'a>(&mut self, _accounts: &[AccountInfo<'a>], _clock: &Clock) -> bool { true }
 
     /// Simplified swap estimate from cached state only (no account reads).
     /// Skips transfer fees. Used for candidate ranking, not execution.

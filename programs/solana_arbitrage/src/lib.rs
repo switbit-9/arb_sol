@@ -308,10 +308,18 @@ fn start_bot_grouped<'info>(
             continue;
         };
 
+        let mut prep_failed = false;
         for edge in &arb_path.edges {
             if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-                inst.prepare_for_execution(accounts, &group_config.clock);
+                if !inst.prepare_for_execution(accounts, &group_config.clock) {
+                    prep_failed = true;
+                    break;
+                }
             }
+        }
+        if prep_failed {
+            debug_eprintln!("Skipping arb path: pool preparation failed");
+            continue;
         }
 
         let sim_profit = run_simulation(
@@ -401,7 +409,10 @@ fn start_bot_multihop<'info>(
 
     for edge in &arbitrage_path.edges {
         if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-            inst.prepare_for_execution(accounts, &bot_config.clock);
+            if !inst.prepare_for_execution(accounts, &bot_config.clock) {
+                debug_eprintln!("Skipping arb path: pool preparation failed");
+                return Ok(None);
+            }
         }
     }
 

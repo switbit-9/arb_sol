@@ -289,13 +289,19 @@ pub fn run_analytical_2hop<'info>(
     }
 
     // Prepare all unique candidate pools upfront (loads full pool data, computes max amounts).
+    // Track which pool indices failed preparation (e.g. missing bin arrays).
+    let mut skipped_indices: [usize; MAX_CANDIDATES * 2] = [usize::MAX; MAX_CANDIDATES * 2];
+    let mut skipped_count = 0;
     {
         let mut prepared_indices: [usize; MAX_CANDIDATES * 2] = [usize::MAX; MAX_CANDIDATES * 2];
         let mut count = 0;
         for c in &candidates {
             for idx in [c.buy_idx, c.sell_idx] {
                 if !prepared_indices[..count].contains(&idx) {
-                    instances[idx].prepare_for_execution(accounts, &config.clock);
+                    if !instances[idx].prepare_for_execution(accounts, &config.clock) {
+                        skipped_indices[skipped_count] = idx;
+                        skipped_count += 1;
+                    }
                     prepared_indices[count] = idx;
                     count += 1;
                 }
@@ -309,6 +315,13 @@ pub fn run_analytical_2hop<'info>(
     let mut best_profit: i128 = config.min_profit;
 
     for (i, c) in candidates.iter().enumerate() {
+        // Skip candidates where either pool failed preparation (e.g. missing bin arrays)
+        if skipped_indices[..skipped_count].contains(&c.buy_idx)
+            || skipped_indices[..skipped_count].contains(&c.sell_idx)
+        {
+            continue;
+        }
+
         let (optimal_amount, estimated_profit) = match compute_optimal_amount(accounts, instances, c, config.max_amount_in) {
             Some((a, p)) if a >= MIN_SEARCH_AMOUNT => {
                 debug_eprintln!(

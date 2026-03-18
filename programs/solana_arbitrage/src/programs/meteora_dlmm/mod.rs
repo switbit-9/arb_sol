@@ -761,6 +761,24 @@ impl MeteoraDlmm {
             v_volatility_accumulator,
             accounts, self.dyn_start,
         ).map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+
+        // Verify active bin's array index is present in both buy and sell caches.
+        // If not, quote_exact_in/out will fail with "Insufficient liquidity" on the first bin.
+        let active_bin_array_index = {
+            let idx = active_id / MAX_BIN_PER_ARRAY as i32;
+            let rem = active_id % MAX_BIN_PER_ARRAY as i32;
+            if active_id < 0 && rem != 0 { idx as i64 - 1 } else { idx as i64 }
+        };
+        if !buy.bin_array_indices.contains(&active_bin_array_index)
+            || !sell.bin_array_indices.contains(&active_bin_array_index)
+        {
+            // msg!(
+            //     "DLMM: active bin array index {} not in buy {:?} or sell {:?} caches, skipping pool",
+            //     active_bin_array_index, buy.bin_array_indices, sell.bin_array_indices
+            // );
+            return Err(error!(SolarBError::InsufficientBinArray));
+        }
+
         self.buy_swap_cache = Some(buy);
         self.sell_swap_cache = Some(sell);
 
