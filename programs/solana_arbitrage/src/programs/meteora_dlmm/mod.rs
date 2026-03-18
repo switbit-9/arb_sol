@@ -6,7 +6,7 @@ use crate::utils::token::MintFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -17,6 +17,10 @@ use dlmm_lib::extensions::{BinExtension, LbPairExtension};
 use dlmm_lib::math::price_math::get_price_from_id;
 use dlmm_lib::math::u64x64_math::ONE;
 use dlmm_lib::quote::{get_active_bin_array, quote_exact_in, quote_exact_out, LbPairSlim, SwapCache};
+use dlmm_lib::dlmm::accounts::BinArray;
+use dlmm_lib::extensions::BinArrayExtension;
+use dlmm_lib::math::u128x128_math::{mul_shr, shl_div};
+use dlmm_lib::dlmm::types::Rounding;
 
 pub const SCALE_OFFSET: u8 = 64;
 const BIN_ARRAY_HEADER_SIZE: usize = 56;
@@ -90,6 +94,8 @@ pub struct MeteoraDlmm {
     pub buy_swap_cache: Option<Box<SwapCache>>,
     /// SwapCache for sell direction (swap_for_y = false) — lazily built on first swap_base_in call
     pub sell_swap_cache: Option<Box<SwapCache>>,
+    /// Set to true after prepare_for_execution fails, to avoid repeated log spam
+    pub prepare_failed: bool,
 }
 
 impl ProgramMeta for MeteoraDlmm {
@@ -110,7 +116,9 @@ impl ProgramMeta for MeteoraDlmm {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        self.prepare_for_execution(accounts, clock)?;
+        if !self.prepare_for_execution(accounts, clock)? {
+            return Ok(0);
+        }
         let swap_for_y = input_mint == self.base_token_pk;
         let (bin_arr_0, bin_arr_1, cache) = if swap_for_y {
             (D_BIN_BUY_0, D_BIN_BUY_1, self.buy_swap_cache.as_ref().unwrap())
@@ -157,7 +165,9 @@ impl ProgramMeta for MeteoraDlmm {
         output_transfer_fee: MintFee,
         clock: &Clock,
     ) -> Result<u64> {
-        self.prepare_for_execution(accounts, clock)?;
+        if !self.prepare_for_execution(accounts, clock)? {
+            return Ok(0);
+        }
         let swap_for_y = output_mint == self.quote_token_pk;
 
         let (bin_arr_0, bin_arr_1, cache) = if swap_for_y {
@@ -423,7 +433,8 @@ impl ProgramMeta for MeteoraDlmm {
             (mint_2_account, mint_1_account)
         };
 
-        let metas = vec![
+        // Stack-allocated metas array — Vec::from converts with one exact-size allocation
+        let metas: [AccountMeta; 18] = [
             AccountMeta::new(*pool_id.key, false),
             if *bitmap_extension.key == PROGRAM_ID {
                 AccountMeta::new_readonly(*bitmap_extension.key, false)
@@ -457,8 +468,8 @@ impl ProgramMeta for MeteoraDlmm {
 
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
+            accounts: Vec::from(metas),
+            data: Vec::from(data),
         };
 
         // Stack-allocated account infos array — no heap Vec
@@ -485,7 +496,7 @@ impl ProgramMeta for MeteoraDlmm {
 
         unsafe {
             let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_unchecked(&swap_ix, accounts)?;
+            invoke_signed_unchecked(&swap_ix, accounts, &[])?;
         }
         Ok(())
     }
@@ -567,9 +578,14 @@ impl ProgramMeta for MeteoraDlmm {
             (mint_2_account, mint_1_account)
         };
 
-        let metas = vec![
+        // Stack-allocated metas array — Vec::from converts with one exact-size allocation
+        let metas: [AccountMeta; 18] = [
             AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*bitmap_extension.key, false),
+            if *bitmap_extension.key == PROGRAM_ID {
+                AccountMeta::new_readonly(*bitmap_extension.key, false)
+            } else {
+                AccountMeta::new(*bitmap_extension.key, false)
+            },
             AccountMeta::new(*base_vault.key, false),
             AccountMeta::new(*quote_vault.key, false),
             AccountMeta::new(*user_token_in.key, false),
@@ -597,8 +613,8 @@ impl ProgramMeta for MeteoraDlmm {
 
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
+            accounts: Vec::from(metas),
+            data: Vec::from(data),
         };
 
         // Stack-allocated account infos array — no heap Vec
@@ -625,7 +641,7 @@ impl ProgramMeta for MeteoraDlmm {
 
         unsafe {
             let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_unchecked(&swap_ix, accounts)?;
+            invoke_signed_unchecked(&swap_ix, accounts, &[])?;
         }
         Ok(())
     }
@@ -638,9 +654,12 @@ impl MeteoraDlmm {
     /// Lazily initialize expensive fields (bin arrays, swap caches, active bin, max amounts).
     /// Called on first swap_base_in/swap_base_out. Skipped entirely on no-profit path.
     #[inline(never)]
-    pub fn prepare_for_execution(&mut self, accounts: &[AccountInfo], clock: &Clock) -> Result<()> {
+    pub fn prepare_for_execution(&mut self, accounts: &[AccountInfo], clock: &Clock) -> Result<bool> {
         if self.buy_swap_cache.is_some() {
-            return Ok(());
+            return Ok(true);
+        }
+        if self.prepare_failed {
+            return Ok(false);
         }
 
         let pool_acc = &accounts[self.dyn_start + D_POOL];
@@ -694,21 +713,43 @@ impl MeteoraDlmm {
             {
                 Some(acc) => acc,
                 None => {
-                    msg!("DLMM: active bin not found in bin arrays, active_id={} needed_index={}", active_id, needed_index);
-                    return Err(error!(SolarBError::InsufficientBinArray));
+                    msg!("DLMM: active bin not found in bin arrays {}, active_id={} needed_index={}", self.pool_id, active_id, needed_index);
+                    self.prepare_failed = true;
+                    return Ok(false);
                 }
             };
-            let bin_data = active_bin_array_acc.try_borrow_data()
-                .map_err(|_| error!(SolarBError::InsufficientBinArray))?;
+            let bin_data = match active_bin_array_acc.try_borrow_data() {
+                Ok(d) => d,
+                Err(_) => {
+                    msg!("DLMM: failed to borrow bin array data");
+                    self.prepare_failed = true;
+                    return Ok(false);
+                }
+            };
             let lower_bin_id = needed_index as i32 * MAX_BIN_PER_ARRAY as i32;
             let bin_index_in_array = (active_id - lower_bin_id) as usize;
             let bin_offset = BIN_ARRAY_HEADER_SIZE + bin_index_in_array * BIN_SIZE;
             if bin_offset + BIN_SIZE > bin_data.len() {
-                return Err(error!(SolarBError::InsufficientBinArray));
+                msg!("DLMM: bin offset out of bounds");
+                self.prepare_failed = true;
+                return Ok(false);
             }
             let mut active_bin: Bin = bytemuck::pod_read_unaligned(&bin_data[bin_offset..bin_offset + BIN_SIZE]);
             let _ = active_bin.get_or_store_bin_price(active_id, bin_step);
-            self.active_bin = active_bin;
+
+        //     #[cfg(test)]
+        //     {
+        //         // Match the price skew applied in new() — use active_id parity (same key)
+        //         let skew: f64 = if active_id % 2 == 0 { 1.1 } else { 0.90 };
+        //         // Scale liquidity so bin capacity is consistent with the skewed price
+        //         active_bin.amount_x = (active_bin.amount_x as f64 * skew) as u64;
+        //         active_bin.amount_y = (active_bin.amount_y as f64 * skew) as u64;
+        //         // Also skew the bin's stored Q64 price to match
+        //         active_bin.price = (active_bin.price as f64 * skew) as u128;
+        //     }
+
+        //     self.active_bin = active_bin;
+        // }
         }
 
         // Inline update_references: only reads a few fields, avoids full LbPair copy
@@ -782,7 +823,7 @@ impl MeteoraDlmm {
         self.buy_swap_cache = Some(buy);
         self.sell_swap_cache = Some(sell);
 
-        Ok(())
+        Ok(true)
     }
 
     #[inline(never)]
@@ -854,14 +895,17 @@ impl MeteoraDlmm {
             (slim, token_x, token_y, pr, total_fee, base_fee)
         };
 
-        let price = get_price_f64(lb_price);
+        let mut price = get_price_f64(lb_price);
 
         // #[cfg(test)]
-        // {
-        //     let mut price = get_price_f64(lb_price);
-        //     let skew: f64 = if lb_price % 2 == 0 { 1.03 } else { 0.97 };
+        // let lb_price = {
+        //     // Use active_id parity (stable across init and prepare_for_execution)
+        //     let skew: f64 = if lb_pair_slim.active_id % 2 == 0 { 1.1 } else { 0.90 };
         //     price *= skew;
-        // }
+        //     // Also skew lb_price (Q64) so quote_exact_in / get_bin_segment_impl
+        //     // use the same skewed price as the analytical model.
+        //     (lb_price as f64 * skew) as u128
+        // };
 
         // LAZY INIT: skip bin array reads, active_bin computation, swap cache building.
         // These are deferred to prepare_for_execution() (called on first swap_base_in).
@@ -890,7 +934,8 @@ impl MeteoraDlmm {
             sell_max_in: u64::MAX,
             sell_max_out: u64::MAX,
             buy_swap_cache: None,
-            sell_swap_cache: None
+            sell_swap_cache: None,
+            prepare_failed: false,
         };
         Ok(instance)
     }
@@ -1100,14 +1145,6 @@ impl MeteoraDlmm {
         input_mint: Pubkey,
         bin_offset: i32,
     ) -> Result<Option<(f64, u64, f64)>> {
-        use dlmm_lib::dlmm::accounts::BinArray;
-        use dlmm_lib::extensions::BinArrayExtension;
-        use dlmm_lib::math::u128x128_math::{mul_shr, shl_div};
-        use dlmm_lib::dlmm::types::Rounding;
-
-        const BIN_ARRAY_HEADER_SIZE: usize = 56;
-        const BIN_SIZE: usize = 144;
-
         let swap_for_y = self.base_token_pk == input_mint;
         let (bin_arrays, cache) = if swap_for_y {
             let cache = match self.buy_swap_cache.as_ref() {

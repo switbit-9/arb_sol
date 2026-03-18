@@ -193,12 +193,19 @@ pub fn analytical_optimal_2pool(
             let mid = r_out * dx * f_amm / (r_in + dx * f_amm);
             let capped = mid > *dlmm_max_in as f64;
 
+            debug_eprintln!(
+                "  CP_FI+DLMM: r_in={:.2}, r_out={:.2}, f_amm={:.6}, p={:.6}, f_dlmm={:.6}, dlmm_max_in={}, unclamped_dx={:.4}, mid={:.4}, capped={}",
+                r_in, r_out, f_amm, p, f_dlmm, dlmm_max_in, dx, mid, capped
+            );
+
             // When capped, clamp dx so mid = dlmm_max_in
             let dx = if capped {
                 let max_in = *dlmm_max_in as f64;
                 if *r_out <= max_in { return None; }
                 let u = max_in * r_in / (r_out - max_in);
-                u / f_amm
+                let clamped_dx = u / f_amm;
+                debug_eprintln!("  CP_FI+DLMM capped: clamped_dx={:.4}", clamped_dx);
+                clamped_dx
             } else {
                 dx
             };
@@ -905,6 +912,120 @@ fn compute_multibin_profit(
             };
             output_amount - input_amount
         }
+    }
+}
+
+// ─── DLMM + DLMM multi-bin greedy walker ─────────────────────────────────────
+
+/// Compute the optimal input amount for a DLMM → DLMM arbitrage pair.
+///
+/// Both pools are piecewise-linear, so the composed output within any bin pair
+/// is also linear:  `out = dx * buy_slope * sell_slope`.
+/// The marginal rate is constant per bin pair — either profitable (rate > 1) or not.
+/// We greedily fill bin pairs while profitable, advancing whichever bin is exhausted first.
+///
+/// Returns `Some((optimal_amount, estimated_profit))` or `None`.
+pub fn analytical_optimal_dlmm_dlmm<'info>(
+    accounts: &[AccountInfo<'info>],
+    buy_instance: &dyn ProgramMeta,
+    sell_instance: &dyn ProgramMeta,
+    buy_input_mint: Pubkey,
+    sell_input_mint: Pubkey,
+    max_amount_in: u64,
+) -> Option<(u64, i128)> {
+    let max_f = max_amount_in as f64;
+    let mut total_in: f64 = 0.0;
+    let mut total_profit: f64 = 0.0;
+
+    let mut buy_offset: i32 = 0;
+    let mut sell_offset: i32 = 0;
+    // Remaining capacity in the current bin (in gross input units for that pool)
+    let mut buy_remaining: f64 = 0.0;
+    let mut sell_remaining_tokens: f64 = 0.0; // sell-side remaining in token (sell input) units
+    let mut buy_slope: f64 = 0.0;
+    let mut sell_slope: f64 = 0.0;
+    let mut buy_needs_load = true;
+    let mut sell_needs_load = true;
+
+    for _ in 0..140 {  // safety limit: max 70 bins per side
+        // Load buy bin if needed
+        if buy_needs_load {
+            match buy_instance.get_bin_segment(accounts, buy_input_mint, buy_offset) {
+                Ok(Some((s, c, f))) if s > 0.0 && c > 0 && f > 0.0 => {
+                    buy_slope = s;
+                    buy_remaining = c as f64 / f; // gross capacity
+                    buy_needs_load = false;
+                }
+                Ok(Some(_)) => {
+                    // empty bin — skip
+                    buy_offset += 1;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        // Load sell bin if needed
+        if sell_needs_load {
+            match sell_instance.get_bin_segment(accounts, sell_input_mint, sell_offset) {
+                Ok(Some((s, c, f))) if s > 0.0 && c > 0 && f > 0.0 => {
+                    sell_slope = s;
+                    sell_remaining_tokens = c as f64 / f; // gross capacity in tokens
+                    sell_needs_load = false;
+                }
+                Ok(Some(_)) => {
+                    sell_offset += 1;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        // Composed marginal rate
+        let rate = buy_slope * sell_slope;
+        if rate <= 1.0 {
+            break; // no more profit possible
+        }
+
+        // How much SOL can we push through both bins?
+        // Buy bin accepts buy_remaining SOL, producing buy_remaining * buy_slope tokens.
+        // Sell bin accepts sell_remaining_tokens tokens.
+        let sell_cap_sol = sell_remaining_tokens / buy_slope; // sell capacity in SOL terms
+        let remaining_budget = max_f - total_in;
+        let fillable = buy_remaining.min(sell_cap_sol).min(remaining_budget);
+
+        if fillable <= 0.0 {
+            break;
+        }
+
+        // Consume
+        let tokens_consumed = fillable * buy_slope;
+        total_in += fillable;
+        total_profit += fillable * (rate - 1.0);
+        buy_remaining -= fillable;
+        sell_remaining_tokens -= tokens_consumed;
+
+        // Budget exhausted
+        if total_in >= max_f {
+            break;
+        }
+
+        // Advance whichever bin(s) were exhausted (threshold to handle float imprecision)
+        let eps = 0.5;
+        if buy_remaining < eps {
+            buy_offset += 1;
+            buy_needs_load = true;
+        }
+        if sell_remaining_tokens < eps {
+            sell_offset += 1;
+            sell_needs_load = true;
+        }
+    }
+
+    if total_profit > 0.0 && total_in > 0.0 {
+        Some((total_in as u64, total_profit as i128))
+    } else {
+        None
     }
 }
 

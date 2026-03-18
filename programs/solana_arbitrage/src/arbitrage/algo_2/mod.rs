@@ -1,5 +1,5 @@
-mod arbitrage_path;
-pub use arbitrage_path::ArbitragePath;
+pub mod arbitrage_path;
+pub use arbitrage_path::{ArbitragePath, EdgeArray};
 
 mod simple_method;
 pub use simple_method::{

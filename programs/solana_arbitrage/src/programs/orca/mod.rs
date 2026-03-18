@@ -10,7 +10,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     pubkey::Pubkey,
 };
 
@@ -286,7 +286,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke_unchecked(&swap_ix, &accounts_arr)?;
+        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
         Ok(())
     }
 
@@ -390,7 +390,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke_unchecked(&swap_ix, &accounts_arr)?;
+        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
         Ok(())
     }
 

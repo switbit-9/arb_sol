@@ -4,7 +4,7 @@ use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -384,7 +384,7 @@ impl ProgramMeta for MeteoraDammV1 {
 
         unsafe {
             let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_unchecked(&swap_ix, accounts_slice)?;
+            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
         }
         Ok(())
     }

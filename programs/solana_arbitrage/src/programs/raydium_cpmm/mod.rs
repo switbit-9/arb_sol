@@ -19,7 +19,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -422,7 +422,7 @@ impl RaydiumCPMM {
             observation_account.clone(),
         ];
 
-        invoke_unchecked(&swap_ix, &accounts_arr)?;
+        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
         Ok(())
     }
 

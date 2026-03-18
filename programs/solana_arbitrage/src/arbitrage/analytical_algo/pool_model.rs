@@ -144,6 +144,7 @@ pub fn extract_pool_model_both(
                     return PoolModel::Opaque { marginal_price };
                 }
                 let active_bin_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
+                // eprintln!("Input Mint {}, {}", input_mint, active_bin_capacity);
                 let bin_step_frac = instance.get_bin_step_frac();
                 let max_in = if active_bin_capacity > 0 {
                     active_bin_capacity
@@ -158,6 +159,7 @@ pub fn extract_pool_model_both(
                     let one_bin_est = (total_max_in as f64 * bin_step_frac).max(1.0) as u64;
                     one_bin_est.min(total_max_in)
                 };
+                
                 PoolModel::Linear { price, fee: fee_base_to_quote, max_in, bin_step_frac, marginal_price }
             };
             (build_dlmm(start_token, buy_marginal_price), build_dlmm(middle_mint, sell_marginal_price))

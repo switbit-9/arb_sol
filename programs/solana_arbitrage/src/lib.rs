@@ -26,7 +26,7 @@ use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
 use arbitrage::algo_2::{
     /* check_arbitrage, */ find_cross_arbitrage_optimized,
-    find_triangular_arbitrage_iterative, get_edges, ArbitragePath,
+    find_triangular_arbitrage_iterative, get_edges, ArbitragePath, EdgeArray,
 };
 use arbitrage::analytical_algo::{run_analytical_2hop, run_analytical_multihop};
 use programs::{
@@ -132,18 +132,24 @@ fn start_bot<'info>(
     }
 
     #[cfg(test)]
-    let max_amount_in = 2_000_000_000;
+    let max_amount_in = 3_000_000_000;
     debug_eprintln!("max_amount_in: {:?}", max_amount_in);
 
-    match data.mode {
+    let result = match data.mode {
         arb_mode::MULTI_HOP_CHAIN => {
-            start_bot_multihop(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)
+            start_bot_multihop(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)?
         }
         _ => {
             // SINGLE_PAIR (1 group) and MULTIPLE_TRADES (N groups) share the same loop
-            start_bot_grouped(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)
+            start_bot_grouped(accounts, &data, clock, payer, shared_statics_start, pool_start, max_amount_in)?
         }
+    };
+
+    if result.is_none() && !data.test {
+        return Err(error!(SolarBError::NoProfitFound));
     }
+
+    Ok(result)
 }
 
 /// Compare the analytical optimal against a high-precision golden section search
@@ -298,7 +304,7 @@ fn start_bot_grouped<'info>(
         let mut simulation_instances = instances.clone();
 
         let arbitrage_path = run_analytical_2hop(
-            accounts, &mut instances, &mut group_config, &mint_fees,
+            accounts, &mut instances, &mut group_config,
         )?;
 
         #[cfg(test)]
@@ -308,44 +314,59 @@ fn start_bot_grouped<'info>(
             continue;
         };
 
-        let mut prep_failed = false;
-        for edge in &arb_path.edges {
-            if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-                if !inst.prepare_for_execution(accounts, &group_config.clock) {
-                    prep_failed = true;
-                    break;
-                }
-            }
-        }
-        if prep_failed {
-            debug_eprintln!("Skipping arb path: pool preparation failed");
-            continue;
-        }
+        // let mut prep_failed = false;
+        // for edge in &arb_path.edges {
+        //     if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
+        //         if !inst.prepare_for_execution(accounts, &group_config.clock) {
+        //             prep_failed = true;
+        //             break;
+        //         }
+        //     }
+        // }
+        // if prep_failed {
+        //     debug_eprintln!("Skipping arb path: pool preparation failed");
+        //     continue;
+        // }
 
-        let sim_profit = run_simulation(
-            accounts, &arb_path, &mut simulation_instances, &mut group_config, &mint_fees,
-        )?;
-
-        if sim_profit <= group_config.min_profit
-            || (!test_mode && arb_path.profit <= group_config.min_profit)
+        #[cfg(test)]
         {
-            debug_eprintln!("No Profit");
-            continue;
+            let sim_profit = run_simulation(
+                accounts, &arb_path, &mut simulation_instances, &mut group_config, &mint_fees,
+            )?;
+
+            if sim_profit <= group_config.min_profit
+                || (!test_mode && arb_path.profit <= group_config.min_profit)
+            {
+                debug_eprintln!("No Profit");
+                continue;
+            }
         }
 
         if test_mode {
             arb_path.start_amount = 1_000_000;
         }
 
-        #[cfg(test)]
-        {
-            if arb_path.profit > 0 {
-                write_results_to_file(&[Some(arb_path.clone())]);
-            }
-        }
+        // #[cfg(test)]
+        // {
+        //     if arb_path.profit > 0 {
+        //         write_results_to_file(&[Some(arb_path.clone())]);
+        //     }
+        // }
 
         execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
+
+        // Re-read start token balance after swaps and abort if not profitable
+        let balance_after = u64::from_le_bytes(
+            accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
+                .try_into()
+                .map_err(|_| SolarBError::InvalidAccountData)?,
+        );
+        if balance_after < max_amount_in {
+            return Err(error!(SolarBError::NoProfitFound));
+        }
+
         return Ok(Some(arb_path));
+
     }
     Ok(None)
 }
@@ -407,7 +428,7 @@ fn start_bot_multihop<'info>(
         return Ok(None);
     };
 
-    for edge in &arbitrage_path.edges {
+    for edge in arbitrage_path.edges.iter() {
         if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
             if !inst.prepare_for_execution(accounts, &bot_config.clock) {
                 debug_eprintln!("Skipping arb path: pool preparation failed");
@@ -416,16 +437,30 @@ fn start_bot_multihop<'info>(
         }
     }
 
-    let sim_profit = run_simulation(accounts, &arbitrage_path, &mut instances, &mut bot_config, &mint_fees)?;
-
-    if sim_profit <= bot_config.min_profit
-        || (!test_mode && arbitrage_path.profit <= bot_config.min_profit)
+    #[cfg(test)]
     {
-        debug_eprintln!(
-            "Not found: sp={} ap={} mp={}",
-            sim_profit, arbitrage_path.profit, bot_config.min_profit
-        );
-        return Ok(None);
+        let sim_profit = run_simulation(accounts, &arbitrage_path, &mut instances, &mut bot_config, &mint_fees)?;
+
+        if sim_profit <= bot_config.min_profit
+            || (!test_mode && arbitrage_path.profit <= bot_config.min_profit)
+        {
+            debug_eprintln!(
+                "Not found: sp={} ap={} mp={}",
+                sim_profit, arbitrage_path.profit, bot_config.min_profit
+            );
+            return Ok(None);
+        }
+    }
+
+    #[cfg(not(test))]
+    {
+        if arbitrage_path.profit <= bot_config.min_profit {
+            debug_eprintln!(
+                "Not found: ap={} mp={}",
+                arbitrage_path.profit, bot_config.min_profit
+            );
+            return Ok(None);
+        }
     }
 
     if test_mode {
@@ -440,6 +475,17 @@ fn start_bot_multihop<'info>(
     }
 
     execute_arbitrage_path(accounts, &arbitrage_path, &mut instances, payer, data.mints)?;
+
+    // Re-read start token balance after swaps and abort if not profitable
+    let balance_after = u64::from_le_bytes(
+        accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
+            .try_into()
+            .map_err(|_| SolarBError::InvalidAccountData)?,
+    );
+    if balance_after < max_amount_in {
+        return Err(error!(SolarBError::NoProfitFound));
+    }
+
     Ok(Some(arbitrage_path))
 }
 
@@ -670,7 +716,7 @@ fn run_single_pair_arbitrage<'info>(
                     .iter()
                     .find(|e| e.right.mint_account == start_token && e.pool_id != buy.pool_id);
                 if let Some(sell) = sell_edge {
-                    let edges = vec![buy.clone(), sell.clone()];
+                    let edges = EdgeArray::from_2(buy.clone(), sell.clone());
                     let (optimal_amount_in, profit) =
                         find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
                     let final_amount =
@@ -687,7 +733,7 @@ fn run_single_pair_arbitrage<'info>(
         return Ok(None);
     }
 
-    let Some((edges, est_profit, _)) = candidate else {
+    let Some((edge_vec, est_profit, _)) = candidate else {
         if !config.test {
             // msg!("Single: Rejected, no profitable candidates");
         }
@@ -696,7 +742,7 @@ fn run_single_pair_arbitrage<'info>(
 
     // msg!("Evaluating candidate: est_profit={}", est_profit);
     let (optimal_amount_in, profit) =
-        find_optimal_amount_in_v2(&edges, accounts, instances, config)?;
+        find_optimal_amount_in_v2(&edge_vec, accounts, instances, config)?;
 
     // msg!("  opt: in={}, p={}", optimal_amount_in, profit);
 
@@ -707,7 +753,7 @@ fn run_single_pair_arbitrage<'info>(
 
     let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
     let best_result = ArbitragePath {
-        edges,
+        edges: EdgeArray::from(edge_vec),
         profit,
         final_amount,
         start_amount: optimal_amount_in,
@@ -786,7 +832,7 @@ fn run_multi_hop_arbitrage<'info>(
     let final_amount = (optimal_amount_in as i128).checked_add(profit).unwrap_or(0) as u128;
 
     let arbitrage_path = ArbitragePath {
-        edges: path_edges,
+        edges: EdgeArray::from(path_edges),
         profit,
         final_amount,
         start_amount: optimal_amount_in,
@@ -889,7 +935,7 @@ fn run_multiple_trades_arbitrage<'info>(
                 // In test mode, if no candidate found, use first two edges from group
                 let e0 = &all_edges[edge_indices[0]];
                 let e1 = &all_edges[edge_indices[1]];
-                let fallback_edges = vec![e0.clone(), e1.clone()];
+                let fallback_edges = EdgeArray::from_2(e0.clone(), e1.clone());
                 let (optimal_amount_in, refined_profit) =
                     find_optimal_amount_in_v2(&fallback_edges, accounts, instances, config)?;
                 if best_path.is_none() {
@@ -925,7 +971,7 @@ fn run_multiple_trades_arbitrage<'info>(
                 .checked_add(refined_profit)
                 .unwrap_or(0) as u128;
             best_path = Some(ArbitragePath {
-                edges: path_edges,
+                edges: EdgeArray::from(path_edges),
                 profit: refined_profit,
                 final_amount,
                 start_amount: optimal_amount_in,

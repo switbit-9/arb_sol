@@ -4,13 +4,13 @@ use anchor_lang::prelude::Pubkey;
 
 use super::pool::Pool;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EdgeSide {
     LeftToRight,
     RightToLeft,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Edge {
     pub program: Pubkey,
     pub pool_id: Pubkey,

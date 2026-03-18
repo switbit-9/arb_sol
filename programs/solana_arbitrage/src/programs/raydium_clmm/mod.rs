@@ -13,7 +13,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     pubkey::Pubkey,
 };
 
@@ -412,7 +412,7 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_unchecked(&swap_ix, &accs[..ai])?;
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
 
         Ok(())
     }
@@ -537,7 +537,7 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_unchecked(&swap_ix, &accs[..ai])?;
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
 
         Ok(())
     }

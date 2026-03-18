@@ -1,6 +1,6 @@
 use anchor_lang::prelude::Pubkey;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Pool {
     pub mint_account: Pubkey,
 }

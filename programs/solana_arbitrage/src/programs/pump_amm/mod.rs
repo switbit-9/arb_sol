@@ -3,7 +3,7 @@ use crate::utils::token::{apply_transfer_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke_unchecked,
+    program::invoke_signed_unchecked,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -126,8 +126,7 @@ pub struct PumpAmm {
     pub buy_max_out: u64,
     pub sell_max_in: u64,
     pub sell_max_out: u64,
-    pub is_merhem: bool,
-    /// Whether deferred fields (max amounts, transfer fees, is_merhem) have been computed
+    /// Whether deferred fields (max amounts, transfer fees) have been computed
     pub prepared: bool,
 
 }
@@ -375,7 +374,9 @@ impl ProgramMeta for PumpAmm {
         let vault_authority = &accounts[self.dyn_start + D_VAULT_AUTHORITY];
         let cashback_pool_id = &accounts[self.dyn_start + D_CASHBACK_POOL_ID];
 
-        // Stack-allocated arrays — avoids heap Vec allocation (~2-4k CU savings)
+        let is_merhem = Self::is_merhem(accounts, self.dyn_start);
+
+        // Stack-allocated arrays — avoids heap Vec allocation
         let mut metas: [AccountMeta; 25] = core::array::from_fn(|_| AccountMeta::new_readonly(Pubkey::default(), false));
         let mut n = 0usize;
         macro_rules! push_meta {
@@ -406,7 +407,7 @@ impl ProgramMeta for PumpAmm {
         push_meta!(w *user_volume_accumulator.key);
         push_meta!(r *fee_config.key);
         push_meta!(r *fee_program.key);
-        if self.is_merhem {
+        if is_merhem {
             push_meta!(w *user_vol_wsol_ata.key);
         }
         push_meta!(r *cashback_pool_id.key);
@@ -417,18 +418,21 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&1u64.to_le_bytes());
 
+        // Build Instruction with exact-capacity Vecs (no realloc)
+        let mut meta_vec = Vec::with_capacity(n);
+        meta_vec.extend_from_slice(&metas[..n]);
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas[..n].to_vec(),
+            accounts: meta_vec,
             data: data.to_vec(),
         };
 
-        // Stack-allocated account infos array — no heap Vec
+        // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
         let mut accs: [AccountInfo<'a>; 25] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { std::mem::transmute($e.clone()) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { std::mem::transmute($e.to_account_info()) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
         push_acc!(ref pool_id);
         push_acc!(own payer);
@@ -453,12 +457,12 @@ impl ProgramMeta for PumpAmm {
         push_acc!(ref user_volume_accumulator);
         push_acc!(ref fee_config);
         push_acc!(ref fee_program);
-        if self.is_merhem {
+        if is_merhem {
             push_acc!(ref user_vol_wsol_ata);
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_unchecked(&swap_ix, &accs[..ai])?;
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
         Ok(())
     }
 
@@ -547,6 +551,7 @@ impl ProgramMeta for PumpAmm {
         let cashback_pool_id = &accounts[self.dyn_start + D_CASHBACK_POOL_ID];
 
         let min_amount_out_value = min_amount_out.unwrap_or(0);
+        let is_merhem = Self::is_merhem(accounts, self.dyn_start);
 
         // Stack-allocated metas array
         let mut metas: [AccountMeta; 24] = core::array::from_fn(|_| AccountMeta::new_readonly(Pubkey::default(), false));
@@ -577,7 +582,7 @@ impl ProgramMeta for PumpAmm {
         push_meta!(r *vault_authority.key);
         push_meta!(r *fee_config.key);
         push_meta!(r *fee_program.key);
-        if self.is_merhem {
+        if is_merhem {
             push_meta!(w *user_vol_wsol_ata.key);
             push_meta!(w *user_volume_accumulator.key);
         }
@@ -588,18 +593,21 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
+        // Build Instruction with exact-capacity Vecs (no realloc)
+        let mut meta_vec = Vec::with_capacity(n);
+        meta_vec.extend_from_slice(&metas[..n]);
         let swap_ix = Instruction {
             program_id: *program_id.key,
-            accounts: metas[..n].to_vec(),
+            accounts: meta_vec,
             data: data.to_vec(),
         };
 
-        // Stack-allocated account infos array — no heap Vec
+        // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
         let mut accs: [AccountInfo<'a>; 24] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { std::mem::transmute($e.clone()) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { std::mem::transmute($e.to_account_info()) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
         push_acc!(ref pool_id);
         push_acc!(own payer);
@@ -622,13 +630,13 @@ impl ProgramMeta for PumpAmm {
         push_acc!(ref vault_authority);
         push_acc!(ref fee_config);
         push_acc!(ref fee_program);
-        if self.is_merhem {
+        if is_merhem {
             push_acc!(ref user_vol_wsol_ata);
             push_acc!(ref user_volume_accumulator);
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_unchecked(&swap_ix, &accs[..ai])?;
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
         Ok(())
     }
     
@@ -669,6 +677,17 @@ impl ProgramMeta for PumpAmm {
 
 impl PumpAmm {
 
+    /// Read is_merhem flag directly from pool account data (avoids storing in struct).
+    #[inline(always)]
+    fn is_merhem<'a>(accounts: &[AccountInfo<'a>], dyn_start: usize) -> bool {
+        let pool = &accounts[dyn_start + D_POOL];
+        if let Ok(data) = pool.try_borrow_data() {
+            data.len() > POOL_IS_CASHBACK_OFFSET && data[POOL_IS_CASHBACK_OFFSET] != 0
+        } else {
+            false
+        }
+    }
+
     pub fn new<'a>(
         accounts: &[AccountInfo<'a>],
         static_base: usize,
@@ -694,7 +713,7 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
         // TODO: maket to run in test
         #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.02) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 0.8) as u64;
         let price = get_price_f64(base_vault_amount, quote_vault_amount);
         // fee from client-side pool_fee (millionths, e.g. 12500 = 1.25%)
         // 0 = calculate from vault amounts on-chain
@@ -722,7 +741,6 @@ impl PumpAmm {
             buy_max_out: 0,
             sell_max_in: 0,
             sell_max_out: 0,
-            is_merhem: false,
             prepared: false,
 
         };
@@ -730,7 +748,7 @@ impl PumpAmm {
         Ok(instance)
     }
 
-    /// Compute deferred fields: max amounts, transfer fee rates, is_merhem.
+    /// Compute deferred fields: max amounts, transfer fee rates.
     /// Called only for instances that participate in a profitable arb path.
     pub fn prepare_for_execution<'a>(
         &mut self,
@@ -740,12 +758,6 @@ impl PumpAmm {
             return;
         }
         self.prepared = true;
-
-        let pool_id = &accounts[self.dyn_start + D_POOL];
-        if let Ok(pool_data) = pool_id.try_borrow_data() {
-            self.is_merhem = pool_data.len() > POOL_IS_CASHBACK_OFFSET
-                && pool_data[POOL_IS_CASHBACK_OFFSET] != 0;
-        }
 
         let ff = FEE_DENOM - self.fee_numerator as u128; // fee factor scaled by 1M
         let (buy_max_in, buy_max_out) = {

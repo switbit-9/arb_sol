@@ -237,7 +237,7 @@ impl ProgramMeta for ProgramInstance {
             ProgramInstance::MeteoraDammV1(p) => { p.prepare_for_execution(accounts); true }
             ProgramInstance::MeteoraDammV2(p) => { p.prepare_for_execution(accounts); true }
             ProgramInstance::OrcaWhirlpool(p) => { p.prepare_for_execution(accounts); true }
-            ProgramInstance::MeteoraDlmm(p) => p.prepare_for_execution(accounts, clock).is_ok()
+            ProgramInstance::MeteoraDlmm(p) => p.prepare_for_execution(accounts, clock).unwrap_or(false)
         }
     }
 }
