@@ -261,14 +261,6 @@ impl ProgramMeta for PumpAmm {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
-        // Use vault amounts directly — no need for deferred max amounts
-        if input_mint == self.base_token_pk {
-            self.quote_vault_amount > 0
-        } else {
-            self.base_vault_amount > 0
-        }
-    }
 
 
 
@@ -713,8 +705,12 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
         // TODO: maket to run in test
         #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 0.8) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.0) as u64;
+        // let base_vault_amount = 0;
+        // let quote_vault_amount = 0;
+
         let price = get_price_f64(base_vault_amount, quote_vault_amount);
+        
         // fee from client-side pool_fee (millionths, e.g. 12500 = 1.25%)
         // 0 = calculate from vault amounts on-chain
         let fee_numerator: u64 = if pool_fee > 0 {

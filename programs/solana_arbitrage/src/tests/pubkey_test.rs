@@ -110,43 +110,31 @@ mod tests {
 "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",  // memo [3]
 "So11111111111111111111111111111111111111112",  // wsol_mint [4]
 "Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk",  // user_wsol_ata [5]
-"AVF9F4C4j8b1Kh4BmNHqybDaHgnZpJ7W7yLvL7hUpump",  // mint [6]
-"EUBjD4k32r7TH3fa23hPpX3B2mfMJu83JMvcnTpi61mq",  // user_token_ata [7]
-"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  // pump_amm program_id [8]
-"62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",  // pump_amm protocol_fee_recipient [9]
-"94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",  // pump_amm protocol_fee_token_acc [10]
-"GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",  // pump_amm event_authority [11]
-"5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",  // pump_amm fee_config [12]
-"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",  // pump_amm fee_program [13]
-"ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",  // pump_amm global [14]
-"11111111111111111111111111111111",  // pump_amm system_program [15]
-"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  // pump_amm assoc_token_prog [16]
-"C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",  // pump_amm global_vol_acc [17]
-"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",  // meteora_damm_v2 program_id [18]
-"HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC",  // meteora_damm_v2 pool_authority [19]
-"3rmHSu74h1ZcmAisVcWerTCiRDQbUrBKmcwptYGjHfet",  // meteora_damm_v2 event_authority [20]
-"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",  // meteora_damm_v2 referral_token_acc [21]
-"AADJrfmWoHVXZhF1UkbHvNC5tqrBpkGdSaxtMYteDm2x",  // pump_amm [AADJrfmW] pool_id [22]
-"6M13LRCjGdBSuo9ZvPZ7h4nj8mXvUu9RyRLAQ5rhScYs",  // pump_amm [AADJrfmW] base_vault [23]
-"C41sWzRvikSo3KH6U8zoejJ7cN5Ctv2ToT5B22U2M4N2",  // pump_amm [AADJrfmW] quote_vault [24]
-"WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i",  // pump_amm [AADJrfmW] user_volume_acc [25]
-"62b5KqEUVBSnJPHtLCftqTkxCKLKoKaree6gsAokYcPm",  // pump_amm [AADJrfmW] pool_v2 [26]
-"4shRJJF5itY9W29tVSJWVQxxSBmu6ny1BR3X1z5XyqzS",  // pump_amm [AADJrfmW] user_vol_wsol_ata [27]
-"AepwkYPKLDwqacvBVfAZJVv7cjkZhYcQ3mSwjtRQm2HH",  // pump_amm [AADJrfmW] vault_ata [28]
-"BEPSWG5CBCcSVsQDk1aV7yB6oE3Hkyn2EJbZQe9G6foq",  // pump_amm [AADJrfmW] vault_authority [29]
-"62b5KqEUVBSnJPHtLCftqTkxCKLKoKaree6gsAokYcPm",  // pump_amm [AADJrfmW] dyn_8 [30]
-"6rfbVR7qZ8ftSpegyCCKXPX5vaZzjDzhPWP5Ag93YV4W",  // meteora_damm_v2 [6rfbVR7q] pool_id [31]
-"TVQj3UiD1Z3TpTbH9QpZzMcNctyEiP6E3XqLhAg5fCz",  // meteora_damm_v2 [6rfbVR7q] base_vault [32]
-"5xiGRLirA7TXxy7ydvtyeLqUTd31Xu1oQ4DqtwCApBbN",  // meteora_damm_v2 [6rfbVR7q] quote_vault [33]
+"Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump",  // mint [6]
+"FnWuaZR2r2XQyxJYM2xf7s3JMJf5bWxhDHhUatdhbR94",  // user_token_ata [7]
+"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  // raydium_amm program_id [8]
+"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  // raydium_amm amm_authority [9]
+"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  // whirlpool program_id [10]
+"8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt",  // raydium_amm [8WwcNqdZ] pool_id [11]
+"CLTdpsLAs7JTmN1r6AfVSjBTgqpJAtKEWvGbenYrxMYT",  // raydium_amm [8WwcNqdZ] base_vault [12]
+"EmyzSTZrb9NCBz8bK8Sfy8iaBT7Bkh1wpjiiKKQhjMxG",  // raydium_amm [8WwcNqdZ] quote_vault [13]
+"CTweAnaHqDxevH2k9H9SmTRC3DEVhb3DkXDxVHiEW6kW",  // raydium_amm [8WwcNqdZ] open_orders [14]
+"5t1DEPmxpyQzygiXT9Q9xvidHTSBeD1PYnoFYa7wG5mg",  // whirlpool [5t1DEPmx] pool_id [15]
+"2ogJYLnBYsQzfh19pTxiv87GhRDWoRGc3oAEAZFhEAA7",  // whirlpool [5t1DEPmx] base_vault [16]
+"EcoNf7JkBfLytGkqhZANz2RPECT55997whcEXC1ZhRq5",  // whirlpool [5t1DEPmx] quote_vault [17]
+"B3PqJK4z6437oGywZi1DKdzoQRcoi6BC8uP7BMsWQGxg",  // whirlpool [5t1DEPmx] oracle [18]
+"6R3gxZPUzLU7dLYNfiafUhNqrA47JuBxNtdDyFNFi9Xe",  // whirlpool [5t1DEPmx] tick_array_0 [19]
+"AyzKp4uU4CuWuttm3jgvJynDUhPjY7En9SvYG92uD9G2",  // whirlpool [5t1DEPmx] tick_array_1 [20]
+"9prbVZryXSj8nZfihvbHjJ7Z1GSsmsVynbrQUj7ZBnZX",  // whirlpool [5t1DEPmx] tick_array_2 [21]
 ];
 
     fn make_instruction_data(test_mode: bool) -> InstructionData {
-        InstructionData                                             {
+        InstructionData                                                     {
         mints: 2,
-        shared_statics_len: 14,
-        pool_types: [0, 2, 0, 0, 0, 0, 0, 0],
-        pool_lengths: [9, 3, 0, 0, 0, 0, 0, 0],
-        type_static_offsets: [0, 10, 0, 0, 0, 0, 0, 0],
+        shared_statics_len: 3,
+        pool_types: [5, 4, 0, 0, 0, 0, 0, 0],
+        pool_lengths: [4, 7, 0, 0, 0, 0, 0, 0],
+        type_static_offsets: [0, 2, 0, 0, 0, 0, 0, 0],
         mode: 0,
         test: false,
         group_sizes: [0, 0, 0, 0],

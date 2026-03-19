@@ -20,8 +20,14 @@ pub enum PoolModel {
     /// Applies to: MeteoraDLMM
     Linear { price: f64, fee: f64, max_in: u64, bin_step_frac: f64, marginal_price: f64 },
 
+    /// Concentrated-liquidity (sqrt-price) pool — CP within active tick range.
+    /// Uses virtual reserves: out = reserve_out * dx * fee / (reserve_in + dx * fee)
+    /// Mathematically identical to CpFeeOnInput but with virtual reserves from L/sqrt_P.
+    /// max_in = gross capacity of the active tick range.
+    /// Applies to: RaydiumCLMM, OrcaWhirlpool
+    Clmm { reserve_in: f64, reserve_out: f64, fee: f64, max_in: u64, marginal_price: f64 },
+
     /// No closed-form available. Use fast_quote + golden section fallback.
-    /// Applies to: OrcaWhirlpool, RaydiumCLMM
     Opaque { marginal_price: f64 },
 }
 
@@ -32,6 +38,7 @@ impl PoolModel {
             PoolModel::CpFeeOnInput { .. } => "CP_FI",
             PoolModel::CpFeeOnOutput { .. } => "CP_FO",
             PoolModel::Linear { .. } => "DLMM",
+            PoolModel::Clmm { .. } => "CLMM",
             PoolModel::Opaque { .. } => "Opaque",
         }
     }
@@ -43,6 +50,7 @@ impl PoolModel {
             PoolModel::CpFeeOnInput { fee, .. } => *fee,
             PoolModel::CpFeeOnOutput { fee, .. } => *fee,
             PoolModel::Linear { fee, .. } => *fee,
+            PoolModel::Clmm { fee, .. } => *fee,
             PoolModel::Opaque { .. } => 1.0,
         }
     }
@@ -55,6 +63,7 @@ impl PoolModel {
             PoolModel::CpFeeOnInput { marginal_price, .. }
             | PoolModel::CpFeeOnOutput { marginal_price, .. }
             | PoolModel::Linear { marginal_price, .. }
+            | PoolModel::Clmm { marginal_price, .. }
             | PoolModel::Opaque { marginal_price } => *marginal_price,
         }
     }
@@ -191,37 +200,19 @@ pub fn extract_pool_model_both(
             (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
         }
 
-        PoolKind::OrcaWhirlpool => {
-            let bin_step_frac = instance.get_bin_step_frac();
+        // OrcaWhirlpool & RaydiumCLMM: sqrt-price concentrated liquidity.
+        // Model as Clmm with virtual reserves from L/sqrt_P (exact CP within tick range).
+        // max_in may be 0 if price is exactly at a tick boundary — the multi-tick
+        // walker handles this by walking to the next tick with capacity.
+        PoolKind::OrcaWhirlpool | PoolKind::RaydiumCLMM => {
             let build_model = |input_mint: Pubkey, marginal_price: f64| -> PoolModel {
-                let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
-                if price <= 0.0 || !price.is_finite() {
-                    return PoolModel::Opaque { marginal_price };
-                }
-                let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
-                if active_capacity == 0 {
-                    return PoolModel::Opaque { marginal_price };
-                }
-                // Orca fee is symmetric; fee_base_to_quote == fee_quote_to_base
-                PoolModel::Linear { price, fee: fee_base_to_quote, max_in: active_capacity, bin_step_frac, marginal_price }
-            };
-            (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
-        }
-
-        // RaydiumCLMM: treat as Linear (like OrcaWhirlpool) — tick-based concentrated liquidity.
-        PoolKind::RaydiumCLMM => {
-            let bin_step_frac = instance.get_bin_step_frac();
-            let build_model = |input_mint: Pubkey, marginal_price: f64| -> PoolModel {
-                let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
-                if price <= 0.0 || !price.is_finite() {
-                    return PoolModel::Opaque { marginal_price };
-                }
-                let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
-                if active_capacity == 0 {
-                    return PoolModel::Opaque { marginal_price };
-                }
+                let (vr_in, vr_out) = match instance.get_clmm_virtual_reserves(input_mint) {
+                    Some(v) if v.0 > 0.0 && v.1 > 0.0 => v,
+                    _ => return PoolModel::Opaque { marginal_price },
+                };
+                let max_in = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
                 let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
-                PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
+                PoolModel::Clmm { reserve_in: vr_in, reserve_out: vr_out, fee, max_in, marginal_price }
             };
             (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
         }
@@ -345,37 +336,15 @@ pub fn extract_pool_model(instance: &dyn ProgramMeta, input_mint: Pubkey) -> Poo
             }
         }
 
-        // OrcaWhirlpool: approximate as Linear using the active tick range.
-        // get_active_bin_max_in computes capacity analytically (no account reads).
-        // get_bin_segment walks tick arrays for the multi-bin walker.
-        PoolKind::OrcaWhirlpool => {
-            let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
-            if price <= 0.0 || !price.is_finite() {
-                return opaque;
-            }
-            let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
-            if active_capacity == 0 {
-                return opaque;
-            }
+        // OrcaWhirlpool & RaydiumCLMM: sqrt-price concentrated liquidity.
+        PoolKind::OrcaWhirlpool | PoolKind::RaydiumCLMM => {
+            let (vr_in, vr_out) = match instance.get_clmm_virtual_reserves(input_mint) {
+                Some(v) if v.0 > 0.0 && v.1 > 0.0 => v,
+                _ => return opaque,
+            };
+            let max_in = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
             let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
-            let bin_step_frac = instance.get_bin_step_frac();
-            PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
-        }
-
-        // RaydiumCLMM: treat as Linear (like OrcaWhirlpool) — tick-based concentrated liquidity.
-        // Active bin capacity from current tick range; geometric mean price over the range.
-        PoolKind::RaydiumCLMM => {
-            let price = if input_mint == *base_mint { price_base_to_quote } else { price_quote_to_base };
-            if price <= 0.0 || !price.is_finite() {
-                return opaque;
-            }
-            let active_capacity = instance.get_active_bin_max_in(input_mint).unwrap_or(0);
-            if active_capacity == 0 {
-                return opaque;
-            }
-            let fee = if input_mint == *base_mint { fee_base_to_quote } else { fee_quote_to_base };
-            let bin_step_frac = instance.get_bin_step_frac();
-            PoolModel::Linear { price, fee, max_in: active_capacity, bin_step_frac, marginal_price }
+            PoolModel::Clmm { reserve_in: vr_in, reserve_out: vr_out, fee, max_in, marginal_price }
         }
     }
 }

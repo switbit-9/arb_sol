@@ -136,13 +136,7 @@ impl ProgramMeta for RaydiumCPMM {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
-        if input_mint == self.base_token_pk {
-            self.quote_vault_amount > 0
-        } else {
-            self.base_vault_amount > 0
-        }
-    }
+
 
     fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);

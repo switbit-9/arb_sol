@@ -365,6 +365,277 @@ pub fn analytical_optimal_2pool(
             })
         }
 
+        // ── Clmm + CP(fee-on-input) ─────────────────────────────────────
+        // Clmm is CP with fee-on-input and virtual reserves + max_in cap.
+        // Same formula as CP_FI + CP_FI, with pool1 input capped to max_in.
+        (
+            PoolModel::Clmm {
+                reserve_in: r1_in,
+                reserve_out: r1_out,
+                fee: f1,
+                max_in: clmm_max_in,
+                ..
+            },
+            PoolModel::CpFeeOnInput {
+                reserve_in: r2_in,
+                reserve_out: r2_out,
+                fee: f2, ..
+            },
+        ) => {
+            let a = r1_in * r2_in;
+            let b = r2_in + f2 * r1_out;
+            let c = r2_out * f2 * r1_out;
+
+            let disc = f1 * c * a;
+            if disc <= a * a {
+                return None;
+            }
+            let dx = (disc.sqrt() - a) / (f1 * b);
+            let capped = dx > *clmm_max_in as f64;
+            let dx = dx.min(*clmm_max_in as f64);
+            Some(clamp_result(dx, max_amount_in, capped))
+        }
+
+        // ── Clmm + CP(fee-on-output) ────────────────────────────────────
+        (
+            PoolModel::Clmm {
+                reserve_in: r1_in,
+                reserve_out: r1_out,
+                fee: f1,
+                max_in: clmm_max_in,
+                ..
+            },
+            PoolModel::CpFeeOnOutput {
+                reserve_in: r2_in,
+                reserve_out: r2_out,
+                fee: f2, ..
+            },
+        ) => {
+            let a = r1_in * r2_in;
+            let b = r2_in + r1_out;
+            let c = f2 * r2_out * r1_out;
+
+            let disc = f1 * c * a;
+            if disc <= a * a {
+                return None;
+            }
+            let dx = (disc.sqrt() - a) / (f1 * b);
+            let capped = dx > *clmm_max_in as f64;
+            let dx = dx.min(*clmm_max_in as f64);
+            Some(clamp_result(dx, max_amount_in, capped))
+        }
+
+        // ── CP(fee-on-input) + Clmm ─────────────────────────────────────
+        // Same as CP_FI + CP_FI but pool2 mid tokens capped to clmm_max_in.
+        (
+            PoolModel::CpFeeOnInput {
+                reserve_in: r1_in,
+                reserve_out: r1_out,
+                fee: f1, ..
+            },
+            PoolModel::Clmm {
+                reserve_in: r2_in,
+                reserve_out: r2_out,
+                fee: f2,
+                max_in: clmm_max_in,
+                ..
+            },
+        ) => {
+            let a = r1_in * r2_in;
+            let b = r2_in + f2 * r1_out;
+            let c = r2_out * f2 * r1_out;
+
+            let disc = f1 * c * a;
+            if disc <= a * a {
+                return None;
+            }
+            let dx = (disc.sqrt() - a) / (f1 * b);
+
+            // Check if mid-amount exceeds CLMM active tick capacity
+            let mid = r1_out * dx * f1 / (r1_in + dx * f1);
+            let capped = mid > *clmm_max_in as f64;
+            let dx = if capped {
+                let max_in = *clmm_max_in as f64;
+                if *r1_out <= max_in { return None; }
+                let u = max_in * r1_in / (r1_out - max_in);
+                u / f1
+            } else {
+                dx
+            };
+            Some(clamp_result(dx, max_amount_in, capped))
+        }
+
+        // ── CP(fee-on-output) + Clmm ────────────────────────────────────
+        (
+            PoolModel::CpFeeOnOutput {
+                reserve_in: r1_in,
+                reserve_out: r1_out,
+                fee: f1, ..
+            },
+            PoolModel::Clmm {
+                reserve_in: r2_in,
+                reserve_out: r2_out,
+                fee: f2,
+                max_in: clmm_max_in,
+                ..
+            },
+        ) => {
+            let a = r1_in * r2_in;
+            let b = r2_in + f1 * f2 * r1_out;
+            let c = r2_out * f1 * f2 * r1_out;
+
+            let disc = c * a;
+            if disc <= a * a {
+                return None;
+            }
+            let dx = (disc.sqrt() - a) / b;
+
+            // Check if mid exceeds CLMM capacity
+            let mid = f1 * r1_out * dx / (r1_in + dx);
+            let capped = mid > *clmm_max_in as f64;
+            let dx = if capped {
+                let max_in = *clmm_max_in as f64;
+                let denom = f1 * r1_out - max_in;
+                if denom <= 0.0 { return None; }
+                max_in * r1_in / denom
+            } else {
+                dx
+            };
+            Some(clamp_result(dx, max_amount_in, capped))
+        }
+
+        // ── Clmm + Clmm ─────────────────────────────────────────────────
+        // Both are CP with fee-on-input. Same as CP_FI + CP_FI with both caps.
+        (
+            PoolModel::Clmm {
+                reserve_in: r1_in,
+                reserve_out: r1_out,
+                fee: f1,
+                max_in: max_in_1,
+                ..
+            },
+            PoolModel::Clmm {
+                reserve_in: r2_in,
+                reserve_out: r2_out,
+                fee: f2,
+                max_in: max_in_2,
+                ..
+            },
+        ) => {
+            let a = r1_in * r2_in;
+            let b = r2_in + f2 * r1_out;
+            let c = r2_out * f2 * r1_out;
+
+            let disc = f1 * c * a;
+            if disc <= a * a {
+                return None;
+            }
+            let mut dx = (disc.sqrt() - a) / (f1 * b);
+
+            // Cap pool1 input
+            let capped1 = dx > *max_in_1 as f64;
+            dx = dx.min(*max_in_1 as f64);
+
+            // Cap pool2 mid tokens
+            let mid = r1_out * dx * f1 / (r1_in + dx * f1);
+            let capped2 = mid > *max_in_2 as f64;
+            if capped2 {
+                let max_in = *max_in_2 as f64;
+                if *r1_out <= max_in { return None; }
+                let u = max_in * r1_in / (r1_out - max_in);
+                dx = u / f1;
+            }
+            Some(clamp_result(dx, max_amount_in, capped1 || capped2))
+        }
+
+        // ── Clmm + Linear (DLMM) ────────────────────────────────────────
+        // Pool1 Clmm (fee-on-input CP): dy = r1_out * dx * f1 / (r1_in + dx * f1)
+        // Pool2 Linear: dz = dy * p * f_dlmm
+        // Same as CP_FI + Linear with pool1 max_in cap.
+        (
+            PoolModel::Clmm {
+                reserve_in: r_in,
+                reserve_out: r_out,
+                fee: f_amm,
+                max_in: clmm_max_in,
+                ..
+            },
+            PoolModel::Linear {
+                price: p,
+                fee: f_dlmm,
+                max_in: dlmm_max_in,
+                ..
+            },
+        ) => {
+            let disc = r_in * r_out * f_amm * p * f_dlmm;
+            if disc <= r_in * r_in {
+                return None;
+            }
+            let dx = (disc.sqrt() - r_in) / f_amm;
+
+            // Cap CLMM input
+            let capped_clmm = dx > *clmm_max_in as f64;
+            let dx = dx.min(*clmm_max_in as f64);
+
+            // Check if mid exceeds DLMM capacity
+            let mid = r_out * dx * f_amm / (r_in + dx * f_amm);
+            let capped_dlmm = mid > *dlmm_max_in as f64;
+            let dx = if capped_dlmm {
+                let max_in = *dlmm_max_in as f64;
+                if *r_out <= max_in { return None; }
+                let u = max_in * r_in / (r_out - max_in);
+                (u / f_amm).min(*clmm_max_in as f64)
+            } else {
+                dx
+            };
+            Some(clamp_result(dx, max_amount_in, capped_clmm || capped_dlmm))
+        }
+
+        // ── Linear (DLMM) + Clmm ────────────────────────────────────────
+        // Pool1 Linear: dy = dx * p * f_dlmm
+        // Pool2 Clmm (fee-on-input CP): dz = r2_out * dy * f2 / (r2_in + dy * f2)
+        // Same as Linear + CP_FI with pool2 mid cap.
+        (
+            PoolModel::Linear {
+                price: p,
+                fee: f_dlmm,
+                max_in: dlmm_max_in,
+                ..
+            },
+            PoolModel::Clmm {
+                reserve_in: r_in,
+                reserve_out: r_out,
+                fee: f_amm,
+                max_in: clmm_max_in,
+                ..
+            },
+        ) => {
+            let a = p * f_dlmm;
+            if a <= 0.0 {
+                return None;
+            }
+
+            let disc = r_in * r_out * a * f_amm;
+            if disc <= r_in * r_in {
+                return None;
+            }
+            let dx = (disc.sqrt() - r_in) / (a * f_amm);
+
+            // Cap DLMM input
+            let capped_dlmm = dx > *dlmm_max_in as f64;
+            let dx = dx.min(*dlmm_max_in as f64);
+
+            // Cap CLMM mid tokens
+            let mid = dx * a;
+            let capped_clmm = mid > *clmm_max_in as f64;
+            let dx = if capped_clmm {
+                (*clmm_max_in as f64 / a).min(*dlmm_max_in as f64)
+            } else {
+                dx
+            };
+            Some(clamp_result(dx, max_amount_in, capped_dlmm || capped_clmm))
+        }
+
         // ── Any combination involving Opaque ───────────────────────────
         (PoolModel::Opaque { .. }, _) | (_, PoolModel::Opaque { .. }) => None,
     }
@@ -459,6 +730,11 @@ pub(crate) fn pool_output(model: &PoolModel, dx: f64) -> f64 {
             let clamped = dx.min(*max_in as f64);
             clamped * price * fee
         }
+        PoolModel::Clmm { reserve_in: r_in, reserve_out: r_out, fee, max_in, .. } => {
+            let clamped = dx.min(*max_in as f64);
+            let u = clamped * fee;
+            r_out * u / (r_in + u)
+        }
         PoolModel::Opaque { .. } => 0.0,
     }
 }
@@ -489,6 +765,10 @@ fn cp_params(model: &PoolModel) -> Option<(f64, f64, f64)> {
         }
         PoolModel::CpFeeOnOutput { reserve_in: r_in, reserve_out: r_out, fee, .. } => {
             Some((fee * r_out, *r_in, 1.0))
+        }
+        // Clmm is CP with fee-on-input using virtual reserves
+        PoolModel::Clmm { reserve_in: r_in, reserve_out: r_out, fee, .. } => {
+            Some((r_out * fee, *r_in, *fee))
         }
         _ => None,
     }
@@ -911,6 +1191,330 @@ fn compute_multibin_profit(
                 CpFeeType::OnOutput => f_amm * r_out * middle_amount / (r_in + middle_amount),
             };
             output_amount - input_amount
+        }
+    }
+}
+
+// ─── CLMM multi-tick walker (CP per tick range) ──────────────────────────────
+
+/// Position of the CLMM pool in the 2-pool arbitrage path.
+#[derive(Clone, Copy)]
+enum ClmmPosition { Pool1, Pool2 }
+
+/// Fee type of the CP pool paired with the CLMM.
+#[derive(Clone, Copy)]
+enum CpFee { OnInput, OnOutput }
+
+/// Multi-tick analytical optimal for a CP+CLMM or CLMM+CP pair.
+///
+/// Walks CLMM tick ranges lazily, computing per-segment closed-form optimal
+/// using the exact CP math (virtual reserves) instead of linear approximation.
+///
+/// Within each tick range, CLMM behaves as constant-product:
+///   out = r_out * dx_net / (r_in + dx_net)   where dx_net = dx * fee_factor
+///
+/// The composed function (CP + CP-per-tick) has a closed-form optimal per segment.
+///
+/// Returns `Some((optimal_amount, estimated_profit))` or `None`.
+pub fn analytical_optimal_clmm_cp<'info>(
+    accounts: &[AccountInfo<'info>],
+    clmm_instance: &dyn ProgramMeta,
+    clmm_input_mint: Pubkey,
+    pool1: &PoolModel,
+    pool2: &PoolModel,
+    max_amount_in: u64,
+) -> Option<(u64, i128)> {
+    // Determine which pool is CLMM and extract CP params
+    let (clmm_pos, cp_fee, r_in, r_out, f_cp, f_clmm) = match (pool1, pool2) {
+        (
+            PoolModel::CpFeeOnInput { reserve_in, reserve_out, fee, .. },
+            PoolModel::Clmm { fee: f_c, .. },
+        ) => (ClmmPosition::Pool2, CpFee::OnInput, *reserve_in, *reserve_out, *fee, *f_c),
+
+        (
+            PoolModel::CpFeeOnOutput { reserve_in, reserve_out, fee, .. },
+            PoolModel::Clmm { fee: f_c, .. },
+        ) => (ClmmPosition::Pool2, CpFee::OnOutput, *reserve_in, *reserve_out, *fee, *f_c),
+
+        (
+            PoolModel::Clmm { fee: f_c, .. },
+            PoolModel::CpFeeOnInput { reserve_in, reserve_out, fee, .. },
+        ) => (ClmmPosition::Pool1, CpFee::OnInput, *reserve_in, *reserve_out, *fee, *f_c),
+
+        (
+            PoolModel::Clmm { fee: f_c, .. },
+            PoolModel::CpFeeOnOutput { reserve_in, reserve_out, fee, .. },
+        ) => (ClmmPosition::Pool1, CpFee::OnOutput, *reserve_in, *reserve_out, *fee, *f_c),
+
+        _ => {
+            debug_eprintln!("  clmm_cp_walk: not a CP+CLMM pair, pool1={}, pool2={}", pool1.label(), pool2.label());
+            return None;
+        }
+    };
+
+    // Cap on CLMM total capacity from cached max amounts (if available).
+    // This prevents accumulating more tokens than the pool's vaults actually hold.
+    let (clmm_max_in, clmm_max_out) = clmm_instance.get_cached_max_amounts(clmm_input_mint);
+    let clmm_max_in_f = if clmm_max_in > 0 { clmm_max_in as f64 } else { f64::MAX };
+    let clmm_max_out_f = if clmm_max_out > 0 { clmm_max_out as f64 } else { f64::MAX };
+
+    debug_eprintln!(
+        "  clmm_cp_walk: pos={:?}, cp_fee={:?}, r_in={:.2}, r_out={:.2}, f_cp={:.6}, f_clmm={:.6}, clmm_max_in={}, clmm_max_out={}",
+        match clmm_pos { ClmmPosition::Pool1 => "Pool1", ClmmPosition::Pool2 => "Pool2" },
+        match cp_fee { CpFee::OnInput => "FI", CpFee::OnOutput => "FO" },
+        r_in, r_out, f_cp, f_clmm, clmm_max_in, clmm_max_out
+    );
+
+    let mut cum_in: f64 = 0.0;    // cumulative gross CLMM input from prior ticks
+    let mut cum_out: f64 = 0.0;   // cumulative CLMM output from prior ticks
+    let mut best_amount: f64 = 0.0;
+    let mut best_profit: f64 = 0.0;
+    let max_f = max_amount_in as f64;
+
+    for tick_offset in 0..70i32 {
+        // Get virtual reserves for this tick range
+        let seg_result = clmm_instance.get_clmm_segment(accounts, clmm_input_mint, tick_offset);
+        debug_eprintln!("  clmm_cp_walk[{}]: segment={:?}", tick_offset, seg_result.as_ref().map(|r| r.as_ref().map(|s| (s.0 as i64, s.1 as i64, s.2, s.3))));
+        let (vr_in, vr_out, net_capacity, seg_fee) = match seg_result {
+            Ok(Some((ri, ro, c, f))) if ri > 0.0 && ro > 0.0 && c > 0 && f > 0.0 => (ri, ro, c, f),
+            Ok(Some(_)) => continue,
+            _ => break,
+        };
+
+        // Gross capacity = net / fee_factor (what the user sends before fee deduction)
+        let gross_capacity = if seg_fee > 0.0 { net_capacity as f64 / seg_fee } else { break };
+        // Cap to pool's remaining total capacity
+        let gross_capacity = gross_capacity.min(clmm_max_in_f - cum_in).max(0.0);
+        if gross_capacity <= 0.0 { break; }
+
+        // Compute the closed-form optimal dx for the composed function,
+        // accounting for cumulative consumption from prior tick ranges.
+        //
+        // Key derivation (CLMM as pool2, CP_FI as pool1):
+        //   α = (vr_in - cum_in * f_clmm) * R_in
+        //   β = vr_in - cum_in * f_clmm + f_clmm * R_out
+        //   K = sqrt(vr_out * vr_in * f_clmm * f_cp * R_in * R_out)
+        //   u = (K - α) / β           where u = dx * f_cp
+        //   dx = u / f_cp = (K - α) / (f_cp * β)
+        let segment_optimal = match (clmm_pos, cp_fee) {
+            // CP(FI) → CLMM: pool1 out = R_out * dx * f_cp / (R_in + dx * f_cp)
+            (ClmmPosition::Pool2, CpFee::OnInput) => {
+                let adj = vr_in - cum_in * f_clmm;
+                let alpha = adj * r_in;
+                let beta = adj + f_clmm * r_out;
+                let k_sq = vr_out * vr_in * f_clmm * f_cp * r_in * r_out;
+                if k_sq <= alpha * alpha { break; }
+                let k = k_sq.sqrt();
+                (k - alpha) / (f_cp * beta)
+            }
+
+            // CP(FO) → CLMM: pool1 out = f_cp * R_out * dx / (R_in + dx)
+            (ClmmPosition::Pool2, CpFee::OnOutput) => {
+                let adj = vr_in - cum_in * f_clmm;
+                let alpha = adj * r_in;
+                let beta = adj + f_clmm * f_cp * r_out;
+                let k_sq = vr_out * vr_in * f_clmm * f_cp * r_in * r_out;
+                if k_sq <= alpha * alpha { break; }
+                let k = k_sq.sqrt();
+                (k - alpha) / beta
+            }
+
+            // CLMM → CP(FI): pool1 is CLMM, pool2 is CP
+            // mid(dx) = cum_out + vr_out * (dx - cum_in) * f_clmm / (vr_in + (dx - cum_in) * f_clmm)
+            // out = r_out * mid * f_cp / (r_in + mid * f_cp)
+            // This is harder because pool1 is piecewise-CP. Within tick k:
+            //   Let m = dx - cum_in (input to current tick)
+            //   mid = cum_out + vr_out * m * f_clmm / (vr_in + m * f_clmm)
+            //   d(mid)/d(dx) = vr_out * vr_in * f_clmm / (vr_in + m * f_clmm)²
+            //   d(out)/d(mid) = r_out * r_in * f_cp / (r_in + mid * f_cp)²
+            // Setting product = 1 involves mid which depends on dx non-linearly.
+            // Use the same A*B trick:
+            //   A = r_in + mid * f_cp
+            //   B = vr_in + m * f_clmm
+            //   A * B = r_in * vr_in + r_in * m * f_clmm + cum_out * f_cp * vr_in
+            //         + cum_out * f_cp * m * f_clmm + f_cp * vr_out * m * f_clmm
+            //   Hmm, mid has cum_out term which complicates things.
+            // Simpler: substitute m = dx - cum_in, and express A*B in terms of m.
+            //   mid = cum_out + vr_out * m * f_clmm / (vr_in + m * f_clmm)
+            //   A = r_in + f_cp * (cum_out + vr_out * m * f_clmm / (vr_in + m * f_clmm))
+            //   A * (vr_in + m * f_clmm) = (r_in + f_cp * cum_out) * (vr_in + m * f_clmm) + f_cp * vr_out * m * f_clmm
+            //   = (r_in + f_cp * cum_out) * vr_in + ((r_in + f_cp * cum_out) * f_clmm + f_cp * f_clmm * vr_out) * m
+            //   = (r_in + f_cp * cum_out) * vr_in + f_clmm * (r_in + f_cp * cum_out + f_cp * vr_out) * m
+            // So A * B = α' + β' * m  where:
+            //   α' = (r_in + f_cp * cum_out) * vr_in
+            //   β' = f_clmm * (r_in + f_cp * cum_out + f_cp * vr_out)
+            // And (A*B)² = r_out * r_in * f_cp * vr_out * vr_in * f_clmm
+            //   K' = sqrt(r_out * r_in * f_cp * vr_out * vr_in * f_clmm)
+            // m = (K' - α') / β'
+            // dx = m + cum_in
+            (ClmmPosition::Pool1, CpFee::OnInput) => {
+                let r_adj = r_in + f_cp * cum_out;
+                let alpha = r_adj * vr_in;
+                let beta = f_clmm * (r_adj + f_cp * vr_out);
+                let k_sq = r_out * r_in * f_cp * vr_out * vr_in * f_clmm;
+                if k_sq <= alpha * alpha || beta <= 0.0 { break; }
+                let k = k_sq.sqrt();
+                let m = (k - alpha) / beta;
+                m + cum_in
+            }
+
+            // CLMM → CP(FO): pool2 out = f_cp * r_out * mid / (r_in + mid)
+            //   A = r_in + mid
+            //   B = vr_in + m * f_clmm
+            //   A * B = (r_in + cum_out) * (vr_in + m * f_clmm) + vr_out * m * f_clmm
+            //   = (r_in + cum_out) * vr_in + f_clmm * (r_in + cum_out + vr_out) * m
+            //   α' = (r_in + cum_out) * vr_in
+            //   β' = f_clmm * (r_in + cum_out + vr_out)
+            //   K' = sqrt(f_cp * r_out * r_in * vr_out * vr_in * f_clmm)
+            (ClmmPosition::Pool1, CpFee::OnOutput) => {
+                let r_adj = r_in + cum_out;
+                let alpha = r_adj * vr_in;
+                let beta = f_clmm * (r_adj + vr_out);
+                let k_sq = f_cp * r_out * r_in * vr_out * vr_in * f_clmm;
+                if k_sq <= alpha * alpha || beta <= 0.0 { break; }
+                let k = k_sq.sqrt();
+                let m = (k - alpha) / beta;
+                m + cum_in
+            }
+        };
+
+        debug_eprintln!(
+            "  clmm_cp_walk[{}]: vr_in={:.2}, vr_out={:.2}, net_cap={}, gross_cap={:.2}, cum_in={:.2}, cum_out={:.2}",
+            tick_offset, vr_in, vr_out, net_capacity, gross_capacity, cum_in, cum_out
+        );
+
+        if !segment_optimal.is_finite() || segment_optimal <= 0.0 {
+            debug_eprintln!("  clmm_cp_walk[{}]: segment_optimal={:.4} — breaking", tick_offset, segment_optimal);
+            break;
+        }
+
+        let clamped_amount = segment_optimal.min(max_f);
+
+        // Check if the optimal falls within this tick range
+        let in_segment = match clmm_pos {
+            ClmmPosition::Pool2 => {
+                // mid tokens entering CLMM
+                let mid = match cp_fee {
+                    CpFee::OnInput => r_out * clamped_amount * f_cp / (r_in + clamped_amount * f_cp),
+                    CpFee::OnOutput => f_cp * r_out * clamped_amount / (r_in + clamped_amount),
+                };
+                debug_eprintln!(
+                    "  clmm_cp_walk[{}]: segment_optimal={:.4}, clamped={:.4}, mid={:.4}, range=[{:.4}, {:.4}]",
+                    tick_offset, segment_optimal, clamped_amount, mid, cum_in, cum_in + gross_capacity
+                );
+                mid >= cum_in && mid <= cum_in + gross_capacity
+            }
+            ClmmPosition::Pool1 => {
+                debug_eprintln!(
+                    "  clmm_cp_walk[{}]: segment_optimal={:.4}, clamped={:.4}, range=[{:.4}, {:.4}]",
+                    tick_offset, segment_optimal, clamped_amount, cum_in, cum_in + gross_capacity
+                );
+                clamped_amount >= cum_in && clamped_amount <= cum_in + gross_capacity
+            }
+        };
+
+        if in_segment {
+            // Compute profit at clamped_amount through the composed chain
+            let profit = compute_clmm_profit(
+                clmm_pos, cp_fee, r_in, r_out, f_cp, f_clmm,
+                cum_in, cum_out, vr_in, vr_out, clamped_amount,
+            );
+            if profit > best_profit {
+                best_amount = clamped_amount;
+                best_profit = profit;
+            }
+            break;
+        }
+
+        // Tick fully consumed — accumulate CP output for this tick range
+        // Gross input to tick = gross_capacity, net input = gross_capacity * f_clmm
+        // CP output: vr_out * net / (vr_in + net)
+        let net_in = gross_capacity * f_clmm;
+        let tick_out = vr_out * net_in / (vr_in + net_in);
+        cum_out += tick_out;
+        cum_in += gross_capacity;
+
+        // Stop if we've reached the pool's total max capacity
+        if cum_in >= clmm_max_in_f || cum_out >= clmm_max_out_f {
+            break;
+        }
+
+        // Check if it's still worth continuing: marginal rate at next tick start > 1?
+        // (approximate check using pool1 marginal at boundary)
+        let boundary_amount = match clmm_pos {
+            ClmmPosition::Pool1 => cum_in.min(max_f),
+            ClmmPosition::Pool2 => match cp_fee {
+                CpFee::OnInput => {
+                    if r_out <= cum_in { break; }
+                    cum_in * r_in / (f_cp * (r_out - cum_in))
+                }
+                CpFee::OnOutput => {
+                    let denom = f_cp * r_out - cum_in;
+                    if denom <= 0.0 { break; }
+                    cum_in * r_in / denom
+                }
+            },
+        };
+        let boundary_profit = compute_clmm_profit(
+            clmm_pos, cp_fee, r_in, r_out, f_cp, f_clmm,
+            cum_in, cum_out, vr_in, vr_out, boundary_amount.min(max_f),
+        );
+        if boundary_profit > best_profit {
+            best_amount = boundary_amount.min(max_f);
+            best_profit = boundary_profit;
+        }
+        // If cumulative profit is decreasing at boundary, stop
+        if boundary_profit <= 0.0 && tick_offset > 0 {
+            break;
+        }
+    }
+
+    if best_amount <= 0.0 || best_profit <= 0.0 {
+        return None;
+    }
+
+    debug_eprintln!(
+        "  clmm_cp_walk: amount={}, profit={:.4}",
+        best_amount as u64, best_profit
+    );
+
+    Some((best_amount as u64, best_profit as i128))
+}
+
+/// Compute profit through the composed CP+CLMM chain at a given dx.
+fn compute_clmm_profit(
+    clmm_pos: ClmmPosition,
+    cp_fee: CpFee,
+    r_in: f64, r_out: f64, f_cp: f64, f_clmm: f64,
+    cum_in: f64, cum_out: f64,
+    vr_in: f64, vr_out: f64,
+    dx: f64,
+) -> f64 {
+    match clmm_pos {
+        ClmmPosition::Pool2 => {
+            // pool1 (CP) output
+            let mid = match cp_fee {
+                CpFee::OnInput => r_out * dx * f_cp / (r_in + dx * f_cp),
+                CpFee::OnOutput => f_cp * r_out * dx / (r_in + dx),
+            };
+            // CLMM output (cumulative from prior ticks + current tick)
+            // Clamp m to 0: at tick boundaries, float rounding can make m slightly negative
+            let m = (mid - cum_in).max(0.0);
+            let net_m = m * f_clmm;
+            let clmm_out = cum_out + vr_out * net_m / (vr_in + net_m);
+            clmm_out - dx
+        }
+        ClmmPosition::Pool1 => {
+            // CLMM output (pool1)
+            let m = (dx - cum_in).max(0.0);
+            let net_m = m * f_clmm;
+            let mid = cum_out + vr_out * net_m / (vr_in + net_m);
+            // pool2 (CP) output
+            let out = match cp_fee {
+                CpFee::OnInput => r_out * mid * f_cp / (r_in + mid * f_cp),
+                CpFee::OnOutput => f_cp * r_out * mid / (r_in + mid),
+            };
+            out - dx
         }
     }
 }

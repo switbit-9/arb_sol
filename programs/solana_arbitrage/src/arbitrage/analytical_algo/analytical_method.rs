@@ -7,7 +7,7 @@ use crate::utils::token::{get_transfer_fees, MintFee};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
-use super::formulas::{analytical_estimate_nhop, analytical_optimal_2pool, analytical_optimal_dlmm_dlmm, analytical_optimal_multibin, pool_output};
+use super::formulas::{analytical_estimate_nhop, analytical_optimal_2pool, analytical_optimal_clmm_cp, analytical_optimal_dlmm_dlmm, analytical_optimal_multibin, pool_output};
 use super::pool_model::{extract_pool_model, extract_pool_model_both, PoolModel};
 
 /// Minimum search amount in lamports
@@ -276,7 +276,43 @@ fn compute_optimal_amount<'info>(
         }
     }
 
-    // Fallback: single-bin analytical
+    // CP + CLMM or CLMM + CP: multi-tick walker with exact CP-per-tick math
+    let has_clmm_buy = matches!(candidate.buy_model, PoolModel::Clmm { .. });
+    let has_clmm_sell = matches!(candidate.sell_model, PoolModel::Clmm { .. });
+    debug_eprintln!(
+        "  compute_optimal: has_clmm_buy={}, has_clmm_sell={}, buy_model={:?}, sell_model={:?}",
+        has_clmm_buy, has_clmm_sell, candidate.buy_model, candidate.sell_model
+    );
+    if has_clmm_buy || has_clmm_sell {
+        let clmm_idx = if has_clmm_buy { candidate.buy_idx } else { candidate.sell_idx };
+        let clmm_instance: &dyn ProgramMeta = &instances[clmm_idx];
+        let clmm_input_mint = if has_clmm_sell { candidate.middle_mint } else { candidate.input_mint };
+
+        debug_eprintln!(
+            "  compute_optimal: calling clmm_cp walker, clmm_idx={}, input_mint={}",
+            clmm_idx, clmm_input_mint
+        );
+        let clmm_result = analytical_optimal_clmm_cp(
+            accounts,
+            clmm_instance,
+            clmm_input_mint,
+            &candidate.buy_model,
+            &candidate.sell_model,
+            max_amount_in,
+        );
+        debug_eprintln!("  compute_optimal: clmm_cp result={:?}", clmm_result);
+        if let Some((amount, profit)) = clmm_result {
+            if amount >= MIN_SEARCH_AMOUNT {
+                debug_eprintln!(
+                    "  compute_optimal (clmm_cp): amount={}, profit={:.4}, buy_model={:?}, sell_model={:?}",
+                    amount, profit as f64, candidate.buy_model, candidate.sell_model
+                );
+                return Some((amount, profit));
+            }
+        }
+    }
+
+    // Fallback: single-tick analytical
     analytical_optimal_2pool(&candidate.buy_model, &candidate.sell_model, max_amount_in)
         .map(|r| r.optimal_amount)
         .filter(|&a| a >= MIN_SEARCH_AMOUNT)
@@ -368,6 +404,11 @@ pub fn run_analytical_2hop<'info>(
     let mut best_profit: i128 = config.min_profit;
 
     for (i, c) in candidates[..cand_count].iter().enumerate() {
+        debug_eprintln!(
+            "Analytical 2hop candidate[{}/{}]: buy_model={}, sell_model={}, skipped_buy={}, skipped_sell={}, price_product={:.6}",
+            i + 1, cand_count, c.buy_model.label(), c.sell_model.label(),
+            skipped[c.buy_idx], skipped[c.sell_idx], c.price_product
+        );
         // Skip candidates where either pool failed preparation or model is still Opaque
         if skipped[c.buy_idx]
             || skipped[c.sell_idx]

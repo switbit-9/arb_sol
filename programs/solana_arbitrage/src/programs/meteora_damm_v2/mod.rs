@@ -14,7 +14,7 @@ pub mod damm_v2;
 /// Avoids recomputing `Q64_SCALE` on every call
 const Q64_SCALE: f64 = 18446744073709551616.0; // Q64_SCALE
 pub use damm_v2::curve::{get_spot_price_a_to_b, get_spot_price_b_to_a};
-use crate::utils::utils::{read_token_amount, read_vault_data};
+use crate::utils::utils::{read_vault_data};
 pub use damm_v2::{ActivationType, FeeMode, Pool, TradeDirection};
 use damm_v2::curve::{get_delta_amount_a_unsigned, get_delta_amount_a_unsigned_unchecked, get_delta_amount_b_unsigned, get_delta_amount_b_unsigned_unchecked};
 use ruint::aliases::U256;
@@ -105,12 +105,7 @@ impl ProgramMeta for MeteoraDammV2 {
     }
 
     fn get_prices(&self) -> Result<(f64, f64)> {
-        // price : token_A -> token_B (A -> B)
-        // inverse_price : token_B -> token_A (B -> A)
-        let actual_sqrt_price = self.sqrt_price as f64 / Q64_SCALE;
-        let price_b_to_a_base = actual_sqrt_price * actual_sqrt_price; // token_b / token_a in base units
-        let price = 1.0 / price_b_to_a_base; // token_a / token_b in base units
-        Ok((price_b_to_a_base as f64, price as f64))
+        Ok((self.price, self.inverse_price))
     }
 
     fn get_mints(&self) -> (&Pubkey, &Pubkey) {
@@ -167,13 +162,7 @@ impl ProgramMeta for MeteoraDammV2 {
         }
     }
 
-    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
-        if input_mint == self.base_token_pk {
-            self.quote_vault_amount > 0
-        } else {
-            self.base_vault_amount > 0
-        }
-    }
+
 
     fn fast_quote<'a>(&mut self, accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
@@ -225,6 +214,7 @@ impl ProgramMeta for MeteoraDammV2 {
             let pool_data = pool_id.try_borrow_data()?;
             self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
         }
+        
         let trade_direction = if input_mint == self.base_token_pk {
             TradeDirection::AtoB
         } else {
@@ -385,32 +375,36 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&amount_out_value.to_le_bytes());
 
+        // Build Instruction with exact-capacity Vecs (no realloc)
+        let mut meta_vec = Vec::with_capacity(14);
+        meta_vec.extend_from_slice(&metas_arr);
         let swap_ix = Instruction {
             program_id: *program_id.key,
-            accounts: Vec::from(metas_arr),
-            data: Vec::from(data),
+            accounts: meta_vec,
+            data: data.to_vec(),
         };
 
-        // Stack-allocated accounts - avoids heap allocation
-        let accounts_arr = [
-            pool_authority.clone(),
-            pool_id.clone(),
-            base_vault.clone(),
-            quote_vault.clone(),
-            unsafe { std::mem::transmute(referral_token_account.clone()) },
-            event_authority.clone(),
-            program_id.clone(),
-            unsafe { std::mem::transmute(input_token_account.to_account_info()) },
-            unsafe { std::mem::transmute(output_token_account.to_account_info()) },
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
-            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
-        ];
-
-        unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
+        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
+        let mut accs: [AccountInfo<'a>; 12] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
+        push_acc!(ref pool_authority);
+        push_acc!(ref pool_id);
+        push_acc!(ref base_vault);
+        push_acc!(ref quote_vault);
+        push_acc!(ref referral_token_account);
+        push_acc!(ref event_authority);
+        push_acc!(ref program_id);
+        push_acc!(own input_token_account);
+        push_acc!(own output_token_account);
+        push_acc!(own payer);
+        push_acc!(own base_token_program);
+        push_acc!(own quote_token_program);
+
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
 
         Ok(())
     }
@@ -493,32 +487,36 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
+        // Build Instruction with exact-capacity Vecs (no realloc)
+        let mut meta_vec = Vec::with_capacity(14);
+        meta_vec.extend_from_slice(&metas_arr);
         let swap_ix = Instruction {
             program_id: *program_id.key,
-            accounts: Vec::from(metas_arr),
-            data: Vec::from(data),
+            accounts: meta_vec,
+            data: data.to_vec(),
         };
 
-        // Stack-allocated accounts - avoids heap allocation
-        let accounts_arr = [
-            pool_authority.clone(),
-            pool_id.clone(),
-            base_vault.clone(),
-            quote_vault.clone(),
-            unsafe { std::mem::transmute(referral_token_account.to_account_info()) },
-            event_authority.clone(),
-            program_id.clone(),
-            unsafe { std::mem::transmute(input_token_account.to_account_info()) },
-            unsafe { std::mem::transmute(output_token_account.to_account_info()) },
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
-            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
-        ];
-
-        unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
+        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
+        let mut accs: [AccountInfo<'a>; 12] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
+        push_acc!(ref pool_authority);
+        push_acc!(ref pool_id);
+        push_acc!(ref base_vault);
+        push_acc!(ref quote_vault);
+        push_acc!(ref referral_token_account);
+        push_acc!(ref event_authority);
+        push_acc!(ref program_id);
+        push_acc!(own input_token_account);
+        push_acc!(own output_token_account);
+        push_acc!(own payer);
+        push_acc!(own base_token_program);
+        push_acc!(own quote_token_program);
+
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
         Ok(())
     }
 
@@ -564,6 +562,8 @@ impl MeteoraDammV2 {
         let collect_fee_mode = pool_data[484];
         // Read base/quote token pubkeys from pool state (no longer passed as accounts)
 
+        #[cfg(test)]
+        let sqrt_price: u128 = (sqrt_price as f64 * 1.2) as u128;
 
         let (price, inverse_price) = get_prices(sqrt_price)?;
         let base_vault = accounts[dyn_start + D_BASE_VAULT].clone();
@@ -578,6 +578,14 @@ impl MeteoraDammV2 {
         // This is the initial/max base fee before schedule decay; actual fee may be lower.
         // The full fee pipeline (schedule + dynamic) runs in fast_quote/swap_base_in via Pool methods.
         let cliff_fee_numerator = u64::from_le_bytes(pool_data[8..16].try_into().unwrap());
+        drop(pool_data);
+
+        #[cfg(test)]
+        {
+            let mut pool_data_mut = pool_id.try_borrow_mut_data()?;
+            pool_data_mut[456..472].copy_from_slice(&sqrt_price.to_le_bytes());
+        }
+
         let fee_rate = cliff_fee_numerator as f64 / 1_000_000_000.0;
         let fee_rate_a_to_b = fee_rate;
         let fee_rate_b_to_a = fee_rate;
@@ -626,15 +634,14 @@ impl MeteoraDammV2 {
         }
         self.prepared = true;
 
-        // Read only the fields needed for max amount calculations at their byte offsets
-        // (after 8-byte discriminator): liquidity@360, sqrt_min_price@424, sqrt_max_price@440, sqrt_price@456
+        // Read only sqrt_min/max_price; liquidity and sqrt_price are cached from new()
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let pool_data = pool_id.try_borrow_data().unwrap();
-        let liquidity = u128::from_le_bytes(pool_data[360..376].try_into().unwrap());
         let sqrt_min_price = u128::from_le_bytes(pool_data[424..440].try_into().unwrap());
         let sqrt_max_price = u128::from_le_bytes(pool_data[440..456].try_into().unwrap());
-        let sqrt_price = u128::from_le_bytes(pool_data[456..472].try_into().unwrap());
         drop(pool_data);
+        let liquidity = self.liquidity;
+        let sqrt_price = self.sqrt_price;
 
         // Cache max amounts from curve math (sqrt_min_price / sqrt_max_price boundaries)
         // A→B (buy): price moves from sqrt_price down toward sqrt_min_price

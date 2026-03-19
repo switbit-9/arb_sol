@@ -554,9 +554,7 @@ impl ProgramMeta for RaydiumCLMM {
         if input_mint == self.base_token_pk { (self.buy_max_in, self.buy_max_out) } else { (self.sell_max_in, self.sell_max_out) }
     }
 
-    fn has_output_liquidity(&self, _input_mint: Pubkey) -> bool {
-        self.liquidity > 0
-    }
+
 
     /// Swap estimate using cached state with CP math and tick-crossing support.
     /// Within the active tick range, uses the constant-product formula with virtual
@@ -650,6 +648,36 @@ impl ProgramMeta for RaydiumCLMM {
             0
         };
         Ok(gross_cap)
+    }
+
+    /// Virtual reserves for the active tick range, computed from sqrt_price × liquidity.
+    /// Within a tick range, CLMM behaves as constant-product: out = r_out * dx / (r_in + dx).
+    fn get_clmm_virtual_reserves(&self, input_mint: Pubkey) -> Option<(f64, f64)> {
+        if self.liquidity == 0 || self.sqrt_price_x64 == 0 {
+            return None;
+        }
+        let zero_for_one = input_mint == self.base_token_pk;
+        let q64 = (1u128 << 64) as f64;
+        let sqrt_p = self.sqrt_price_x64 as f64 / q64;
+        let l = self.liquidity as f64;
+        if zero_for_one {
+            // Input = token A: reserve_in = L / sqrt_P, reserve_out = L * sqrt_P
+            Some((l / sqrt_p, l * sqrt_p))
+        } else {
+            // Input = token B: reserve_in = L * sqrt_P, reserve_out = L / sqrt_P
+            Some((l * sqrt_p, l / sqrt_p))
+        }
+    }
+
+    /// Per-tick-range segment data for the CLMM multi-tick walker.
+    /// Returns (reserve_in, reserve_out, net_capacity, fee_factor) using virtual reserves.
+    fn get_clmm_segment<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        bin_offset: i32,
+    ) -> Result<Option<(f64, f64, u64, f64)>> {
+        self.get_clmm_tick_segment_impl(accounts, input_mint, bin_offset)
     }
 
     /// Per-tick-range segment data for the analytical multi-bin walker.
@@ -763,8 +791,6 @@ impl RaydiumCLMM {
         _accounts: &[AccountInfo<'a>],
     ) {
     }
-
-
 
     /// Pre-load all tick array accounts: validate once, store raw data pointers.
     /// Pointers remain valid for the entire Solana instruction lifetime.
@@ -1272,6 +1298,134 @@ impl RaydiumCLMM {
             }
 
             // Advance: cross this tick boundary and update active liquidity
+            if liquidity_net != 0 {
+                let net = if zero_for_one { -liquidity_net } else { liquidity_net };
+                current_liquidity = liquidity_math::add_delta(current_liquidity, net).unwrap_or(0);
+            }
+            current_sqrt_price = sqrt_price_target;
+            current_tick = if zero_for_one { tick_next - 1 } else { tick_next };
+
+            if current_liquidity == 0 {
+                return Ok(None);
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Per-tick-range segment with virtual reserves for the CLMM multi-tick walker.
+    /// Returns (reserve_in, reserve_out, net_capacity, fee_factor).
+    /// Virtual reserves: within a tick range, CLMM = CP with r_in = L/sqrt_P, r_out = L*sqrt_P.
+    fn get_clmm_tick_segment_impl<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        bin_offset: i32,
+    ) -> Result<Option<(f64, f64, u64, f64)>> {
+        if self.liquidity == 0 {
+            return Ok(None);
+        }
+        let zero_for_one = input_mint == self.base_token_pk;
+        let fee_factor = self.fee_factor.0;
+
+        let pool_id_bytes = self.pool_id.to_bytes();
+        let ts = self.tick_spacing as i32;
+        let ticks_in_array = TICK_ARRAY_SIZE * ts;
+
+        let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
+        let (ta, ta_count) = Self::preload_tick_arrays(accounts, &pool_id_bytes, ta_from, ta_to);
+
+        let initial_start = TickArrayState::get_array_start_index(self.tick_current, self.tick_spacing);
+        let mut cur: usize = 0;
+        let mut cur_valid = false;
+        {
+            let mut j = 0;
+            while j < ta_count {
+                if ta[j].start_tick_index == initial_start {
+                    cur = j;
+                    cur_valid = true;
+                    break;
+                }
+                j += 1;
+            }
+        }
+
+        let mut current_sqrt_price = self.sqrt_price_x64;
+        let mut current_liquidity = self.liquidity;
+        let mut current_tick = self.tick_current;
+
+        const Q64: f64 = (1u128 << 64) as f64;
+
+        for i in 0..=bin_offset {
+            let (tick_next, liquidity_net) = unsafe { 'find: {
+                if cur_valid {
+                    if let Some(r) = Self::scan_tick_raw(
+                        ta[cur].data, ta[cur].start_tick_index, ts, current_tick, zero_for_one,
+                    ) {
+                        break 'find r;
+                    }
+                    let next_start = if zero_for_one {
+                        ta[cur].start_tick_index - ticks_in_array
+                    } else {
+                        ta[cur].start_tick_index + ticks_in_array
+                    };
+                    let mut k = 0;
+                    while k < ta_count {
+                        if ta[k].start_tick_index == next_start {
+                            cur = k;
+                            let sentinel = if zero_for_one { i32::MAX } else { i32::MIN };
+                            if let Some(r) = Self::scan_tick_raw(
+                                ta[cur].data, next_start, ts, sentinel, zero_for_one,
+                            ) {
+                                break 'find r;
+                            }
+                            break;
+                        }
+                        k += 1;
+                    }
+                    if k == ta_count { cur_valid = false; }
+                }
+                let t = if zero_for_one {
+                    self.get_lower_tick_boundary(current_tick)
+                } else {
+                    self.get_upper_tick_boundary(current_tick)
+                };
+                (t, 0i128)
+            }};
+
+            let tick_next = tick_next.max(tick_math::MIN_TICK).min(tick_math::MAX_TICK);
+
+            let sqrt_price_target_raw = match tick_math::get_sqrt_price_at_tick(tick_next) {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            };
+            let sqrt_price_target = if zero_for_one {
+                sqrt_price_target_raw.max(tick_math::MIN_SQRT_PRICE_X64 + 1)
+            } else {
+                sqrt_price_target_raw.min(tick_math::MAX_SQRT_PRICE_X64 - 1)
+            };
+
+            if i == bin_offset {
+                let capacity = liquidity_math::get_amount_in_for_liquidity(
+                    current_sqrt_price, sqrt_price_target, current_liquidity, zero_for_one,
+                )
+                .unwrap_or(0);
+                if capacity == 0 {
+                    // Empty tick range — return zero-capacity so walker can skip (continue)
+                    return Ok(Some((0.0, 0.0, 0, fee_factor)));
+                }
+                // Virtual reserves from sqrt_price and liquidity
+                let sqrt_p = current_sqrt_price as f64 / Q64;
+                let l = current_liquidity as f64;
+                let (vr_in, vr_out) = if zero_for_one {
+                    (l / sqrt_p, l * sqrt_p)
+                } else {
+                    (l * sqrt_p, l / sqrt_p)
+                };
+                return Ok(Some((vr_in, vr_out, capacity, fee_factor)));
+            }
+
+            // Advance: cross tick boundary
             if liquidity_net != 0 {
                 let net = if zero_for_one { -liquidity_net } else { liquidity_net };
                 current_liquidity = liquidity_math::add_delta(current_liquidity, net).unwrap_or(0);

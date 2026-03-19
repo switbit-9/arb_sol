@@ -357,37 +357,31 @@ pub fn generate_edges(program: &ProgramInstance) -> Result<Vec<Edge>> {
 
     let mut edges = Vec::with_capacity(2);
 
-    // edge_1: base→quote (input=base). Skip if pool has no output liquidity in this direction.
-    if program.has_output_liquidity(*base_mint) {
-        edges.push(Edge::new(
-            program_id,
-            pool_id,
-            EdgeSide::LeftToRight,
-            price,
-            fee_a_to_b,
-            fee_b_to_a,
-            buy_max_in,
-            buy_max_out,
-            base_pool.clone(),
-            quote_pool.clone(),
-        ));
-    }
+    edges.push(Edge::new(
+        program_id,
+        pool_id,
+        EdgeSide::LeftToRight,
+        price,
+        fee_a_to_b,
+        fee_b_to_a,
+        buy_max_in,
+        buy_max_out,
+        base_pool.clone(),
+        quote_pool.clone(),
+    ));
 
-    // edge_2: quote→base (input=quote). Skip if pool has no output liquidity in this direction.
-    if program.has_output_liquidity(*quote_mint) {
-        edges.push(Edge::new(
-            program_id,
-            pool_id,
-            EdgeSide::RightToLeft,
-            inverse_price,
-            fee_b_to_a,
-            fee_a_to_b,
-            sell_max_in,
-            sell_max_out,
-            quote_pool,
-            base_pool,
-        ));
-    }
+    edges.push(Edge::new(
+        program_id,
+        pool_id,
+        EdgeSide::RightToLeft,
+        inverse_price,
+        fee_b_to_a,
+        fee_a_to_b,
+        sell_max_in,
+        sell_max_out,
+        quote_pool,
+        base_pool,
+    ));
 
     Ok(edges)
 }

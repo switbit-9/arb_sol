@@ -1,9 +1,8 @@
 pub mod state;
 
-use self::state::AMM_INFO_SIZE;
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
-use crate::utils::utils::{read_token_amount, read_vault_data};
+use crate::utils::utils::{read_vault_data};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -286,27 +285,31 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&min_out.to_le_bytes());
 
+        let mut meta_vec = Vec::with_capacity(8);
+        meta_vec.extend_from_slice(&metas);
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas.to_vec(),
+            accounts: meta_vec,
             data: data.to_vec(),
         };
 
-        let accounts_arr = [
-            mint_1_token_program.clone(),
-            pool_id.clone(),
-            authority.clone(),
-            coin_vault.clone(),
-            pc_vault.clone(),
-            unsafe { std::mem::transmute(user_source.to_account_info()) },
-            unsafe { std::mem::transmute(user_destination.to_account_info()) },
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-        ];
-
-        unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
+        // ptr::read avoids Rc refcount bumps from .clone()
+        let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e as *const _) }; ai += 1; };
         }
+        push_acc!(own mint_1_token_program);
+        push_acc!(ref pool_id);
+        push_acc!(ref authority);
+        push_acc!(ref coin_vault);
+        push_acc!(ref pc_vault);
+        push_acc!(own user_source);
+        push_acc!(own user_destination);
+        push_acc!(own payer);
+
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
         Ok(())
     }
 
@@ -347,7 +350,7 @@ impl ProgramMeta for RaydiumAmm {
         let amount_out_value = amount_out.unwrap_or(0);
 
         // SwapBaseOutV2 accounts: [spl_token, amm_pool, authority, coin_vault, pc_vault, user_source, user_destination, user_wallet]
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*mint_1_token_program.key, false), // spl_token
             AccountMeta::new(*pool_id.key, false),
             AccountMeta::new_readonly(*authority.key, false),
@@ -364,27 +367,31 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&max_amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&amount_out_value.to_le_bytes());
 
+        let mut meta_vec = Vec::with_capacity(8);
+        meta_vec.extend_from_slice(&metas);
         let swap_ix = Instruction {
             program_id: PROGRAM_ID,
-            accounts: metas,
+            accounts: meta_vec,
             data: data.to_vec(),
         };
 
-        let accounts_arr = [
-            mint_1_token_program.clone(),
-            pool_id.clone(),
-            authority.clone(),
-            coin_vault.clone(),
-            pc_vault.clone(),
-            unsafe { std::mem::transmute(user_source.to_account_info()) },
-            unsafe { std::mem::transmute(user_destination.to_account_info()) },
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-        ];
-
-        unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
+        // ptr::read avoids Rc refcount bumps from .clone()
+        let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e as *const _) }; ai += 1; };
         }
+        push_acc!(own mint_1_token_program);
+        push_acc!(ref pool_id);
+        push_acc!(ref authority);
+        push_acc!(ref coin_vault);
+        push_acc!(ref pc_vault);
+        push_acc!(own user_source);
+        push_acc!(own user_destination);
+        push_acc!(own payer);
+
+        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
         Ok(())
     }
 
@@ -471,7 +478,7 @@ impl RaydiumAmm {
             .saturating_sub(need_take_pnl_pc);
 
         #[cfg(test)]
-        let base_vault_amount = (base_vault_amount as f64 * 1.05) as u64;
+        let base_vault_amount = (base_vault_amount as f64 * 0.98) as u64;
 
         let price = quote_vault_amount as f64 / base_vault_amount as f64;
 

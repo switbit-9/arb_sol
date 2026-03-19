@@ -207,9 +207,6 @@ impl ProgramMeta for ProgramInstance {
         dispatch!(self, get_cached_max_amounts(input_mint))
     }
 
-    fn has_output_liquidity(&self, input_mint: Pubkey) -> bool {
-        dispatch!(self, has_output_liquidity(input_mint))
-    }
 
     fn get_bin_segment<'a>(
         &self,
@@ -222,6 +219,19 @@ impl ProgramMeta for ProgramInstance {
 
     fn get_bin_step_frac(&self) -> f64 {
         dispatch!(self, get_bin_step_frac())
+    }
+
+    fn get_clmm_virtual_reserves(&self, input_mint: Pubkey) -> Option<(f64, f64)> {
+        dispatch!(self, get_clmm_virtual_reserves(input_mint))
+    }
+
+    fn get_clmm_segment<'a>(
+        &self,
+        accounts: &[AccountInfo<'a>],
+        input_mint: Pubkey,
+        bin_offset: i32,
+    ) -> Result<Option<(f64, f64, u64, f64)>> {
+        dispatch!(self, get_clmm_segment(accounts, input_mint, bin_offset))
     }
 
     fn fast_quote<'a>(&mut self, accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
@@ -363,12 +373,6 @@ pub trait ProgramMeta {
         (u64::MAX, u64::MAX)
     }
 
-    /// Whether the pool has output liquidity for this input direction.
-    /// Cached from initialization — zero cost to call.
-    /// Default true for AMMs (vault amounts always imply liquidity).
-    fn has_output_liquidity(&self, _input_mint: Pubkey) -> bool {
-        true
-    }
 
     /// Get the slope (price * fee_factor), capacity (max_amount_in, pre-fee), and fee_factor
     /// for a DLMM bin at `bin_offset` from the active bin in the swap direction.
@@ -386,6 +390,28 @@ pub trait ProgramMeta {
     /// Bin step as a fraction (e.g. 0.008 for 80bps). Returns 0.0 for non-DLMM pools.
     fn get_bin_step_frac(&self) -> f64 {
         0.0
+    }
+
+    /// Virtual reserves for the active tick range of a CLMM pool.
+    /// Returns (reserve_in, reserve_out) computed from sqrt_price × liquidity.
+    /// Within a tick range, CLMM behaves as CP: out = r_out * dx / (r_in + dx).
+    /// Returns None for non-CLMM pools.
+    fn get_clmm_virtual_reserves(&self, _input_mint: Pubkey) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// Per-tick-range segment data for the CLMM multi-tick walker.
+    /// Returns (reserve_in, reserve_out, net_capacity, fee_factor) for the tick range
+    /// at `bin_offset` from the current tick in the swap direction.
+    /// Virtual reserves are computed from sqrt_price × liquidity at each tick boundary.
+    /// Returns Ok(None) for non-CLMM pools or if tick data is unavailable.
+    fn get_clmm_segment<'a>(
+        &self,
+        _accounts: &[AccountInfo<'a>],
+        _input_mint: Pubkey,
+        _bin_offset: i32,
+    ) -> Result<Option<(f64, f64, u64, f64)>> {
+        Ok(None)
     }
 
     /// Compute deferred fields (max amounts, transfer fees, etc.) needed for
