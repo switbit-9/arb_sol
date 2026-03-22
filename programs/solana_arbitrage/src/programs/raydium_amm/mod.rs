@@ -285,11 +285,10 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&min_out.to_le_bytes());
 
-        // ptr::read avoids Rc refcount bumps from .clone()
-        let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 8] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref mint_1_token_program);
         push_acc!(ref pool_id);
@@ -300,7 +299,8 @@ impl ProgramMeta for RaydiumAmm {
         push_acc!(ref user_destination);
         push_acc!(ref payer);
 
-        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas, &data, accs_slice)?;
         Ok(())
     }
 
@@ -358,11 +358,10 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&max_amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&amount_out_value.to_le_bytes());
 
-        // ptr::read avoids Rc refcount bumps from .clone()
-        let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 8] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref mint_1_token_program);
         push_acc!(ref pool_id);
@@ -373,7 +372,8 @@ impl ProgramMeta for RaydiumAmm {
         push_acc!(ref user_destination);
         push_acc!(ref payer);
 
-        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas, &data, accs_slice)?;
         Ok(())
     }
 

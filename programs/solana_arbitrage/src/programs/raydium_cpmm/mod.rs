@@ -396,11 +396,10 @@ impl RaydiumCPMM {
             AccountMeta::new(*observation_account.key, false),
         ];
 
-        // ptr::read avoids Rc refcount bumps from .clone()
-        let mut accs: [AccountInfo<'a>; 13] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 13] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref payer);
         push_acc!(ref authority_account);
@@ -416,7 +415,8 @@ impl RaydiumCPMM {
         push_acc!(ref output_mint_acc);
         push_acc!(ref observation_account);
 
-        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas, &data, accs_slice)?;
         Ok(())
     }
 

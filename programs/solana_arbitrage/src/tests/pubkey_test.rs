@@ -139,28 +139,31 @@ mod tests {
 "J5JAe9KTZ7JPZQpgwZQegd8TqecgW9BB1vmgwyMmeBan",  // meteora_dlmm [8dem2dfP] oracle [32]
 "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8dem2dfP] bitmap_ext [33]
 "FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_0 [34]
-"4oifhkxP8jm2PmwF9Foje7Ybj7527eeqnyVy7L6Spjtw",  // meteora_dlmm [8dem2dfP] bin_array_buy_1 [35]
-"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_sell_0 [36]
-"3Xxya2MBpD9zNuDrgdav2PqNh82xr49y1NRy2vnrAokC",  // meteora_dlmm [8dem2dfP] bin_array_sell_1 [37]
-"7ik5kwcwjD9W22THNqU5spBA9pELjhzfPg2eGvKtNEGn",  // meteora_dlmm [7ik5kwcw] pool_id [38]
-"7JQ4WYhJhxBAhCghN3miadj5CL876khFFK7Bd5Kvf2mT",  // meteora_dlmm [7ik5kwcw] base_vault [39]
-"GzWDHkTcovg7r6GxS1qcyJD5kVWHccx3Ms2MkvXTQssP",  // meteora_dlmm [7ik5kwcw] quote_vault [40]
-"ZC1SdfhtapP6oavipqSSBjisawVQmb9R1HxrHxw7QuE",  // meteora_dlmm [7ik5kwcw] oracle [41]
-"DAet93xfSzooiqSXN3LWhD7jTj5CNyMvNmuLSEiyPyYn",  // meteora_dlmm [7ik5kwcw] bitmap_ext [42]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_0 [43]
-"7cXZVVeb7jXcwrhc88fxQPNe1MToRDP2zBaNagSm9rnZ",  // meteora_dlmm [7ik5kwcw] bin_array_buy_1 [44]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_sell_0 [45]
-"4i3o7s328RF2p3CQgYqcMwTm8mLjdX1QJpN68Y98Ssxt",  // meteora_dlmm [7ik5kwcw] bin_array_sell_1 [46]
+"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_1 [35]
+"7ik5kwcwjD9W22THNqU5spBA9pELjhzfPg2eGvKtNEGn",  // meteora_dlmm [7ik5kwcw] pool_id [36]
+"7JQ4WYhJhxBAhCghN3miadj5CL876khFFK7Bd5Kvf2mT",  // meteora_dlmm [7ik5kwcw] base_vault [37]
+"GzWDHkTcovg7r6GxS1qcyJD5kVWHccx3Ms2MkvXTQssP",  // meteora_dlmm [7ik5kwcw] quote_vault [38]
+"ZC1SdfhtapP6oavipqSSBjisawVQmb9R1HxrHxw7QuE",  // meteora_dlmm [7ik5kwcw] oracle [39]
+"DAet93xfSzooiqSXN3LWhD7jTj5CNyMvNmuLSEiyPyYn",  // meteora_dlmm [7ik5kwcw] bitmap_ext [40]
+"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_0 [41]
+"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_1 [42]
+"8EtW6HneUzxefKpVMJgQBtFerdYVzbrzKTzC5PzpQR29",  // meteora_dlmm [8EtW6Hne] pool_id [43]
+"brEp1B9kyPLLrr8cVfJVktzMamnQTRtTpenE91N5P7K",  // meteora_dlmm [8EtW6Hne] base_vault [44]
+"EFATbMKovt15TDKpBPGLL37HtduBMLWdCgAQVRaLhjXK",  // meteora_dlmm [8EtW6Hne] quote_vault [45]
+"7U4SGofGoknUxbF8pqmi2Y6Uo1r6Sc1mMPycC781qKcR",  // meteora_dlmm [8EtW6Hne] oracle [46]
+"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8EtW6Hne] bitmap_ext [47]
+"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_0 [48]
+"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_1 [49]
 ];
 
     fn make_instruction_data(test_mode: bool) -> InstructionData {
-        InstructionData                                              {
+        InstructionData                                                              {
         mints: 2,
         shared_statics_len: 13,
-        pool_types: [9, 3, 3, 0, 0, 0, 0, 0],
-        type_static_offsets: [0, 10, 10, 0, 0, 0, 0, 0],
+        pool_types: [9, 3, 3, 3, 0, 0, 0, 0],
+        type_static_offsets: [0, 10, 10, 10, 0, 0, 0, 0],
         mode: 0,
-        test: false,
+        test: true,
         group_sizes: [0, 0, 0, 0],
         pool_fees: vec![5000],
     }

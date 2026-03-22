@@ -408,12 +408,12 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&1u64.to_le_bytes());
 
-        // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 25] = unsafe { core::mem::zeroed() };
+        // Stack-allocated account infos — MaybeUninit avoids dropping zeroed Rc (null deref),
+        // and prevents double-decrement on scope exit since MaybeUninit has no Drop.
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 25] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref pool_id);
         push_acc!(ref payer);
@@ -443,7 +443,8 @@ impl ProgramMeta for PumpAmm {
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_cpi(&PROGRAM_ID, &metas[..n], &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas[..n], &data, accs_slice)?;
         Ok(())
     }
 
@@ -573,12 +574,10 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
-        // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 24] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 24] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref pool_id);
         push_acc!(ref payer);
@@ -607,7 +606,8 @@ impl ProgramMeta for PumpAmm {
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_cpi(program_id.key, &metas[..n], &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(program_id.key, &metas[..n], &data, accs_slice)?;
         Ok(())
     }
     

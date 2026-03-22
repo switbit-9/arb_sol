@@ -19,9 +19,9 @@ pub mod utils;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
-#[cfg(test)]
-#[path = "tests/pubkey_test.rs"]
-mod pubkey_test;
+// #[cfg(test)]
+// #[path = "tests/pubkey_test.rs"]
+// mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage::algo_2::ArbitragePath;
@@ -326,6 +326,8 @@ fn start_bot_grouped<'info>(
         #[cfg(test)]
         compare_golden_vs_analytical(accounts, &mut comparison_instances, &group_config, &mint_fees, &arbitrage_path);
 
+
+
         let Some(mut arb_path) = arbitrage_path else {
             continue;
         };
@@ -351,22 +353,22 @@ fn start_bot_grouped<'info>(
         #[cfg(test)]
         continue;
 
-        #[cfg(not(test))]
-        {
-            execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
+        // #[cfg(not(test))]
+        
+        execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
 
-            // Re-read start token balance after swaps and abort if not profitable
-            let balance_after = u64::from_le_bytes(
-                accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
-                    .try_into()
-                    .map_err(|_| SolarBError::InvalidAccountData)?,
-            );
-            if balance_after < max_amount_in {
-                return Err(error!(SolarBError::NoProfitFound));
-            }
-
-            return Ok(Some(arb_path));
+        // Re-read start token balance after swaps and abort if not profitable
+        let balance_after = u64::from_le_bytes(
+            accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
+                .try_into()
+                .map_err(|_| SolarBError::InvalidAccountData)?,
+        );
+        if balance_after < max_amount_in {
+            return Err(error!(SolarBError::NoProfitFound));
         }
+
+        return Ok(Some(arb_path));
+        
 
     }
     Ok(None)

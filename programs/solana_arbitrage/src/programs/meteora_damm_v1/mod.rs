@@ -358,11 +358,10 @@ impl ProgramMeta for MeteoraDammV1 {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&minimum_out.to_le_bytes());
 
-        // ptr::read avoids Rc refcount bumps from .clone()
-        let mut accs: [AccountInfo<'a>; 15] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 15] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref pool);
         push_acc!(ref user_source_token);
@@ -380,7 +379,8 @@ impl ProgramMeta for MeteoraDammV1 {
         push_acc!(ref vault_program);
         push_acc!(ref token_program);
 
-        invoke_cpi(&Self::PROGRAM_ID, &metas, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&Self::PROGRAM_ID, &metas, &data, accs_slice)?;
         Ok(())
     }
 

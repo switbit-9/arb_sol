@@ -381,12 +381,10 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&amount_out_value.to_le_bytes());
 
-        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 14] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 14] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref pool_authority);
         push_acc!(ref pool_id);
@@ -403,7 +401,8 @@ impl ProgramMeta for MeteoraDammV2 {
         push_acc!(ref base_mint_info);
         push_acc!(ref quote_mint_info);
 
-        invoke_cpi(program_id.key, &metas_arr, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(program_id.key, &metas_arr, &data, accs_slice)?;
 
         Ok(())
     }
@@ -492,12 +491,10 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
-        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 14] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 14] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
+            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
         }
         push_acc!(ref pool_authority);
         push_acc!(ref pool_id);
@@ -514,7 +511,8 @@ impl ProgramMeta for MeteoraDammV2 {
         push_acc!(ref base_mint_info);
         push_acc!(ref quote_mint_info);
 
-        invoke_cpi(program_id.key, &metas_arr, &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(program_id.key, &metas_arr, &data, accs_slice)?;
         Ok(())
     }
 

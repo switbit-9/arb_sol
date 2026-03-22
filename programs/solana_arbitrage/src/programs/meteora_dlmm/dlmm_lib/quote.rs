@@ -38,8 +38,8 @@ pub struct SwapCache {
     pub base_fee: u128,
     /// ONE + (bin_step << 64) / BASIS_POINT_MAX — constant multiplier between adjacent bins
     pub price_base: u128,
-    /// Bin array indices for the 2 bin arrays in this direction [bin1_idx, bin2_idx]
-    pub bin_array_indices: [i64; 2],
+    /// Bin array index for the single bin array in this direction
+    pub bin_array_index: i64,
     /// Pre-computed volatility_accumulator after update_references (initial state)
     pub initial_vol_acc: u32,
     /// Whether variable_fee_control > 0 (skip variable fee computation entirely if false)
@@ -74,7 +74,7 @@ pub fn quote_exact_out<'a>(
     lb_pair: &LbPairSlim,
     mut amount_out: u64,
     swap_for_y: bool,
-    bin_arrays: &[AccountInfo<'a>; 2],
+    bin_array: &AccountInfo<'a>,
     transfer_fee_x: MintFee,
     transfer_fee_y: MintFee,
     cache: &SwapCache,
@@ -101,20 +101,16 @@ pub fn quote_exact_out<'a>(
 
     while amount_out > 0 {
         let needed_index = BinArray::bin_id_to_bin_array_index(slim.active_id)? as i64;
-        let active_bin_array_account = if needed_index == cache.bin_array_indices[0] {
-            &bin_arrays[0]
-        } else if needed_index == cache.bin_array_indices[1] {
-            &bin_arrays[1]
-        } else {
+        if needed_index != cache.bin_array_index {
             if total_amount_in == 0 {
                 return Err(anyhow::anyhow!(
                     "Insufficient liquidity: required bin array not available"
                 ));
             }
             break;
-        };
+        }
 
-        let bin_array_data = active_bin_array_account.try_borrow_data()?;
+        let bin_array_data = bin_array.try_borrow_data()?;
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
@@ -254,7 +250,7 @@ pub fn quote_exact_in<'a>(
     lb_pair: &LbPairSlim,
     amount_in: u64,
     swap_for_y: bool,
-    bin_arrays: &[AccountInfo<'a>; 2],
+    bin_array: &AccountInfo<'a>,
     transfer_fee_x: MintFee,
     transfer_fee_y: MintFee,
     cache: &SwapCache,
@@ -282,20 +278,16 @@ pub fn quote_exact_in<'a>(
 
     while amount_left > 0 {
         let needed_index = BinArray::bin_id_to_bin_array_index(slim.active_id)? as i64;
-        let active_bin_array_account = if needed_index == cache.bin_array_indices[0] {
-            &bin_arrays[0]
-        } else if needed_index == cache.bin_array_indices[1] {
-            &bin_arrays[1]
-        } else {
+        if needed_index != cache.bin_array_index {
             if total_amount_out == 0 {
                 return Err(anyhow::anyhow!(
                     "Insufficient liquidity: required bin array not available"
                 ));
             }
             break;
-        };
+        }
 
-        let bin_array_data = active_bin_array_account.try_borrow_data()?;
+        let bin_array_data = bin_array.try_borrow_data()?;
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;

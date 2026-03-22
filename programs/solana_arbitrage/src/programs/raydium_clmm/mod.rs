@@ -383,11 +383,10 @@ impl ProgramMeta for RaydiumCLMM {
         // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
         data[40] = 1; // is_base_input = true (exact input)
 
-        // Stack-allocated account infos — max 16 entries (13 base + 1 bitmap + 2 tick arrays)
-        let mut accs: [AccountInfo<'a>; 16] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 16] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            ($e:expr) => { accs[ai] = unsafe { std::mem::transmute($e) }; ai += 1; };
+            ($e:expr) => { accs[ai] = core::mem::MaybeUninit::new($e); ai += 1; };
         }
         push_acc!(payer.clone());
         push_acc!(amm_config.clone());
@@ -411,7 +410,8 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, accs_slice)?;
 
         Ok(())
     }
@@ -508,11 +508,10 @@ impl ProgramMeta for RaydiumCLMM {
         // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
         data[40] = 0; // is_base_input = false (exact output)
 
-        // Stack-allocated account infos — max 16 entries (13 base + 1 bitmap + 2 tick arrays)
-        let mut accs: [AccountInfo<'a>; 16] = unsafe { core::mem::zeroed() };
+        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 16] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         let mut ai = 0usize;
         macro_rules! push_acc {
-            ($e:expr) => { accs[ai] = unsafe { std::mem::transmute($e) }; ai += 1; };
+            ($e:expr) => { accs[ai] = core::mem::MaybeUninit::new($e); ai += 1; };
         }
         push_acc!(payer.clone());
         push_acc!(amm_config.clone());
@@ -536,7 +535,8 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, &accs[..ai])?;
+        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
+        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, accs_slice)?;
 
         Ok(())
     }

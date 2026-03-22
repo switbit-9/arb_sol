@@ -18,7 +18,7 @@ pub enum SolarBError {
     TrailingAccounts,
     #[msg("TransferFee calculate not match")]
     TransferFeeCalculateNotMatch,
-    #[msg("no profitable arbitrage opportunity found")]
+    #[msg("Not Found")]
     NoProfitFound,
     #[msg("insufficient funds in payer account")]
     InsufficientFunds,
