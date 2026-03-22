@@ -1,0 +1,111 @@
+meteora-damm v2
+These percentages are fixed constants set at pool creation (protocol 20%, referral 20% of protocol, partner 0% default). They don't change over time.
+
+MeteoraDlmm
+Base Fee	Static	No — set at pool config
+Variable Fee	Dynamic	Yes — based on volatility
+Protocol Share	Static	No — set by admin
+Host Fee	Static	No — fixed rate, optionally included
+
+
+Raydium CPMM
+Trading Fee (base)	No
+Protocol Fee	No
+Adaptive Fee	Yes
+
+
+raydiumAMM
+
+Trade fee	amm_config.trade_fee_rate	Input token amount	Static - set on the AmmConfig, same every swap
+Creator fee	amm_config.creator_fee_rate (adjusted by pool)	Input OR output depending on is_creator_fee_on_input	Static - set on AmmConfig, adjusted per-pool but rate doesn't change swap-to-swap
+Protocol fee	amm_config.protocol_fee_rate	Calculated as a % of the trade fee	Static - set on AmmConfig
+Fund fee	amm_config.fund_fee_rate	Calculated as a % of the trade fee	Static - set on AmmConfig
+
+
+raydium clmm 
+
+Fee	Static?	Details
+trade_fee_rate	Static	Set in AmmConfig, same rate for every swap in that pool
+protocol_fee_rate	Static	Set in AmmConfig, only changeable by admin via update_amm_config
+fund_fee_rate	Static	Set in AmmConfig, only changeable by admin via update_amm_config
+Fee amounts	Dynamic	Vary per swap based on input size and current liquidity
+
+
+orca 
+Swap fee rate	Static per pool — doesn't change swap-to-swap unless admin calls set_fee_rate	Set once at init from FeeTier
+Protocol fee rate	Static per pool — same as above	Set from config default, updatable by admin
+Adaptive fee	Dynamic — changes every swap	Based on real-time volatility tracking (accumulator, decay, filter periods) changes in every swap and is calcualted from oracle
+
+
+
+
+PumpAMM 
+fee_rate
+
+Meteora DCB
+Trade fee rate	Static per pool	Set at pool creation, doesn't change swap-to-swap. Can only be changed by admin (set_pool_fee)
+Protocol fee rate	Static per pool	Same as above, currently 0 by default
+Host fee rate	Fully static	Hardcoded constant at 20% of protocol fees
+Partner fee rate	Static per pool	Set when partner is configured
+Fee amounts (BN)	Dynamic	The actual lamport amounts change every swap since they're calculated from the input amount
+
+
+
+
+
+Here's what your client needs to compute for each program's pool_fees entry, all normalized to millionths (denominator = 1,000,000):
+
+Pump AMM
+pool_fees[0] = fee_rate (dynamic, tier-based on market cap)
+Source: Compute from the 24-tier table using current vault balances
+Already in millionths natively
+Meteora DAMM V1 / DBC
+pool_fees[0] = trade_fee_numerator
+Source: Pool account data at offset 322 (trade_fee_numerator u64) / offset 330 (trade_fee_denominator u64)
+Calculation: (trade_fee_numerator * 1_000_000) / trade_fee_denominator
+The on-chain denominator is per-pool, so you must normalize
+Meteora DAMM V2
+pool_fees[0] = fee_a_to_b
+pool_fees[1] = fee_b_to_a
+Source: pool.pool_fees.base_fee.cliff_fee_numerator (u64)
+Native denominator: 1,000,000,000 (billion)
+Calculation: cliff_fee_numerator / 1_000 (divide by 1000 to go from billionths to millionths)
+Note: fees can differ per direction. If they're the same, both values are equal
+Meteora DLMM
+pool_fees[0] = total_fee (base + variable)
+Source: lb_pair.get_total_fee() which combines base_fee + variable_fee (volatility-based)
+Native denominator: 1,000,000,000 (FEE_PRECISION)
+Calculation: total_fee / 1_000 (divide by 1000)
+This is the dynamic one — variable fee changes based on volatility, so you must recompute it client-side each time
+Orca Whirlpool
+pool_fees[0] = fee_rate
+Source: whirlpool.fee_rate (u16, hundredths of a basis point)
+Already in millionths natively (e.g. 3000 = 0.3%)
+If adaptive fees are enabled: must compute from oracle data (volatility accumulator, decay periods). The static fee_rate alone isn't enough — add the adaptive component
+Raydium AMM
+pool_fees[0] = swap_fee_numerator
+Source: amm_config.trade_fee_rate (u64)
+Native denominator: 1,000,000
+Pass as-is — already in millionths
+Raydium CLMM
+pool_fees[0] = trade_fee_rate
+Source: amm_config.trade_fee_rate (u32)
+Native denominator: 1,000,000
+Pass as-is — already in millionths
+Raydium CPMM
+pool_fees[0] = trade_fee_rate
+pool_fees[1] = creator_fee_rate
+Source: amm_config.trade_fee_rate and amm_config.creator_fee_rate (u64)
+Native denominator: 1,000,000
+Pass as-is — already in millionths
+Summary
+Program	Fees	Native Denom	Conversion
+Pump AMM	[fee_rate]	1M	as-is (compute from tier table)
+DAMM V1 / DBC	[trade_fee]	per-pool	num * 1M / denom
+DAMM V2	[fee_a→b, fee_b→a]	1B	÷ 1_000
+DLMM	[total_fee]	1B	÷ 1_000 (recompute each swap)
+Orca	[fee_rate]	1M	as-is (+ adaptive if enabled)
+Raydium AMM	[swap_fee]	1M	as-is
+Raydium CLMM	[trade_fee]	1M	as-is
+Raydium CPMM	[trade_fee, creator_fee]	1M	as-is
+The only ones requiring conversion are DAMM V1 (variable denominator), DAMM V2, and DLMM (both 1B → 1M). The dynamic fees to watch out for are DLMM (volatility) and Orca (adaptive).

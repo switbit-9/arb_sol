@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for file:*)",
+      "Read(//Users/seharborici/sol/solana_arbitrage/**)",
+      "Read(//async fn build_test_scenario_pump_amm\\\\\\(/**)",
+      "Read(//Users/seharborici/.claude/projects/-Users-seharborici-sol-solana_arbitrage/b15b542e-3afb-46a7-90de-001c55ea7eec/tool-results/**)",
+      "Bash(jq \".types[] | select\\(.name == \"\"LbPair\"\"\\)\" /Users/seharborici/sol/solana_arbitrage/programs/solana_arbitrage/src/idls/dlmm.json)",
+      "Bash(jq '.types[] | select\\(.name == \"\"VariableParameters\"\" or .name == \"\"StaticParameters\"\"\\)' /Users/seharborici/sol/solana_arbitrage/programs/solana_arbitrage/src/idls/dlmm.json)",
+      "Bash(jq '.types[] | select\\(.name == \"\"ProtocolFee\"\" or .name == \"\"RewardInfo\"\"\\)' /Users/seharborici/sol/solana_arbitrage/programs/solana_arbitrage/src/idls/dlmm.json)"
+    ]
+  }
+}
