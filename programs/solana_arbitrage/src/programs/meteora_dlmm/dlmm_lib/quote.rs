@@ -433,8 +433,6 @@ pub fn quote_exact_in<'a>(
                     ensure!(slim.active_id >= MIN_BIN_ID && slim.active_id <= MAX_BIN_ID, "Insufficient liquidity");
                 }
             } else {
-                #[cfg(any(test, feature = "debug"))]
-                // debug_eprintln!("loop: slim.active_id: {}", slim.active_id);
                 let old_active_id = slim.active_id;
                 // Inlined advance_active_bin
                 slim.active_id = if swap_for_y {

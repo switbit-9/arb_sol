@@ -1,12 +1,12 @@
 pub mod state;
 
 use crate::programs::{PoolKind, ProgramMeta};
+use crate::utils::cpi::invoke_cpi;
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::{read_vault_data};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -25,7 +25,7 @@ pub const D_COIN_VAULT: usize = 1;
 pub const D_PC_VAULT: usize = 2;
 pub const D_OPEN_ORDERS: usize = 3;
 
-pub const MIN_ACCOUNTS: usize = 4;
+pub const DYNAMIC_ACCOUNTS: usize = 4;
 
 // Serum/OpenBook OpenOrders account layout offsets
 // Layout: 5-byte head padding, u64 account_flags, Pubkey market, Pubkey owner,
@@ -235,13 +235,13 @@ impl ProgramMeta for RaydiumAmm {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        _mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        _mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        _mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        _mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let coin_vault = &accounts[self.dyn_start + D_COIN_VAULT];
@@ -285,31 +285,22 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&min_out.to_le_bytes());
 
-        let mut meta_vec = Vec::with_capacity(8);
-        meta_vec.extend_from_slice(&metas);
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // ptr::read avoids Rc refcount bumps from .clone()
         let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
             (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e as *const _) }; ai += 1; };
         }
-        push_acc!(own mint_1_token_program);
+        push_acc!(ref mint_1_token_program);
         push_acc!(ref pool_id);
         push_acc!(ref authority);
         push_acc!(ref coin_vault);
         push_acc!(ref pc_vault);
-        push_acc!(own user_source);
-        push_acc!(own user_destination);
-        push_acc!(own payer);
+        push_acc!(ref user_source);
+        push_acc!(ref user_destination);
+        push_acc!(ref payer);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 
@@ -319,13 +310,13 @@ impl ProgramMeta for RaydiumAmm {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        _mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        _mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        _mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        _mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let coin_vault = &accounts[self.dyn_start + D_COIN_VAULT];
@@ -367,31 +358,22 @@ impl ProgramMeta for RaydiumAmm {
         data[1..9].copy_from_slice(&max_amount_in.to_le_bytes());
         data[9..17].copy_from_slice(&amount_out_value.to_le_bytes());
 
-        let mut meta_vec = Vec::with_capacity(8);
-        meta_vec.extend_from_slice(&metas);
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // ptr::read avoids Rc refcount bumps from .clone()
         let mut accs: [AccountInfo<'a>; 8] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
             (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
-            (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e as *const _) }; ai += 1; };
         }
-        push_acc!(own mint_1_token_program);
+        push_acc!(ref mint_1_token_program);
         push_acc!(ref pool_id);
         push_acc!(ref authority);
         push_acc!(ref coin_vault);
         push_acc!(ref pc_vault);
-        push_acc!(own user_source);
-        push_acc!(own user_destination);
-        push_acc!(own payer);
+        push_acc!(ref user_source);
+        push_acc!(ref user_destination);
+        push_acc!(ref payer);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 

@@ -9,10 +9,10 @@ use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     pubkey::Pubkey,
 };
+use crate::utils::cpi::invoke_cpi;
 
 /// Orca Whirlpool Program ID
 pub const PROGRAM_ID: Pubkey =
@@ -31,7 +31,7 @@ pub const D_TICK_ARRAY_0: usize = 4;
 pub const D_TICK_ARRAY_1: usize = 5;
 pub const D_TICK_ARRAY_2: usize = 6;
 
-pub const MIN_ACCOUNTS: usize = 7;
+pub const DYNAMIC_ACCOUNTS: usize = 7;
 
 /// Compute total fee rate (static + adaptive) as u32 in hundredths of a basis point.
 /// Denominator is 1_000_000. Capped at FEE_RATE_HARD_LIMIT (100_000 = 10%).
@@ -192,13 +192,13 @@ impl ProgramMeta for OrcaWhirlpool {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let vault_a = &accounts[self.dyn_start + D_VAULT_A];
@@ -234,7 +234,7 @@ impl ProgramMeta for OrcaWhirlpool {
             };
 
         // Build swap instruction
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*token_program_a.key, false),
             AccountMeta::new_readonly(*token_program_b.key, false),
             AccountMeta::new_readonly(*memo.key, false),
@@ -262,12 +262,6 @@ impl ProgramMeta for OrcaWhirlpool {
         data[41] = if a_to_b { 1 } else { 0 }; // a_to_b
         // data[42] = 0: remaining_accounts_info = None
 
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
-        };
-
         let accounts_arr = [
             token_program_a.clone(),
             token_program_b.clone(),
@@ -286,7 +280,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accounts_arr)?;
         Ok(())
     }
 
@@ -296,13 +290,13 @@ impl ProgramMeta for OrcaWhirlpool {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let vault_a = &accounts[self.dyn_start + D_VAULT_A];
@@ -338,7 +332,7 @@ impl ProgramMeta for OrcaWhirlpool {
             };
 
         // Build swap instruction -- accounts always in A/B order
-        let metas = vec![
+        let metas = [
             AccountMeta::new_readonly(*token_program_a.key, false),
             AccountMeta::new_readonly(*token_program_b.key, false),
             AccountMeta::new_readonly(*memo.key, false),
@@ -366,12 +360,6 @@ impl ProgramMeta for OrcaWhirlpool {
         data[41] = if a_to_b { 1 } else { 0 }; // a_to_b
         // data[42] = 0: remaining_accounts_info = None
 
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
-        };
-
         let accounts_arr = [
             token_program_a.clone(),
             token_program_b.clone(),
@@ -390,7 +378,7 @@ impl ProgramMeta for OrcaWhirlpool {
             oracle.clone(),
         ];
 
-        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accounts_arr)?;
         Ok(())
     }
 

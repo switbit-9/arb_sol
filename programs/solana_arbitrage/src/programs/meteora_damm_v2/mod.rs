@@ -2,11 +2,11 @@ use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
+use crate::utils::cpi::invoke_cpi;
 use bytemuck;
 pub mod damm_v2;
 
@@ -34,7 +34,7 @@ pub const D_POOL: usize = 0;
 pub const D_BASE_VAULT: usize = 1;
 pub const D_QUOTE_VAULT: usize = 2;
 
-pub const MIN_ACCOUNTS: usize = 3; // dynamic account count
+pub const DYNAMIC_ACCOUNTS: usize = 3;
 
 pub fn get_current_point(
     activation_type: u8,
@@ -304,25 +304,29 @@ impl ProgramMeta for MeteoraDammV2 {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let (
             base_token_program,
             quote_token_program,
             user_base_token_account,
             user_quote_token_account,
+            base_mint_info,
+            quote_mint_info,
         ) = if self.base_token_pk == *mint_1_account.key {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
             )
         } else {
             (
@@ -330,6 +334,8 @@ impl ProgramMeta for MeteoraDammV2 {
                 mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
+                mint_2_account,
+                mint_1_account,
             )
         };
 
@@ -375,17 +381,8 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&amount_out_value.to_le_bytes());
 
-        // Build Instruction with exact-capacity Vecs (no realloc)
-        let mut meta_vec = Vec::with_capacity(14);
-        meta_vec.extend_from_slice(&metas_arr);
-        let swap_ix = Instruction {
-            program_id: *program_id.key,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 12] = unsafe { core::mem::zeroed() };
+        let mut accs: [AccountInfo<'a>; 14] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
             (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
@@ -398,13 +395,15 @@ impl ProgramMeta for MeteoraDammV2 {
         push_acc!(ref referral_token_account);
         push_acc!(ref event_authority);
         push_acc!(ref program_id);
-        push_acc!(own input_token_account);
-        push_acc!(own output_token_account);
-        push_acc!(own payer);
-        push_acc!(own base_token_program);
-        push_acc!(own quote_token_program);
+        push_acc!(ref input_token_account);
+        push_acc!(ref output_token_account);
+        push_acc!(ref payer);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
+        push_acc!(ref base_mint_info);
+        push_acc!(ref quote_mint_info);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(program_id.key, &metas_arr, &data, &accs[..ai])?;
 
         Ok(())
     }
@@ -415,25 +414,29 @@ impl ProgramMeta for MeteoraDammV2 {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let (
             base_token_program,
             quote_token_program,
             user_base_token_account,
             user_quote_token_account,
+            base_mint_info,
+            quote_mint_info,
         ) = if mint_1_account.key == &self.base_token_pk {
             (
                 mint_1_token_program,
                 mint_2_token_program,
                 user_mint_1_token_account,
                 user_mint_2_token_account,
+                mint_1_account,
+                mint_2_account,
             )
         } else if mint_2_account.key == &self.base_token_pk {
             (
@@ -441,6 +444,8 @@ impl ProgramMeta for MeteoraDammV2 {
                 mint_1_token_program,
                 user_mint_2_token_account,
                 user_mint_1_token_account,
+                mint_2_account,
+                mint_1_account,
             )
         } else {
             return Err(ProgramError::InvalidAccountData.into());
@@ -487,17 +492,8 @@ impl ProgramMeta for MeteoraDammV2 {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
-        // Build Instruction with exact-capacity Vecs (no realloc)
-        let mut meta_vec = Vec::with_capacity(14);
-        meta_vec.extend_from_slice(&metas_arr);
-        let swap_ix = Instruction {
-            program_id: *program_id.key,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
-        let mut accs: [AccountInfo<'a>; 12] = unsafe { core::mem::zeroed() };
+        let mut accs: [AccountInfo<'a>; 14] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
         macro_rules! push_acc {
             (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
@@ -510,13 +506,15 @@ impl ProgramMeta for MeteoraDammV2 {
         push_acc!(ref referral_token_account);
         push_acc!(ref event_authority);
         push_acc!(ref program_id);
-        push_acc!(own input_token_account);
-        push_acc!(own output_token_account);
-        push_acc!(own payer);
-        push_acc!(own base_token_program);
-        push_acc!(own quote_token_program);
+        push_acc!(ref input_token_account);
+        push_acc!(ref output_token_account);
+        push_acc!(ref payer);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
+        push_acc!(ref base_mint_info);
+        push_acc!(ref quote_mint_info);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(program_id.key, &metas_arr, &data, &accs[..ai])?;
         Ok(())
     }
 

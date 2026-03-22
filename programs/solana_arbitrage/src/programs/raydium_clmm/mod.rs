@@ -8,12 +8,12 @@ use self::states::{
     AmmConfigSimple, PoolStateSimple, TickArrayState, FEE_RATE_DENOMINATOR_VALUE, TICK_ARRAY_SIZE,
 };
 use crate::programs::{PoolKind, ProgramMeta};
+use crate::utils::cpi::invoke_cpi;
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     pubkey::Pubkey,
 };
 
@@ -38,7 +38,7 @@ pub const D_TICK_BUY_1: usize = 7;
 // Sell direction tick arrays (one_for_zero: token_1 -> token_0)
 pub const D_TICK_SELL_0: usize = 8;
 pub const D_TICK_SELL_1: usize = 9;
-pub const MIN_ACCOUNTS: usize = 10;
+pub const DYNAMIC_ACCOUNTS: usize = 10;
 // Pool byte offsets (after 8-byte Anchor discriminator, #[repr(C, packed)])
 const POOL_DISC: usize = 8;
 const POOL_TOKEN_MINT_0: usize = POOL_DISC + 65;   // bump(1) + amm_config(32) + owner(32)
@@ -298,13 +298,13 @@ impl ProgramMeta for RaydiumCLMM {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let amm_config = &accounts[self.dyn_start + D_AMM_CONFIG];
@@ -345,30 +345,35 @@ impl ProgramMeta for RaydiumCLMM {
             )
         };
 
-        // Build swap instruction
-        let mut metas = vec![
-            AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*amm_config.key, false),
-            AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*user_input_account.key, false),
-            AccountMeta::new(*user_output_account.key, false),
-            AccountMeta::new(*input_vault.key, false),
-            AccountMeta::new(*output_vault.key, false),
-            AccountMeta::new(*observation.key, false),
-            AccountMeta::new_readonly(*token_program_spl.key, false),
-            AccountMeta::new_readonly(*token_program_2022.key, false),
-            AccountMeta::new_readonly(*memo.key, false),
-            AccountMeta::new_readonly(*input_mint_acc.key, false),
-            AccountMeta::new_readonly(*output_mint_acc.key, false),
-        ];
+        // Stack-allocated metas — max 16 entries (13 base + 1 bitmap + 2 tick arrays)
+        let mut metas: [AccountMeta; 16] = core::array::from_fn(|_| AccountMeta::new_readonly(Pubkey::default(), false));
+        let mut mn = 0usize;
+        macro_rules! push_meta {
+            (w $key:expr) => { metas[mn] = AccountMeta::new($key, false); mn += 1; };
+            (ws $key:expr) => { metas[mn] = AccountMeta::new($key, true); mn += 1; };
+            (r $key:expr) => { metas[mn] = AccountMeta::new_readonly($key, false); mn += 1; };
+        }
+        push_meta!(ws *payer.key);
+        push_meta!(r *amm_config.key);
+        push_meta!(w *pool_id.key);
+        push_meta!(w *user_input_account.key);
+        push_meta!(w *user_output_account.key);
+        push_meta!(w *input_vault.key);
+        push_meta!(w *output_vault.key);
+        push_meta!(w *observation.key);
+        push_meta!(r *token_program_spl.key);
+        push_meta!(r *token_program_2022.key);
+        push_meta!(r *memo.key);
+        push_meta!(r *input_mint_acc.key);
+        push_meta!(r *output_mint_acc.key);
 
         if *bitmap_extension.key != PROGRAM_ID {
-            metas.push(AccountMeta::new(*bitmap_extension.key, false));
+            push_meta!(w *bitmap_extension.key);
         }
 
         let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
         for i in ta_from..ta_to {
-            metas.push(AccountMeta::new(*accounts[i].key, false));
+            push_meta!(w *accounts[i].key);
         }
 
         let mut data = [0u8; 41];
@@ -377,12 +382,6 @@ impl ProgramMeta for RaydiumCLMM {
         data[16..24].copy_from_slice(&min_amount_out.unwrap_or(0).to_le_bytes());
         // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
         data[40] = 1; // is_base_input = true (exact input)
-
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
-        };
 
         // Stack-allocated account infos — max 16 entries (13 base + 1 bitmap + 2 tick arrays)
         let mut accs: [AccountInfo<'a>; 16] = unsafe { core::mem::zeroed() };
@@ -412,7 +411,7 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, &accs[..ai])?;
 
         Ok(())
     }
@@ -423,13 +422,13 @@ impl ProgramMeta for RaydiumCLMM {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let amm_config = &accounts[self.dyn_start + D_AMM_CONFIG];
@@ -470,30 +469,36 @@ impl ProgramMeta for RaydiumCLMM {
             )
         };
 
-        let mut metas = vec![
-            AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*amm_config.key, false),
-            AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*user_input_account.key, false),
-            AccountMeta::new(*user_output_account.key, false),
-            AccountMeta::new(*input_vault.key, false),
-            AccountMeta::new(*output_vault.key, false),
-            AccountMeta::new(*observation.key, false),
-            AccountMeta::new_readonly(*token_program_spl.key, false),
-            AccountMeta::new_readonly(*token_program_2022.key, false),
-            AccountMeta::new_readonly(*memo.key, false),
-            AccountMeta::new_readonly(*input_mint_acc.key, false),
-            AccountMeta::new_readonly(*output_mint_acc.key, false),
-        ];
+        // Stack-allocated metas — max 16 entries
+        let mut metas: [AccountMeta; 16] = core::array::from_fn(|_| AccountMeta::new_readonly(Pubkey::default(), false));
+        let mut mn = 0usize;
+        macro_rules! push_meta {
+            (w $key:expr) => { metas[mn] = AccountMeta::new($key, false); mn += 1; };
+            (ws $key:expr) => { metas[mn] = AccountMeta::new($key, true); mn += 1; };
+            (r $key:expr) => { metas[mn] = AccountMeta::new_readonly($key, false); mn += 1; };
+        }
+        push_meta!(ws *payer.key);
+        push_meta!(r *amm_config.key);
+        push_meta!(w *pool_id.key);
+        push_meta!(w *user_input_account.key);
+        push_meta!(w *user_output_account.key);
+        push_meta!(w *input_vault.key);
+        push_meta!(w *output_vault.key);
+        push_meta!(w *observation.key);
+        push_meta!(r *token_program_spl.key);
+        push_meta!(r *token_program_2022.key);
+        push_meta!(r *memo.key);
+        push_meta!(r *input_mint_acc.key);
+        push_meta!(r *output_mint_acc.key);
 
         if *bitmap_extension.key != PROGRAM_ID {
-            metas.push(AccountMeta::new(*bitmap_extension.key, false));
+            push_meta!(w *bitmap_extension.key);
         }
 
         // Add tick array accounts for this swap direction
         let (ta_from, ta_to) = Self::tick_array_range(self.dyn_start, zero_for_one);
         for i in ta_from..ta_to {
-            metas.push(AccountMeta::new(*accounts[i].key, false));
+            push_meta!(w *accounts[i].key);
         }
 
         let mut data = [0u8; 41];
@@ -502,12 +507,6 @@ impl ProgramMeta for RaydiumCLMM {
         data[16..24].copy_from_slice(&max_amount_in.to_le_bytes());
         // data[24..40] already zeroed: sqrt_price_limit_x64 = 0
         data[40] = 0; // is_base_input = false (exact output)
-
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
-        };
 
         // Stack-allocated account infos — max 16 entries (13 base + 1 bitmap + 2 tick arrays)
         let mut accs: [AccountInfo<'a>; 16] = unsafe { core::mem::zeroed() };
@@ -537,7 +536,7 @@ impl ProgramMeta for RaydiumCLMM {
             push_acc!(accounts[i].clone());
         }
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas[..mn], &data, &accs[..ai])?;
 
         Ok(())
     }

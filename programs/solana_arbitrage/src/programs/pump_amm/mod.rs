@@ -2,11 +2,11 @@ use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
+use crate::utils::cpi::invoke_cpi;
 mod constants;
 use crate::utils::utils::read_vault_data;
 
@@ -31,16 +31,15 @@ pub const D_POOL: usize = 0;
 pub const D_BASE_VAULT: usize = 1;
 pub const D_QUOTE_VAULT: usize = 2;
 pub const D_USER_VOL_ACC: usize = 3;
-pub const D_POOL_V2: usize = 4;
-pub const D_USER_VOL_WSOL_ATA: usize = 5;
-pub const D_VAULT_ATA: usize = 6;
-pub const D_VAULT_AUTHORITY: usize = 7;
-pub const D_CASHBACK_POOL_ID: usize = 8;
+pub const D_USER_VOL_WSOL_ATA: usize = 4;
+pub const D_VAULT_ATA: usize = 5;
+pub const D_VAULT_AUTHORITY: usize = 6;
+pub const D_CASHBACK_POOL_ID: usize = 7;
 
 // Pool account: 8 (disc) + 1 (bump) + 2 (index) + 32*6 (pubkeys) + 8 (lp_supply) + 32 (coin_creator) + 1 (is_mayhem_mode) = 244
 const POOL_IS_CASHBACK_OFFSET: usize = 244;
 
-pub const MIN_ACCOUNTS: usize = 9;
+pub const DYNAMIC_ACCOUNTS: usize = 8;
 
 /// Fee denominator for PumpAmm integer fee math (millionths).
 const FEE_DENOM: u128 = 1_000_000;
@@ -287,13 +286,13 @@ impl ProgramMeta for PumpAmm {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         if input_mint == self.base_token_pk {
             return self.invoke_swap_base_out(
@@ -360,7 +359,6 @@ impl ProgramMeta for PumpAmm {
         let quote_vault = &accounts[self.dyn_start + D_QUOTE_VAULT];
         let user_volume_accumulator =
             &accounts[self.dyn_start + D_USER_VOL_ACC];
-        let _pool_v2 = &accounts[self.dyn_start + D_POOL_V2];
         let user_vol_wsol_ata = &accounts[self.dyn_start + D_USER_VOL_WSOL_ATA];
         let vault_ata = &accounts[self.dyn_start + D_VAULT_ATA];
         let vault_authority = &accounts[self.dyn_start + D_VAULT_AUTHORITY];
@@ -410,15 +408,6 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&1u64.to_le_bytes());
 
-        // Build Instruction with exact-capacity Vecs (no realloc)
-        let mut meta_vec = Vec::with_capacity(n);
-        meta_vec.extend_from_slice(&metas[..n]);
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
         let mut accs: [AccountInfo<'a>; 25] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
@@ -427,18 +416,18 @@ impl ProgramMeta for PumpAmm {
             (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
         push_acc!(ref pool_id);
-        push_acc!(own payer);
+        push_acc!(ref payer);
         push_acc!(ref pump_amm_global);
-        push_acc!(own base_mint_account);
-        push_acc!(own quote_mint_account);
-        push_acc!(own user_base_token_account);
-        push_acc!(own user_quote_token_account);
+        push_acc!(ref base_mint_account);
+        push_acc!(ref quote_mint_account);
+        push_acc!(ref user_base_token_account);
+        push_acc!(ref user_quote_token_account);
         push_acc!(ref base_vault);
         push_acc!(ref quote_vault);
         push_acc!(ref protocol_fee_recipient);
         push_acc!(ref protocol_fee_token_account);
-        push_acc!(own base_token_program);
-        push_acc!(own quote_token_program);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
         push_acc!(ref system_program);
         push_acc!(ref associated_token_instruction_program);
         push_acc!(ref event_authority);
@@ -454,7 +443,7 @@ impl ProgramMeta for PumpAmm {
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(&PROGRAM_ID, &metas[..n], &data, &accs[..ai])?;
         Ok(())
     }
 
@@ -464,13 +453,13 @@ impl ProgramMeta for PumpAmm {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         if input_mint == self.quote_token_pk {
             return self.invoke_swap_base_in(
@@ -536,7 +525,6 @@ impl ProgramMeta for PumpAmm {
         let quote_vault = &accounts[self.dyn_start + D_QUOTE_VAULT];
         let user_volume_accumulator =
             &accounts[self.dyn_start + D_USER_VOL_ACC];
-        let _pool_v2 = &accounts[self.dyn_start + D_POOL_V2];
         let user_vol_wsol_ata = &accounts[self.dyn_start + D_USER_VOL_WSOL_ATA];
         let vault_ata = &accounts[self.dyn_start + D_VAULT_ATA];
         let vault_authority = &accounts[self.dyn_start + D_VAULT_AUTHORITY];
@@ -585,15 +573,6 @@ impl ProgramMeta for PumpAmm {
         data[8..16].copy_from_slice(&amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
 
-        // Build Instruction with exact-capacity Vecs (no realloc)
-        let mut meta_vec = Vec::with_capacity(n);
-        meta_vec.extend_from_slice(&metas[..n]);
-        let swap_ix = Instruction {
-            program_id: *program_id.key,
-            accounts: meta_vec,
-            data: data.to_vec(),
-        };
-
         // Stack-allocated account infos array — ptr::read avoids Rc refcount bumps
         let mut accs: [AccountInfo<'a>; 24] = unsafe { core::mem::zeroed() };
         let mut ai = 0usize;
@@ -602,18 +581,18 @@ impl ProgramMeta for PumpAmm {
             (own $e:expr) => { accs[ai] = unsafe { core::ptr::read(&$e.to_account_info() as *const _) }; ai += 1; };
         }
         push_acc!(ref pool_id);
-        push_acc!(own payer);
+        push_acc!(ref payer);
         push_acc!(ref pump_amm_global);
-        push_acc!(own base_mint_account);
-        push_acc!(own quote_mint_account);
-        push_acc!(own user_base_token_account);
-        push_acc!(own user_quote_token_account);
+        push_acc!(ref base_mint_account);
+        push_acc!(ref quote_mint_account);
+        push_acc!(ref user_base_token_account);
+        push_acc!(ref user_quote_token_account);
         push_acc!(ref base_vault);
         push_acc!(ref quote_vault);
         push_acc!(ref protocol_fee_recipient);
         push_acc!(ref protocol_fee_token_account);
-        push_acc!(own base_token_program);
-        push_acc!(own quote_token_program);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
         push_acc!(ref system_program);
         push_acc!(ref associated_token_instruction_program);
         push_acc!(ref event_authority);
@@ -628,7 +607,7 @@ impl ProgramMeta for PumpAmm {
         }
         push_acc!(ref cashback_pool_id);
 
-        invoke_signed_unchecked(&swap_ix, &accs[..ai], &[])?;
+        invoke_cpi(program_id.key, &metas[..n], &data, &accs[..ai])?;
         Ok(())
     }
     
@@ -652,7 +631,6 @@ impl ProgramMeta for PumpAmm {
         msg!("D1 base_vault: {}", accounts[self.dyn_start + D_BASE_VAULT].key);
         msg!("D2 quote_vault: {}", accounts[self.dyn_start + D_QUOTE_VAULT].key);
         msg!("D3 user_vol_acc: {}", accounts[self.dyn_start + D_USER_VOL_ACC].key);
-        msg!("D4 pool_v2: {}", accounts[self.dyn_start + D_POOL_V2].key);
         msg!("D5 user_vol_wsol_ata: {}", accounts[self.dyn_start + D_USER_VOL_WSOL_ATA].key);
         msg!("D6 vault_ata: {}", accounts[self.dyn_start + D_VAULT_ATA].key);
         msg!("D7 vault_authority: {}", accounts[self.dyn_start + D_VAULT_AUTHORITY].key);
@@ -705,7 +683,7 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
         // TODO: maket to run in test
         #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.0) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.05) as u64;
         // let base_vault_amount = 0;
         // let quote_vault_amount = 0;
 
@@ -738,7 +716,6 @@ impl PumpAmm {
             sell_max_in: 0,
             sell_max_out: 0,
             prepared: false,
-
         };
         // instance.log_accounts(accounts)?;
         Ok(instance)

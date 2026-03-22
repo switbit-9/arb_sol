@@ -157,7 +157,7 @@ pub fn find_cross_arbitrage_iterative<'info>(
         0.0
     };
     debug_eprintln!("");
-    msg!(
+    debug_eprintln!(
         "P={:.4}, F={:.4}, F={:.4}, {:.4})",
         price_diff_pct,
         1.0 - max_fee,

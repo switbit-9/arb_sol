@@ -3,11 +3,11 @@ use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::read_token_amount;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
+use crate::utils::cpi::invoke_cpi;
 
 // ── Pool account data byte offsets (after 8-byte Anchor discriminator) ──
 const TOKEN_A_MINT_OFFSET: usize = 32;
@@ -297,13 +297,13 @@ impl ProgramMeta for MeteoraDammV1 {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let (user_source_token, user_destination_token) =
             if input_mint == *mint_1_account.key {
@@ -334,7 +334,7 @@ impl ProgramMeta for MeteoraDammV1 {
         let minimum_out = amount_out.unwrap_or(0);
 
         // Swap instruction account layout (from SDK swap.rs)
-        let metas = vec![
+        let metas = [
             AccountMeta::new(*pool.key, false),                  // pool
             AccountMeta::new(*user_source_token.key, false),     // user_source_token
             AccountMeta::new(*user_destination_token.key, false),// user_destination_token
@@ -358,34 +358,29 @@ impl ProgramMeta for MeteoraDammV1 {
         data[8..16].copy_from_slice(&max_amount_in.to_le_bytes());
         data[16..24].copy_from_slice(&minimum_out.to_le_bytes());
 
-        let swap_ix = Instruction {
-            program_id: Self::PROGRAM_ID,
-            accounts: metas,
-            data: data.to_vec(),
-        };
-
-        let accounts_arr = [
-            pool.clone(),
-            unsafe { std::mem::transmute(user_source_token.to_account_info()) },
-            unsafe { std::mem::transmute(user_destination_token.to_account_info()) },
-            a_vault.clone(),
-            b_vault.clone(),
-            a_token_vault.clone(),
-            b_token_vault.clone(),
-            a_vault_lp_mint.clone(),
-            b_vault_lp_mint.clone(),
-            a_vault_lp.clone(),
-            b_vault_lp.clone(),
-            protocol_token_fee.clone(),
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-            vault_program.clone(),
-            token_program.clone(),
-        ];
-
-        unsafe {
-            let accounts_slice: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts_slice, &[])?;
+        // ptr::read avoids Rc refcount bumps from .clone()
+        let mut accs: [AccountInfo<'a>; 15] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
         }
+        push_acc!(ref pool);
+        push_acc!(ref user_source_token);
+        push_acc!(ref user_destination_token);
+        push_acc!(ref a_vault);
+        push_acc!(ref b_vault);
+        push_acc!(ref a_token_vault);
+        push_acc!(ref b_token_vault);
+        push_acc!(ref a_vault_lp_mint);
+        push_acc!(ref b_vault_lp_mint);
+        push_acc!(ref a_vault_lp);
+        push_acc!(ref b_vault_lp);
+        push_acc!(ref protocol_token_fee);
+        push_acc!(ref payer);
+        push_acc!(ref vault_program);
+        push_acc!(ref token_program);
+
+        invoke_cpi(&Self::PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 
@@ -395,13 +390,13 @@ impl ProgramMeta for MeteoraDammV1 {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         // DAMM v1 has a single swap instruction (in_amount + minimum_out_amount)
         self.invoke_swap_base_in(
@@ -465,7 +460,7 @@ impl MeteoraDammV1 {
     pub const D_VAULT_PROGRAM: usize = 11;
     pub const D_TOKEN_PROGRAM: usize = 12;
 
-    pub const MIN_ACCOUNTS: usize = 13;
+    pub const DYNAMIC_ACCOUNTS: usize = 13;
 
     pub fn new<'a>(
         accounts: &[AccountInfo<'a>],
@@ -475,7 +470,7 @@ impl MeteoraDammV1 {
         clock: &Clock,
     ) -> Result<Self> {
         require!(
-            dyn_end - dyn_start >= Self::MIN_ACCOUNTS,
+            dyn_end - dyn_start >= Self::DYNAMIC_ACCOUNTS,
             crate::programs::SolarBError::InsufficientAccounts
         );
         require!(

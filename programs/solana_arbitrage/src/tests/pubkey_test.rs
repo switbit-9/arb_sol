@@ -72,8 +72,8 @@ mod tests {
 
         eprintln!("\n=== start_bot ===");
         eprintln!(
-            "mode={} test={} mints={} pool_types={:?} pool_lengths={:?} total_accounts={}",
-            data.mode, test_mode, data.mints, data.pool_types, data.pool_lengths, accounts.len()
+            "mode={} test={} mints={} pool_types={:?} total_accounts={}",
+            data.mode, test_mode, data.mints, data.pool_types, accounts.len()
         );
 
         let result = start_bot(&accounts, data, clock);
@@ -110,37 +110,59 @@ mod tests {
 "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",  // memo [3]
 "So11111111111111111111111111111111111111112",  // wsol_mint [4]
 "Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk",  // user_wsol_ata [5]
-"Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump",  // mint [6]
-"FnWuaZR2r2XQyxJYM2xf7s3JMJf5bWxhDHhUatdhbR94",  // user_token_ata [7]
-"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  // raydium_amm program_id [8]
-"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  // raydium_amm amm_authority [9]
-"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  // whirlpool program_id [10]
-"8WwcNqdZjCY5Pt7AkhupAFknV2txca9sq6YBkGzLbvdt",  // raydium_amm [8WwcNqdZ] pool_id [11]
-"CLTdpsLAs7JTmN1r6AfVSjBTgqpJAtKEWvGbenYrxMYT",  // raydium_amm [8WwcNqdZ] base_vault [12]
-"EmyzSTZrb9NCBz8bK8Sfy8iaBT7Bkh1wpjiiKKQhjMxG",  // raydium_amm [8WwcNqdZ] quote_vault [13]
-"CTweAnaHqDxevH2k9H9SmTRC3DEVhb3DkXDxVHiEW6kW",  // raydium_amm [8WwcNqdZ] open_orders [14]
-"5t1DEPmxpyQzygiXT9Q9xvidHTSBeD1PYnoFYa7wG5mg",  // whirlpool [5t1DEPmx] pool_id [15]
-"2ogJYLnBYsQzfh19pTxiv87GhRDWoRGc3oAEAZFhEAA7",  // whirlpool [5t1DEPmx] base_vault [16]
-"EcoNf7JkBfLytGkqhZANz2RPECT55997whcEXC1ZhRq5",  // whirlpool [5t1DEPmx] quote_vault [17]
-"B3PqJK4z6437oGywZi1DKdzoQRcoi6BC8uP7BMsWQGxg",  // whirlpool [5t1DEPmx] oracle [18]
-"6R3gxZPUzLU7dLYNfiafUhNqrA47JuBxNtdDyFNFi9Xe",  // whirlpool [5t1DEPmx] tick_array_0 [19]
-"AyzKp4uU4CuWuttm3jgvJynDUhPjY7En9SvYG92uD9G2",  // whirlpool [5t1DEPmx] tick_array_1 [20]
-"9prbVZryXSj8nZfihvbHjJ7Z1GSsmsVynbrQUj7ZBnZX",  // whirlpool [5t1DEPmx] tick_array_2 [21]
+"2TpMjYXnrgxoeVCq2i6EAR8vNWqe5MNvHCz3bENNpump",  // mint [6]
+"9BvUUpvAW5PjWWuKEmyuoisHYjA1pjUv3LxTwqpy6YPY",  // user_token_ata [7]
+"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  // pump_amm program_id [8]
+"62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",  // pump_amm protocol_fee_recipient [9]
+"94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",  // pump_amm protocol_fee_token_acc [10]
+"GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",  // pump_amm event_authority [11]
+"5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",  // pump_amm fee_config [12]
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",  // pump_amm fee_program [13]
+"ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",  // pump_amm global [14]
+"11111111111111111111111111111111",  // pump_amm system_program [15]
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  // pump_amm assoc_token_prog [16]
+"C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",  // pump_amm global_vol_acc [17]
+"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm program_id [18]
+"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm host_fee_in [19]
+"D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",  // meteora_dlmm event_authority [20]
+"HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv",  // pump_amm [HJAqvquM] pool_id [21]
+"3J8k6Aw4CQV5BfFqmDeSEkmrmn6czQP17PX5avHSUWq6",  // pump_amm [HJAqvquM] base_vault [22]
+"DWx3Z5qQYLp2eVCFJb8AzW4LYw35z7qArWS8WF5uXZ1a",  // pump_amm [HJAqvquM] quote_vault [23]
+"WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i",  // pump_amm [HJAqvquM] user_volume_acc [24]
+"4shRJJF5itY9W29tVSJWVQxxSBmu6ny1BR3X1z5XyqzS",  // pump_amm [HJAqvquM] pool_v2 [25]
+"C8uZReppTGXRTnTuWBPrSgjk33fskeyCCTSxKRKSbPN2",  // pump_amm [HJAqvquM] user_vol_wsol_ata [26]
+"EfXELLTEt6H8Kgsf5LPB2A55Pue8B4GNxViWr9Aiz9AT",  // pump_amm [HJAqvquM] vault_ata [27]
+"CWmKWBryCUW5mBQcrncCEs9CamP9qWa8S6q6i6gMFTb1",  // pump_amm [HJAqvquM] vault_authority [28]
+"8dem2dfPchbvP5HauNYWBY7sUgEg2ayUZwtL2nkQGJDB",  // meteora_dlmm [8dem2dfP] pool_id [29]
+"7NZMKCnCdfuYfrdvi5RKSUbe1JSv5RPHUuE1vDLPJWXF",  // meteora_dlmm [8dem2dfP] base_vault [30]
+"EE3iaQ6gU6i2ZmteqQkxM7ticyNdHoFrwKXgeShggovP",  // meteora_dlmm [8dem2dfP] quote_vault [31]
+"J5JAe9KTZ7JPZQpgwZQegd8TqecgW9BB1vmgwyMmeBan",  // meteora_dlmm [8dem2dfP] oracle [32]
+"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8dem2dfP] bitmap_ext [33]
+"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_0 [34]
+"4oifhkxP8jm2PmwF9Foje7Ybj7527eeqnyVy7L6Spjtw",  // meteora_dlmm [8dem2dfP] bin_array_buy_1 [35]
+"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_sell_0 [36]
+"3Xxya2MBpD9zNuDrgdav2PqNh82xr49y1NRy2vnrAokC",  // meteora_dlmm [8dem2dfP] bin_array_sell_1 [37]
+"7ik5kwcwjD9W22THNqU5spBA9pELjhzfPg2eGvKtNEGn",  // meteora_dlmm [7ik5kwcw] pool_id [38]
+"7JQ4WYhJhxBAhCghN3miadj5CL876khFFK7Bd5Kvf2mT",  // meteora_dlmm [7ik5kwcw] base_vault [39]
+"GzWDHkTcovg7r6GxS1qcyJD5kVWHccx3Ms2MkvXTQssP",  // meteora_dlmm [7ik5kwcw] quote_vault [40]
+"ZC1SdfhtapP6oavipqSSBjisawVQmb9R1HxrHxw7QuE",  // meteora_dlmm [7ik5kwcw] oracle [41]
+"DAet93xfSzooiqSXN3LWhD7jTj5CNyMvNmuLSEiyPyYn",  // meteora_dlmm [7ik5kwcw] bitmap_ext [42]
+"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_0 [43]
+"7cXZVVeb7jXcwrhc88fxQPNe1MToRDP2zBaNagSm9rnZ",  // meteora_dlmm [7ik5kwcw] bin_array_buy_1 [44]
+"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_sell_0 [45]
+"4i3o7s328RF2p3CQgYqcMwTm8mLjdX1QJpN68Y98Ssxt",  // meteora_dlmm [7ik5kwcw] bin_array_sell_1 [46]
 ];
 
     fn make_instruction_data(test_mode: bool) -> InstructionData {
-        InstructionData                                                     {
+        InstructionData                                              {
         mints: 2,
-        shared_statics_len: 3,
-        pool_types: [5, 4, 0, 0, 0, 0, 0, 0],
-        pool_lengths: [4, 7, 0, 0, 0, 0, 0, 0],
-        type_static_offsets: [0, 2, 0, 0, 0, 0, 0, 0],
+        shared_statics_len: 13,
+        pool_types: [9, 3, 3, 0, 0, 0, 0, 0],
+        type_static_offsets: [0, 10, 10, 0, 0, 0, 0, 0],
         mode: 0,
         test: false,
         group_sizes: [0, 0, 0, 0],
-        mint_fee_bps: vec![],
-        mint_fee_max: vec![],
-        pool_fees: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        pool_fees: vec![5000],
     }
     }
 

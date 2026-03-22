@@ -14,12 +14,12 @@ use crate::utils::{
 };
 use crate::{
     programs::{PoolKind, ProgramMeta},
+    utils::cpi::invoke_cpi,
 };
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::AccountInfo,
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -41,7 +41,7 @@ pub const D_QUOTE_VAULT: usize = 2;
 pub const D_AMM_CONFIG: usize = 3;
 pub const D_OBSERVATION: usize = 4;
 
-pub const MIN_ACCOUNTS: usize = 5;
+pub const DYNAMIC_ACCOUNTS: usize = 5;
 
 fn get_price_f64(
     base_vault_amount: u64,
@@ -266,13 +266,13 @@ impl ProgramMeta for RaydiumCPMM {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap(
             accounts, input_mint, &SWAP_BASE_IN_DISC,
@@ -288,13 +288,13 @@ impl ProgramMeta for RaydiumCPMM {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         self.invoke_swap(
             accounts, input_mint, &SWAP_BASE_OUT_DISC,
@@ -348,13 +348,13 @@ impl RaydiumCPMM {
         disc: &[u8; 8],
         arg1: u64,
         arg2: u64,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let base_vault = &accounts[self.dyn_start + D_BASE_VAULT];
@@ -375,48 +375,48 @@ impl RaydiumCPMM {
             (mint_2_token_program, mint_1_token_program, user_mint_2_token_account, user_mint_1_token_account, mint_2_account, mint_1_account)
         };
 
-        let mut data = Vec::with_capacity(24);
-        data.extend_from_slice(disc);
-        data.extend_from_slice(&arg1.to_le_bytes());
-        data.extend_from_slice(&arg2.to_le_bytes());
+        let mut data = [0u8; 24];
+        data[..8].copy_from_slice(disc);
+        data[8..16].copy_from_slice(&arg1.to_le_bytes());
+        data[16..24].copy_from_slice(&arg2.to_le_bytes());
 
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: vec![
-                AccountMeta::new(*payer.key, true),
-                AccountMeta::new_readonly(*authority_account.key, false),
-                AccountMeta::new_readonly(*amm_config_account.key, false),
-                AccountMeta::new(*pool_id.key, false),
-                AccountMeta::new(*user_input_token_account.key, false),
-                AccountMeta::new(*user_output_token_account.key, false),
-                AccountMeta::new(*input_vault.key, false),
-                AccountMeta::new(*output_vault.key, false),
-                AccountMeta::new_readonly(*input_token_program.key, false),
-                AccountMeta::new_readonly(*output_token_program.key, false),
-                AccountMeta::new_readonly(*input_mint_acc.key, false),
-                AccountMeta::new_readonly(*output_mint_acc.key, false),
-                AccountMeta::new(*observation_account.key, false),
-            ],
-            data,
-        };
-
-        let accounts_arr = [
-            payer,
-            authority_account.clone(),
-            amm_config_account.clone(),
-            pool_id.clone(),
-            user_input_token_account,
-            user_output_token_account,
-            input_vault.clone(),
-            output_vault.clone(),
-            input_token_program,
-            output_token_program,
-            input_mint_acc,
-            output_mint_acc,
-            observation_account.clone(),
+        let metas = [
+            AccountMeta::new(*payer.key, true),
+            AccountMeta::new_readonly(*authority_account.key, false),
+            AccountMeta::new_readonly(*amm_config_account.key, false),
+            AccountMeta::new(*pool_id.key, false),
+            AccountMeta::new(*user_input_token_account.key, false),
+            AccountMeta::new(*user_output_token_account.key, false),
+            AccountMeta::new(*input_vault.key, false),
+            AccountMeta::new(*output_vault.key, false),
+            AccountMeta::new_readonly(*input_token_program.key, false),
+            AccountMeta::new_readonly(*output_token_program.key, false),
+            AccountMeta::new_readonly(*input_mint_acc.key, false),
+            AccountMeta::new_readonly(*output_mint_acc.key, false),
+            AccountMeta::new(*observation_account.key, false),
         ];
 
-        invoke_signed_unchecked(&swap_ix, &accounts_arr, &[])?;
+        // ptr::read avoids Rc refcount bumps from .clone()
+        let mut accs: [AccountInfo<'a>; 13] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
+        }
+        push_acc!(ref payer);
+        push_acc!(ref authority_account);
+        push_acc!(ref amm_config_account);
+        push_acc!(ref pool_id);
+        push_acc!(ref user_input_token_account);
+        push_acc!(ref user_output_token_account);
+        push_acc!(ref input_vault);
+        push_acc!(ref output_vault);
+        push_acc!(ref input_token_program);
+        push_acc!(ref output_token_program);
+        push_acc!(ref input_mint_acc);
+        push_acc!(ref output_mint_acc);
+        push_acc!(ref observation_account);
+
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 

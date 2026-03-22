@@ -31,30 +31,21 @@ struct AnalyticalCandidate {
 /// Candidate search using marginal prices only — no analytical formulas.
 ///
 /// 1. Extract fee-adjusted marginal prices for every pool in O(n).
-/// 2. Brute-scan all pairs (O(n²)) — keep top 3 by price product.
+/// 2. Brute-scan all pairs (O(n²)) — keep all with product > 1.0.
 ///    Pairs with product <= 1.0 are unprofitable and skipped.
 /// 3. No heap allocations — fixed-size arrays throughout.
 ///
 /// Optimal amounts and real profits are computed later via multibin/fast_quote.
-const MAX_CANDIDATES: usize = 3;
-const MAX_POOLS: usize = 16;
+const MAX_POOLS: usize = 8;
 
-const EMPTY_CANDIDATE: AnalyticalCandidate = AnalyticalCandidate {
-    buy_idx: 0,
-    sell_idx: 0,
-    input_mint: Pubkey::new_from_array([0; 32]),
-    middle_mint: Pubkey::new_from_array([0; 32]),
-    price_product: 0.0,
-    buy_model: PoolModel::Opaque { marginal_price: 0.0 },
-    sell_model: PoolModel::Opaque { marginal_price: 0.0 },
-};
-
+#[inline(never)]
 fn find_candidates_analytical(
     instances: &[ProgramInstance],
     start_token: Pubkey,
     middle_mint: Pubkey,
-) -> ([AnalyticalCandidate; MAX_CANDIDATES], usize) {
-    if instances.is_empty() { return ([EMPTY_CANDIDATE; MAX_CANDIDATES], 0) };
+    max_amount_in: u64,
+) -> Vec<AnalyticalCandidate> {
+    if instances.is_empty() { return Vec::new() };
 
     // Fixed-size price extraction — no heap alloc.
     let mut prices: [(usize, f64, f64); MAX_POOLS] = [(0, 0.0, 0.0); MAX_POOLS];
@@ -73,10 +64,8 @@ fn find_candidates_analytical(
         }
     }
 
-    // Brute-scan all pairs, keep top 3 by price product. No sort needed.
-    let mut candidates = [EMPTY_CANDIDATE; MAX_CANDIDATES];
-    let mut cand_count = 0usize;
-    let mut worst_product = 0.0_f64;
+    // Brute-scan all pairs, keep all with positive profit (product > 1.0).
+    let mut candidates = Vec::new();
 
     for i in 0..count {
         let (buy_idx, buy_price, _) = prices[i];
@@ -85,46 +74,22 @@ fn find_candidates_analytical(
             let (sell_idx, _, sell_price) = prices[j];
             let product = buy_price * sell_price;
             if product <= 1.0 { continue; }
+            let estimated_out = max_amount_in as f64 * product;
+            if estimated_out - max_amount_in as f64 <= 5_000.0 { continue; }
 
-            if cand_count < MAX_CANDIDATES {
-                candidates[cand_count] = AnalyticalCandidate {
-                    buy_idx,
-                    sell_idx,
-                    input_mint: start_token,
-                    middle_mint,
-                    price_product: product,
-                    buy_model: PoolModel::Opaque { marginal_price: buy_price },
-                    sell_model: PoolModel::Opaque { marginal_price: sell_price },
-                };
-                cand_count += 1;
-                if cand_count == MAX_CANDIDATES {
-                    worst_product = candidates[0].price_product
-                        .min(candidates[1].price_product)
-                        .min(candidates[2].price_product);
-                }
-            } else if product > worst_product {
-                // Replace the worst candidate
-                let worst_idx = if candidates[0].price_product <= candidates[1].price_product
-                    && candidates[0].price_product <= candidates[2].price_product { 0 }
-                    else if candidates[1].price_product <= candidates[2].price_product { 1 }
-                    else { 2 };
-                candidates[worst_idx] = AnalyticalCandidate {
-                    buy_idx,
-                    sell_idx,
-                    input_mint: start_token,
-                    middle_mint,
-                    price_product: product,
-                    buy_model: PoolModel::Opaque { marginal_price: buy_price },
-                    sell_model: PoolModel::Opaque { marginal_price: sell_price },
-                };
-                worst_product = candidates[0].price_product
-                    .min(candidates[1].price_product)
-                    .min(candidates[2].price_product);
-            }
+            candidates.push(AnalyticalCandidate {
+                buy_idx,
+                sell_idx,
+                input_mint: start_token,
+                middle_mint,
+                price_product: product,
+                buy_model: PoolModel::Opaque { marginal_price: buy_price },
+                sell_model: PoolModel::Opaque { marginal_price: sell_price },
+            });
         }
     }
 
-    (candidates, cand_count)
+    candidates
 }
 
 // ─── Build edges for the result ─────────────────────────────────────────────
@@ -329,13 +294,6 @@ fn compute_optimal_amount<'info>(
 
 // ─── Main entry point ───────────────────────────────────────────────────────
 
-/// 2-hop analytical arbitrage (single pair, multi-market).
-///
-/// Pipeline:
-/// 1. Marginal price filter → rank by price product → top 3 candidates
-/// 2. Compute optimal amount per candidate (multibin for DLMM, analytical for CP)
-/// 3. fast_quote for real profit estimation and ranking
-/// 4. Build path for best candidate; run_simulation in lib.rs validates before execution
 #[inline(never)]
 pub fn run_analytical_2hop<'info>(
     accounts: &[AccountInfo<'info>],
@@ -347,102 +305,105 @@ pub fn run_analytical_2hop<'info>(
     let (base_mint, quote_mint) = first.get_mints();
     let middle_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
 
-    let (mut candidates, cand_count) = find_candidates_analytical(instances, start_token, middle_mint);
+    let candidates = find_candidates_analytical(instances, start_token, middle_mint, config.max_amount_in);
 
-    if cand_count == 0 {
+    if candidates.is_empty() {
         debug_eprintln!("Analytical 2hop: no candidate found");
         return Ok(None);
     }
 
-    // Prepare all unique candidate pools upfront (loads full pool data, computes max amounts).
-    // Track which pool indices failed preparation (e.g. missing bin arrays).
+    evaluate_candidates_single_pass(
+        &candidates, instances, accounts, &config.clock,
+        start_token, middle_mint,
+        config.max_amount_in, config.min_profit, config.test,
+    )
+}
+
+/// Single-pass: lazily prepare pools, extract models, and evaluate each candidate.
+/// Each pool is prepared/modeled at most once via per-index caches.
+#[inline(never)]
+fn evaluate_candidates_single_pass<'info>(
+    candidates: &[AnalyticalCandidate],
+    instances: &mut [ProgramInstance],
+    accounts: &[AccountInfo<'info>],
+    clock: &Clock,
+    start_token: Pubkey,
+    middle_mint: Pubkey,
+    max_amount_in: u64,
+    min_profit: i128,
+    test_mode: bool,
+) -> Result<Option<ArbitragePath>> {
+    let mut prepared: [bool; MAX_POOLS] = [false; MAX_POOLS];
     let mut skipped: [bool; MAX_POOLS] = [false; MAX_POOLS];
-    {
-        let mut prepared: [bool; MAX_POOLS] = [false; MAX_POOLS];
-        for c in &candidates[..cand_count] {
-            for idx in [c.buy_idx, c.sell_idx] {
-                if !prepared[idx] {
-                    prepared[idx] = true;
-                    if !instances[idx].prepare_for_execution(accounts, &config.clock) {
-                        skipped[idx] = true;
-                    }
+    let opaque_zero = PoolModel::Opaque { marginal_price: 0.0 };
+    let mut cached_buy: [PoolModel; MAX_POOLS] = [opaque_zero; MAX_POOLS];
+    let mut cached_sell: [PoolModel; MAX_POOLS] = [opaque_zero; MAX_POOLS];
+    let mut model_cached: [bool; MAX_POOLS] = [false; MAX_POOLS];
+
+    let mut best_path: Option<ArbitragePath> = None;
+    let mut best_profit: i128 = min_profit;
+    let cand_count = candidates.len();
+
+    for (i, c) in candidates.iter().enumerate() {
+        // Lazy prepare: only on first encounter per pool
+        for idx in [c.buy_idx, c.sell_idx] {
+            if !prepared[idx] {
+                prepared[idx] = true;
+                if !instances[idx].prepare_for_execution(accounts, clock) {
+                    skipped[idx] = true;
                 }
             }
         }
-    }
 
-    // Re-extract models for candidates now that prepare_for_execution has loaded
-    // active bin data (the models captured during find_candidates used stale/zero values).
-    // Cache per pool index so each instance is only queried once even if shared across candidates.
-    {
-        let opaque_zero = PoolModel::Opaque { marginal_price: 0.0 };
-        let mut cached_buy: [PoolModel; MAX_POOLS] = [opaque_zero; MAX_POOLS];
-        let mut cached_sell: [PoolModel; MAX_POOLS] = [opaque_zero; MAX_POOLS];
-        let mut model_cached: [bool; MAX_POOLS] = [false; MAX_POOLS];
-
-        for c in &mut candidates[..cand_count] {
-            if !model_cached[c.buy_idx] {
-                model_cached[c.buy_idx] = true;
-                let (buy, sell) = extract_pool_model_both(&instances[c.buy_idx], start_token, middle_mint);
-                cached_buy[c.buy_idx] = buy;
-                cached_sell[c.buy_idx] = sell;
-            }
-            if !model_cached[c.sell_idx] {
-                model_cached[c.sell_idx] = true;
-                let (buy, sell) = extract_pool_model_both(&instances[c.sell_idx], start_token, middle_mint);
-                cached_buy[c.sell_idx] = buy;
-                cached_sell[c.sell_idx] = sell;
-            }
-            c.buy_model = cached_buy[c.buy_idx];
-            c.sell_model = cached_sell[c.sell_idx];
+        if skipped[c.buy_idx] || skipped[c.sell_idx] {
+            continue;
         }
-    }
 
-    // For each candidate: compute optimal amount and estimated profit.
-    // Track the best by estimated profit.
-    let mut best_path: Option<ArbitragePath> = None;
-    let mut best_profit: i128 = config.min_profit;
+        // Lazy model extraction
+        if !model_cached[c.buy_idx] {
+            model_cached[c.buy_idx] = true;
+            let (buy, sell) = extract_pool_model_both(&instances[c.buy_idx], start_token, middle_mint);
+            cached_buy[c.buy_idx] = buy;
+            cached_sell[c.buy_idx] = sell;
+        }
+        if !model_cached[c.sell_idx] {
+            model_cached[c.sell_idx] = true;
+            let (buy, sell) = extract_pool_model_both(&instances[c.sell_idx], start_token, middle_mint);
+            cached_buy[c.sell_idx] = buy;
+            cached_sell[c.sell_idx] = sell;
+        }
 
-    for (i, c) in candidates[..cand_count].iter().enumerate() {
-        debug_eprintln!(
-            "Analytical 2hop candidate[{}/{}]: buy_model={}, sell_model={}, skipped_buy={}, skipped_sell={}, price_product={:.6}",
-            i + 1, cand_count, c.buy_model.label(), c.sell_model.label(),
-            skipped[c.buy_idx], skipped[c.sell_idx], c.price_product
-        );
-        // Skip candidates where either pool failed preparation or model is still Opaque
-        if skipped[c.buy_idx]
-            || skipped[c.sell_idx]
-            || matches!(c.buy_model, PoolModel::Opaque { .. })
-            || matches!(c.sell_model, PoolModel::Opaque { .. })
+        let buy_model = cached_buy[c.buy_idx];
+        let sell_model = cached_sell[c.sell_idx];
+
+        if matches!(buy_model, PoolModel::Opaque { .. })
+            || matches!(sell_model, PoolModel::Opaque { .. })
         {
             continue;
         }
 
-        let (optimal_amount, estimated_profit) = match compute_optimal_amount(c, config.max_amount_in, accounts, instances) {
+        let c_fresh = AnalyticalCandidate {
+            buy_model,
+            sell_model,
+            ..*c
+        };
+
+        let (optimal_amount, estimated_profit) = match compute_optimal_amount(&c_fresh, max_amount_in, accounts, instances) {
             Some((a, p)) if a >= MIN_SEARCH_AMOUNT => {
                 debug_eprintln!(
                     "Analytical 2hop[{}/{}]: optimal_amount={:.4} SOL, estimated_profit={:.4} SOL for {}+{} (pool {} -> pool {}), price_product={:.6}",
                     i + 1, cand_count,
                     a as f64 / 1e9, p as f64 / 1e9,
-                    c.buy_model.label(), c.sell_model.label(),
+                    buy_model.label(), sell_model.label(),
                     instances[c.buy_idx].get_pool_id(), instances[c.sell_idx].get_pool_id(),
                     c.price_product
                 );
                 (a, p)
             }
-            _ => {
-                debug_eprintln!(
-                    "Analytical 2hop[{}/{}]: no optimal amount for {}+{} (pool {} -> pool {}), price_product={:.6}",
-                    i + 1, cand_count, c.buy_model.label(), c.sell_model.label(),
-                    instances[c.buy_idx].get_pool_id(), instances[c.sell_idx].get_pool_id(),
-                    c.price_product
-                );
-                continue;
-            }
+            _ => { continue; }
         };
 
-
-        if !config.test && (estimated_profit <= best_profit || optimal_amount == 0) {
+        if !test_mode && (estimated_profit <= best_profit || optimal_amount == 0) {
             continue;
         }
 

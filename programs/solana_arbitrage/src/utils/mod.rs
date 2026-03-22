@@ -1,4 +1,5 @@
 pub mod bot_config;
+pub mod cpi;
 #[cfg(test)]
 pub mod test_utils;
 pub mod token;

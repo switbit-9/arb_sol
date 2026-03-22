@@ -1,6 +1,4 @@
-use anchor_lang::solana_program::msg;
 use ruint::aliases::{U256, U512};
-use std::panic::Location;
 
 use super::super::PoolError;
 
@@ -17,88 +15,39 @@ pub trait SafeMath<T>: Sized {
 macro_rules! checked_impl {
     ($t:ty, $offset:ty) => {
         impl SafeMath<$offset> for $t {
-            #[track_caller]
+            #[inline(always)]
             fn safe_add(self, v: $t) -> Result<$t, PoolError> {
-                match self.checked_add(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_add(v).ok_or(PoolError::MathOverflow)
             }
 
-            #[track_caller]
+            #[inline(always)]
             fn safe_sub(self, v: $t) -> Result<$t, PoolError> {
-                match self.checked_sub(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_sub(v).ok_or(PoolError::MathOverflow)
             }
 
-            #[track_caller]
+            #[inline(always)]
             fn safe_mul(self, v: $t) -> Result<$t, PoolError> {
-                match self.checked_mul(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_mul(v).ok_or(PoolError::MathOverflow)
             }
 
             #[inline(always)]
             fn safe_div(self, v: $t) -> Result<$t, PoolError> {
-                match self.checked_div(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_div(v).ok_or(PoolError::MathOverflow)
             }
 
             #[inline(always)]
             fn safe_rem(self, v: $t) -> Result<$t, PoolError> {
-                match self.checked_rem(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_rem(v).ok_or(PoolError::MathOverflow)
             }
 
-            #[track_caller]
+            #[inline(always)]
             fn safe_shl(self, v: $offset) -> Result<$t, PoolError> {
-                match self.checked_shl(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_shl(v).ok_or(PoolError::MathOverflow)
             }
 
-            #[track_caller]
+            #[inline(always)]
             fn safe_shr(self, v: $offset) -> Result<$t, PoolError> {
-                match self.checked_shr(v) {
-                    Some(result) => Ok(result),
-                    None => {
-                        let caller = Location::caller();
-                        msg!("Math error thrown at {}:{}", caller.file(), caller.line());
-                        Err(PoolError::MathOverflow)
-                    }
-                }
+                self.checked_shr(v).ok_or(PoolError::MathOverflow)
             }
         }
     };

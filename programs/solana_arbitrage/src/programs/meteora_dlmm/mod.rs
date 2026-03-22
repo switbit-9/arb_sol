@@ -5,11 +5,11 @@ use crate::programs::SolarBError;
 use crate::utils::token::MintFee;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::invoke_signed_unchecked,
+    instruction::AccountMeta,
     program_error::ProgramError,
     pubkey::Pubkey,
 };
+use crate::utils::cpi::invoke_cpi;
 use dlmm_lib::constants::{BASIS_POINT_MAX, FEE_PRECISION};
 use dlmm_lib::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
 use dlmm_lib::dlmm::types::Bin;
@@ -47,7 +47,7 @@ pub const D_BIN_BUY_1: usize = 6;
 pub const D_BIN_SELL_0: usize = 7;
 pub const D_BIN_SELL_1: usize = 8;
 
-pub const MIN_ACCOUNTS: usize = 9;
+pub const DYNAMIC_ACCOUNTS: usize = 9;
 
 /// Precomputed Q64 scale factor (2^64) for price calculations
 /// Avoids recomputing `(1u128 << 64) as f64` on every call
@@ -150,7 +150,7 @@ impl ProgramMeta for MeteoraDlmm {
         .map_err(|_e| {
             #[cfg(any(test, feature = "debug"))]
             debug_eprintln!("ERROR in quote_exact_in: {}", _e);
-            msg!("DLMM quote_exact_in failed");
+            debug_eprintln!("DLMM quote_exact_in failed");
             anchor_lang::error::Error::from(ProgramError::Custom(2004))
         })?;
         Ok(quote.amount_out)
@@ -199,7 +199,7 @@ impl ProgramMeta for MeteoraDlmm {
         .map_err(|_e| {
             #[cfg(any(test, feature = "debug"))]
             debug_eprintln!("ERROR in quote_exact_out: {}", _e);
-            msg!("DLMM quote_exact_out failed");
+            debug_eprintln!("DLMM quote_exact_out failed");
             anchor_lang::error::Error::from(ProgramError::Custom(2004))
         })?;
         Ok(quote.amount_in)
@@ -362,13 +362,13 @@ impl ProgramMeta for MeteoraDlmm {
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let (
             base_token_program,
@@ -466,38 +466,32 @@ impl ProgramMeta for MeteoraDlmm {
         data[16..24].copy_from_slice(&amount_out_value.to_le_bytes());
         // data[24..32] already zeroed: empty vec slices + empty vec info (2x u32)
 
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: Vec::from(metas),
-            data: Vec::from(data),
-        };
-
-        // Stack-allocated account infos array — no heap Vec
-        let accounts_arr = [
-            pool_id.clone(),
-            bitmap_extension.clone(),
-            base_vault.clone(),
-            quote_vault.clone(),
-            unsafe { std::mem::transmute(user_token_in.to_account_info()) },
-            unsafe { std::mem::transmute(user_token_out.to_account_info()) },
-            unsafe { std::mem::transmute(base_mint_info.to_account_info()) },
-            unsafe { std::mem::transmute(quote_mint_info.to_account_info()) },
-            oracle.clone(),
-            host_fee_in.clone(),
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
-            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
-            memo.clone(),
-            event_authority.clone(),
-            program_id.clone(),
-            bin_array_1.clone(),
-            bin_array_2.clone(),
-        ];
-
-        unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts, &[])?;
+        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
+        let mut accs: [AccountInfo<'a>; 18] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
         }
+        push_acc!(ref pool_id);
+        push_acc!(ref bitmap_extension);
+        push_acc!(ref base_vault);
+        push_acc!(ref quote_vault);
+        push_acc!(ref user_token_in);
+        push_acc!(ref user_token_out);
+        push_acc!(ref base_mint_info);
+        push_acc!(ref quote_mint_info);
+        push_acc!(ref oracle);
+        push_acc!(ref host_fee_in);
+        push_acc!(ref payer);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
+        push_acc!(ref memo);
+        push_acc!(ref event_authority);
+        push_acc!(ref program_id);
+        push_acc!(ref &bin_array_1 as &AccountInfo<'a>);
+        push_acc!(ref &bin_array_2 as &AccountInfo<'a>);
+
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 
@@ -507,13 +501,13 @@ impl ProgramMeta for MeteoraDlmm {
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: AccountInfo<'a>,
-        user_mint_1_token_account: AccountInfo<'a>,
-        user_mint_2_token_account: AccountInfo<'a>,
-        mint_1_account: AccountInfo<'a>,
-        mint_2_account: AccountInfo<'a>,
-        mint_1_token_program: AccountInfo<'a>,
-        mint_2_token_program: AccountInfo<'a>,
+        payer: &AccountInfo<'a>,
+        user_mint_1_token_account: &AccountInfo<'a>,
+        user_mint_2_token_account: &AccountInfo<'a>,
+        mint_1_account: &AccountInfo<'a>,
+        mint_2_account: &AccountInfo<'a>,
+        mint_1_token_program: &AccountInfo<'a>,
+        mint_2_token_program: &AccountInfo<'a>,
     ) -> Result<()> {
         let (
             base_token_program,
@@ -611,38 +605,32 @@ impl ProgramMeta for MeteoraDlmm {
         data[16..24].copy_from_slice(&min_amount_out_value.to_le_bytes());
         // data[24..32] already zeroed: empty vec slices + empty vec info (2x u32)
 
-        let swap_ix = Instruction {
-            program_id: PROGRAM_ID,
-            accounts: Vec::from(metas),
-            data: Vec::from(data),
-        };
-
-        // Stack-allocated account infos array — no heap Vec
-        let accounts_arr = [
-            pool_id.clone(),
-            bitmap_extension.clone(),
-            base_vault.clone(),
-            quote_vault.clone(),
-            unsafe { std::mem::transmute(user_token_in.to_account_info()) },
-            unsafe { std::mem::transmute(user_token_out.to_account_info()) },
-            unsafe { std::mem::transmute(base_mint_info.to_account_info()) },
-            unsafe { std::mem::transmute(quote_mint_info.to_account_info()) },
-            oracle.clone(),
-            host_fee_in.clone(),
-            unsafe { std::mem::transmute(payer.to_account_info()) },
-            unsafe { std::mem::transmute(base_token_program.to_account_info()) },
-            unsafe { std::mem::transmute(quote_token_program.to_account_info()) },
-            memo.clone(),
-            event_authority.clone(),
-            program_id.clone(),
-            bin_array_1.clone(),
-            bin_array_2.clone(),
-        ];
-
-        unsafe {
-            let accounts: &[AccountInfo<'a>] = std::mem::transmute(accounts_arr.as_slice());
-            invoke_signed_unchecked(&swap_ix, accounts, &[])?;
+        // Stack-allocated account infos — ptr::read avoids Rc refcount bumps
+        let mut accs: [AccountInfo<'a>; 18] = unsafe { core::mem::zeroed() };
+        let mut ai = 0usize;
+        macro_rules! push_acc {
+            (ref $e:expr) => { accs[ai] = unsafe { core::ptr::read($e as *const _) }; ai += 1; };
         }
+        push_acc!(ref pool_id);
+        push_acc!(ref bitmap_extension);
+        push_acc!(ref base_vault);
+        push_acc!(ref quote_vault);
+        push_acc!(ref user_token_in);
+        push_acc!(ref user_token_out);
+        push_acc!(ref base_mint_info);
+        push_acc!(ref quote_mint_info);
+        push_acc!(ref oracle);
+        push_acc!(ref host_fee_in);
+        push_acc!(ref payer);
+        push_acc!(ref base_token_program);
+        push_acc!(ref quote_token_program);
+        push_acc!(ref memo);
+        push_acc!(ref event_authority);
+        push_acc!(ref program_id);
+        push_acc!(ref &bin_array_1 as &AccountInfo<'a>);
+        push_acc!(ref &bin_array_2 as &AccountInfo<'a>);
+
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs[..ai])?;
         Ok(())
     }
 
@@ -713,7 +701,7 @@ impl MeteoraDlmm {
             {
                 Some(acc) => acc,
                 None => {
-                    msg!("DLMM: active bin not found in bin arrays {}, active_id={} needed_index={}", self.pool_id, active_id, needed_index);
+                    msg!("DLMM: active bin not found in bin arrays {}", self.pool_id);
                     self.prepare_failed = true;
                     return Ok(false);
                 }
@@ -721,7 +709,7 @@ impl MeteoraDlmm {
             let bin_data = match active_bin_array_acc.try_borrow_data() {
                 Ok(d) => d,
                 Err(_) => {
-                    msg!("DLMM: failed to borrow bin array data");
+                    msg!("DLMM: failed to borrow bin array data {}", self.pool_id);
                     self.prepare_failed = true;
                     return Ok(false);
                 }
@@ -730,7 +718,7 @@ impl MeteoraDlmm {
             let bin_index_in_array = (active_id - lower_bin_id) as usize;
             let bin_offset = BIN_ARRAY_HEADER_SIZE + bin_index_in_array * BIN_SIZE;
             if bin_offset + BIN_SIZE > bin_data.len() {
-                msg!("DLMM: bin offset out of bounds");
+                msg!("DLMM: bin offset out of bounds {}", self.pool_id);
                 self.prepare_failed = true;
                 return Ok(false);
             }
@@ -856,9 +844,9 @@ impl MeteoraDlmm {
 
             // Inline get_base_fee: base_factor * bin_step * 10 * 10^base_fee_power_factor
             let base_fee = (base_factor as u128)
-                * (bin_step as u128)
-                * 10u128
-                * 10u128.pow(base_fee_power_factor as u32);
+                .saturating_mul(bin_step as u128)
+                .saturating_mul(10u128)
+                .saturating_mul(10u128.saturating_pow(base_fee_power_factor as u32));
 
             // Inline get_variable_fee
             let variable_fee = if variable_fee_control > 0 {

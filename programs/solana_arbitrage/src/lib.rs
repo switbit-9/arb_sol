@@ -10,6 +10,7 @@ macro_rules! debug_eprintln {
 }
 
 pub mod arbitrage;
+pub mod pool_vec;
 pub mod programs;
 pub mod utils;
 
@@ -23,25 +24,29 @@ pub mod utils;
 mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
-use arbitrage::algo_2::optimal_amount_in_v2::find_optimal_amount_in_v2;
+use arbitrage::algo_2::ArbitragePath;
+#[cfg(any(test, feature = "debug"))]
 use arbitrage::algo_2::{
-    /* check_arbitrage, */ find_cross_arbitrage_optimized,
-    find_triangular_arbitrage_iterative, get_edges, ArbitragePath, EdgeArray,
+    optimal_amount_in_v2::find_optimal_amount_in_v2,
+    find_cross_arbitrage_optimized,
+    find_triangular_arbitrage_iterative, get_edges, EdgeArray,
 };
 use arbitrage::analytical_algo::{run_analytical_2hop, run_analytical_multihop};
 use programs::{
     MeteoraDammV1, MeteoraDammV2, MeteoraDlmm, OrcaWhirlpool, ProgramInstance, ProgramMeta, PumpAmm,
     RaydiumAmm, RaydiumCLMM, RaydiumCPMM, SolarBError,
 };
+use pool_vec::PoolVec;
 use utils::bot_config::BotConfig;
-use utils::token::{get_transfer_fees, MintFee};
+use utils::token::MintFee;
+#[cfg(test)]
+use utils::token::get_transfer_fees;
 
 #[cfg(test)]
 use crate::utils::test_utils::write_results_to_file;
 
 /// DEX type IDs — must match client-side DEX_TYPE_ID mapping
 pub mod dex_type {
-    pub const PUMP_AMM: u8 = 0;
     pub const METEORA_DAMM_V1: u8 = 1;
     pub const METEORA_DAMM_V2: u8 = 2;
     pub const METEORA_DLMM: u8 = 3;
@@ -50,10 +55,39 @@ pub mod dex_type {
     pub const RAYDIUM_CLMM: u8 = 6;
     pub const RAYDIUM_CPMM: u8 = 7;
     pub const METEORA_DBC: u8 = 8;
+    pub const PUMP_AMM: u8 = 9;
+
+    /// Number of fee slots consumed from pool_fees Vec per pool type.
+    #[inline(always)]
+    pub const fn fee_slot_count(pool_type: u8) -> usize {
+        match pool_type {
+            PUMP_AMM => 1,
+            _ => 0,
+        }
+    }
+
+    /// Fixed number of dynamic accounts per pool type.
+    #[inline(always)]
+    pub fn dynamic_account_count(pool_type: u8) -> usize {
+        match pool_type {
+            PUMP_AMM => crate::programs::pump_amm::DYNAMIC_ACCOUNTS,
+            METEORA_DAMM_V1 | METEORA_DBC => crate::programs::meteora_damm_v1::MeteoraDammV1::DYNAMIC_ACCOUNTS,
+            METEORA_DAMM_V2 => crate::programs::meteora_damm_v2::DYNAMIC_ACCOUNTS,
+            METEORA_DLMM => crate::programs::meteora_dlmm::DYNAMIC_ACCOUNTS,
+            WHIRLPOOL => crate::programs::orca::DYNAMIC_ACCOUNTS,
+            RAYDIUM_AMM => crate::programs::raydium_amm::DYNAMIC_ACCOUNTS,
+            RAYDIUM_CLMM => crate::programs::raydium_clmm::DYNAMIC_ACCOUNTS,
+            RAYDIUM_CPMM => crate::programs::raydium_cpmm::DYNAMIC_ACCOUNTS,
+            _ => 0,
+        }
+    }
 }
 
 // SPL Token account amount offset (after mint pubkey + owner pubkey)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
+
+const MAX_POOLS: usize = 8;
+
 
 declare_id!("BJREZ2NxHAqSf4jeaogmdoyF2nhexVpeewokt5iqqCMt");
 
@@ -74,8 +108,6 @@ pub struct InstructionData {
     pub shared_statics_len: u8,
     /// DEX type ID per pool (see dex_type module)
     pub pool_types: [u8; 8],
-    /// Number of dynamic accounts per pool
-    pub pool_lengths: [u8; 8],
     /// Offset into shared statics block where each pool's type statics begin
     pub type_static_offsets: [u8; 8],
     /// Arbitrage mode: 0=single pair multi-market, 1=multi-hop chain, 2=multiple trades
@@ -86,12 +118,9 @@ pub struct InstructionData {
     /// e.g. [3, 2, 0, 0] = group 0 has 3 pools (pool_types[0..3]), group 1 has 2 pools (pool_types[3..5]).
     /// All zeros = fall back to parsing all pools at once.
     pub group_sizes: [u8; 4],
-    /// Transfer fee basis points per mint (same order as mints in remaining accounts)
-    pub mint_fee_bps: Vec<u16>,
-    /// Transfer fee max per mint (same order as mints in remaining accounts)
-    pub mint_fee_max: Vec<u64>,
-    /// Static pool fee per pool in millionths (denominator = 1_000_000).
-    /// Same order as pool_types. 0 = use on-chain fee.
+    /// Static pool fees per pool in millionths (denominator = 1_000_000).
+    /// Variable-length: each pool consumes fee_slot_count(pool_type) slots in order.
+    /// 0 = use on-chain fee.
     pub pool_fees: Vec<u32>,
 }
 
@@ -252,13 +281,12 @@ fn start_bot_grouped<'info>(
     let effective_groups: [u8; 4] = if data.mode == arb_mode::MULTIPLE_TRADES && data.group_sizes[0] > 0 {
         data.group_sizes
     } else {
-        let total_pools = data.pool_lengths.iter().filter(|&&l| l > 0).count() as u8;
+        let total_pools = data.pool_types.iter().filter(|&&t| dex_type::dynamic_account_count(t) > 0).count() as u8;
         [total_pools, 0, 0, 0]
     };
 
-    // WSOL never has Token-2022 transfer fees
-    let wsol_mint_acc = &accounts[4];
-    let wsol_fee = MintFee::ZERO;
+    #[cfg(test)]
+    let mint_fees: Vec<(Pubkey, MintFee)> = vec![];
 
     let mut pool_idx_offset = 0usize;
     for g in 0..4usize {
@@ -270,18 +298,6 @@ fn start_bot_grouped<'info>(
         let pool_idx_start = pool_idx_offset;
         let pool_idx_end = pool_idx_offset + group_size;
         pool_idx_offset = pool_idx_end;
-
-        // Mint fees: WSOL + this group's mint (mint index g+1 for MULTIPLE_TRADES, mint index 1 for SINGLE_PAIR)
-        let group_mint_idx = if data.mode == arb_mode::MULTIPLE_TRADES { g + 1 } else { 1 };
-        let group_mint_acc = &accounts[4 + group_mint_idx * 2];
-        let group_mint_fee = MintFee {
-            bps: data.mint_fee_bps.get(group_mint_idx).copied().unwrap_or(0),
-            max: data.mint_fee_max.get(group_mint_idx).copied().unwrap_or(0),
-        };
-        let mint_fees = vec![
-            (*wsol_mint_acc.key, wsol_fee),
-            (*group_mint_acc.key, group_mint_fee),
-        ];
 
         let mut instances = parse_accounts(
             accounts, shared_statics_start, pool_start, data, &clock,
@@ -314,20 +330,6 @@ fn start_bot_grouped<'info>(
             continue;
         };
 
-        // let mut prep_failed = false;
-        // for edge in &arb_path.edges {
-        //     if let Some(inst) = instances.iter_mut().find(|i| i.get_pool_id() == &edge.pool_id) {
-        //         if !inst.prepare_for_execution(accounts, &group_config.clock) {
-        //             prep_failed = true;
-        //             break;
-        //         }
-        //     }
-        // }
-        // if prep_failed {
-        //     debug_eprintln!("Skipping arb path: pool preparation failed");
-        //     continue;
-        // }
-
         #[cfg(test)]
         {
             let sim_profit = run_simulation(
@@ -346,26 +348,25 @@ fn start_bot_grouped<'info>(
             arb_path.start_amount = 1_000_000;
         }
 
-        // #[cfg(test)]
-        // {
-        //     if arb_path.profit > 0 {
-        //         write_results_to_file(&[Some(arb_path.clone())]);
-        //     }
-        // }
+        #[cfg(test)]
+        continue;
 
-        execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
+        #[cfg(not(test))]
+        {
+            execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
 
-        // Re-read start token balance after swaps and abort if not profitable
-        let balance_after = u64::from_le_bytes(
-            accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
-                .try_into()
-                .map_err(|_| SolarBError::InvalidAccountData)?,
-        );
-        if balance_after < max_amount_in {
-            return Err(error!(SolarBError::NoProfitFound));
+            // Re-read start token balance after swaps and abort if not profitable
+            let balance_after = u64::from_le_bytes(
+                accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
+                    .try_into()
+                    .map_err(|_| SolarBError::InvalidAccountData)?,
+            );
+            if balance_after < max_amount_in {
+                return Err(error!(SolarBError::NoProfitFound));
+            }
+
+            return Ok(Some(arb_path));
         }
-
-        return Ok(Some(arb_path));
 
     }
     Ok(None)
@@ -383,15 +384,8 @@ fn start_bot_multihop<'info>(
     max_amount_in: u64,
 ) -> Result<Option<ArbitragePath>> {
     let test_mode = data.test;
-    let num_mints = data.mints as usize;
 
-    let mut mint_fees: Vec<(Pubkey, MintFee)> = Vec::with_capacity(num_mints);
-    for i in 0..num_mints {
-        let mint_acc = &accounts[4 + i * 2];
-        // WSOL (index 0) never has Token-2022 transfer fees
-        let fee = if i == 0 { MintFee::ZERO } else { MintFee { bps: data.mint_fee_bps[i], max: data.mint_fee_max[i] } };
-        mint_fees.push((*mint_acc.key, fee));
-    }
+    let mint_fees: Vec<(Pubkey, MintFee)> = vec![];
 
     let mut bot_config = BotConfig::new(
         Some(WSOL), max_amount_in, 5_500, data.mints, data.mode, clock, test_mode,
@@ -498,29 +492,33 @@ fn parse_accounts<'info>(
     clock: &Clock,
     pool_idx_start: usize,
     pool_idx_end: usize,
-) -> Result<Vec<ProgramInstance>> {
+) -> Result<PoolVec> {
     // Compute dynamic account offset by skipping pools before pool_idx_start
     let mut index: usize = pool_start;
     for i in 0..pool_idx_start {
-        index += data.pool_lengths[i] as usize;
+        index += dex_type::dynamic_account_count(data.pool_types[i]);
     }
     let accounts_len = accounts.len();
 
-    let mut estimated_capacity = 0usize;
-    for i in pool_idx_start..pool_idx_end {
-        if data.pool_lengths[i] > 0 {
-            estimated_capacity += 1;
-        }
+    let mut instances = PoolVec::new();
+
+    // Compute fee offset by skipping fee slots for pools before pool_idx_start
+    let mut fee_offset: usize = 0;
+    for i in 0..pool_idx_start {
+        fee_offset += dex_type::fee_slot_count(data.pool_types[i]);
     }
-    let mut instances = Vec::with_capacity(estimated_capacity);
 
     for i in pool_idx_start..pool_idx_end {
-        let span = data.pool_lengths[i] as usize;
-        let pool_fee = if i < data.pool_fees.len() { data.pool_fees[i] } else { 0 };
+        let dex = data.pool_types[i];
+        let span = dex_type::dynamic_account_count(dex);
 
         if span == 0 {
             continue;
         }
+
+        let n_fees = dex_type::fee_slot_count(dex);
+        let pool_fee = if n_fees > 0 { data.pool_fees[fee_offset] } else { 0 };
+        fee_offset += n_fees;
 
         let end_index = index + span;
         if accounts_len < end_index {
@@ -528,9 +526,8 @@ fn parse_accounts<'info>(
         }
 
         let static_base = shared_statics_start + data.type_static_offsets[i] as usize;
-        let dex_type = data.pool_types[i];
 
-        let instance = match dex_type {
+        let instance = match dex {
             dex_type::PUMP_AMM => {
                 debug_eprintln!("PumpAmm");
                 create_pump_amm(accounts, static_base, index, end_index, pool_fee)?
@@ -664,6 +661,7 @@ fn create_raydium_cpmm<'info>(
     Ok(ProgramInstance::RaydiumCPMM(RaydiumCPMM::new(accounts, static_base, dyn_start, dyn_end)?))
 }
 
+#[cfg(any(test, feature = "debug"))]
 #[inline(never)]
 pub fn run_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
@@ -683,6 +681,7 @@ pub fn run_arbitrage<'info>(
 /// CASE 1: Single token pair, multiple markets
 /// All markets share the same two mints (e.g., SOL <-> TOKEN1)
 /// Finds the best path through available markets
+#[cfg(any(test, feature = "debug"))]
 #[inline(never)]
 fn run_single_pair_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
@@ -779,6 +778,7 @@ fn run_single_pair_arbitrage<'info>(
 /// CASE 2: Multi-hop chain arbitrage
 /// Edges form a sequential chain through different mints
 /// Example: SOL -> TOKEN1 -> USDC -> SOL (3-hop)
+#[cfg(any(test, feature = "debug"))]
 #[inline(never)]
 fn run_multi_hop_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
@@ -860,6 +860,7 @@ fn run_multi_hop_arbitrage<'info>(
 /// Disconnected subgraphs, each a separate arbitrage opportunity
 /// Example: (SOL -> TOKEN1 -> SOL) vs (SOL -> TOKEN2 -> SOL)
 /// Groups edges by their non-start mint and evaluates each group
+#[cfg(any(test, feature = "debug"))]
 #[inline(never)]
 fn run_multiple_trades_arbitrage<'info>(
     accounts: &[AccountInfo<'info>],
@@ -1022,7 +1023,7 @@ fn run_multiple_trades_arbitrage<'info>(
 pub fn execute_arbitrage_path<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
-    instances: &mut Vec<ProgramInstance>,
+    instances: &mut [ProgramInstance],
     payer: &AccountInfo<'info>,
     num_mints: u8,
 ) -> Result<()> {
@@ -1080,29 +1081,29 @@ pub fn execute_arbitrage_path<'info>(
         let spl_token_program = &accounts[1];
         let token_2022_program = &accounts[2];
         let input_token_program = if accounts[input_base].owner == spl_token_program.key {
-            spl_token_program.clone()
+            spl_token_program
         } else {
-            token_2022_program.clone()
+            token_2022_program
         };
         let output_token_program = if accounts[output_base].owner == spl_token_program.key {
-            spl_token_program.clone()
+            spl_token_program
         } else {
-            token_2022_program.clone()
+            token_2022_program
         };
 
-        // Execute swap - AccountInfo clone is unavoidable for CPI
+        // Execute swap — no AccountInfo clones needed, passing references
         program_instance.invoke_swap_base_in(
             accounts,
             *input_mint_key,
             current_amount,
             None,
-            payer.clone(),
-            accounts[input_base + 1].clone(), // user source token account
-            accounts[output_base + 1].clone(), // user destination token account
-            accounts[input_base].clone(),     // input mint
-            accounts[output_base].clone(),    // output mint
-            input_token_program,              // input token program (derived from mint owner)
-            output_token_program,             // output token program (derived from mint owner)
+            payer,
+            &accounts[input_base + 1],  // user source token account
+            &accounts[output_base + 1], // user destination token account
+            &accounts[input_base],      // input mint
+            &accounts[output_base],     // output mint
+            input_token_program,        // input token program (derived from mint owner)
+            output_token_program,       // output token program (derived from mint owner)
         )?;
 
         // Direct byte read of amount field - much cheaper than try_deserialize
@@ -1169,10 +1170,11 @@ fn format_amount_i128(amount: i128, decimals: u8) -> String {
     )
 }
 
+#[cfg(test)]
 fn run_simulation<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,
-    instances: &mut Vec<ProgramInstance>,
+    instances: &mut [ProgramInstance],
     bot_config: &mut BotConfig,
     mint_fees: &[(Pubkey, MintFee)],
 ) -> Result<i128> {
@@ -1308,30 +1310,24 @@ mod tests {
     }
 
     /// Helper: build InstructionData with the new fields.
-    /// pool_types, pool_lengths, type_static_offsets are padded to [_;8].
+    /// pool_types, type_static_offsets are padded to [_;8].
     fn make_instruction_data(
         pool_types: &[u8],
-        pool_lengths: &[u8],
         type_static_offsets: &[u8],
         shared_statics_len: u8,
     ) -> InstructionData {
         let mut pt = [0u8; 8];
-        let mut pl = [0u8; 8];
         let mut to = [0u8; 8];
         for (i, &v) in pool_types.iter().enumerate() { pt[i] = v; }
-        for (i, &v) in pool_lengths.iter().enumerate() { pl[i] = v; }
         for (i, &v) in type_static_offsets.iter().enumerate() { to[i] = v; }
         InstructionData {
             mints: 2,
             shared_statics_len,
             pool_types: pt,
-            pool_lengths: pl,
             type_static_offsets: to,
             mode: arb_mode::SINGLE_PAIR_MULTI_MARKET,
             test: false,
             group_sizes: [0; 4],
-            mint_fee_bps: vec![0; 2],
-            mint_fee_max: vec![0; 2],
             pool_fees: vec![],
         }
     }
@@ -1342,9 +1338,9 @@ mod tests {
 
     #[test]
     fn test_parse_accounts_skips_zero_span() {
-        // All pool_lengths are 0 → no pools parsed
+        // All pool_types are 0 → no pools parsed
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
-        let data = make_instruction_data(&[], &[], &[], 0);
+        let data = make_instruction_data(&[], &[], 0);
         let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
@@ -1353,7 +1349,7 @@ mod tests {
     #[test]
     fn test_parse_accounts_empty_segment() {
         let accounts: Vec<AccountInfo<'static>> = Vec::new();
-        let data = make_instruction_data(&[], &[], &[], 0);
+        let data = make_instruction_data(&[], &[], 0);
         let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
@@ -1365,10 +1361,9 @@ mod tests {
         let owner = system_program::id();
         let accounts = create_mock_accounts(5, owner);
         // shared_statics_start=0, shared_statics_len=4 (DAMM_V2 has 4 statics), pool_start=4
-        // pool_lengths=[3] but only 1 account available after index 4
+        // DAMM_V2 needs 3 dynamic accounts but only 1 available after index 4
         let data = make_instruction_data(
             &[dex_type::METEORA_DAMM_V2],
-            &[3],
             &[0],
             4,
         );
@@ -1377,11 +1372,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_accounts_invalid_pool_length() {
+    fn test_parse_accounts_insufficient_dynamic_accounts() {
         let accounts = create_mock_accounts(5, system_program::id());
         let data = make_instruction_data(
             &[dex_type::RAYDIUM_CPMM],
-            &[u8::MAX],
             &[0],
             2,
         );
@@ -1390,17 +1384,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_accounts_unknown_dex_type() {
+    fn test_parse_accounts_unknown_dex_type_skipped() {
         let owner = system_program::id();
         let accounts = create_mock_accounts(10, owner);
-        // dex_type 99 is unknown
+        // dex_type 99 is unknown → dynamic_account_count=0 → skipped
         let data = make_instruction_data(
             &[99],
-            &[5],
             &[0],
             0,
         );
         let result = parse_accounts(&accounts, 0, 0, &data, &default_clock(), 0, 8);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
