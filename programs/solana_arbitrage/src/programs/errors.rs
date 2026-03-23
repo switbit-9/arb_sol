@@ -20,6 +20,8 @@ pub enum SolarBError {
     TransferFeeCalculateNotMatch,
     #[msg("Not Found")]
     NoProfitFound,
+    #[msg("Not")]
+    NoProfitFound2,
     #[msg("insufficient funds in payer account")]
     InsufficientFunds,
     #[msg("TransferFee calculation error")]

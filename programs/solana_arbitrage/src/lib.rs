@@ -39,7 +39,6 @@ use programs::{
 use pool_vec::PoolVec;
 use utils::bot_config::BotConfig;
 use utils::token::MintFee;
-#[cfg(test)]
 use utils::token::get_transfer_fees;
 
 #[cfg(test)]
@@ -175,7 +174,7 @@ fn start_bot<'info>(
     };
 
     if result.is_none() && !data.test {
-        return Err(error!(SolarBError::NoProfitFound));
+        return Err(error!(SolarBError::NoProfitFound2));
     }
 
     Ok(result)
@@ -285,7 +284,6 @@ fn start_bot_grouped<'info>(
         [total_pools, 0, 0, 0]
     };
 
-    #[cfg(test)]
     let mint_fees: Vec<(Pubkey, MintFee)> = vec![];
 
     let mut pool_idx_offset = 0usize;
@@ -316,60 +314,52 @@ fn start_bot_grouped<'info>(
 
         #[cfg(test)]
         let mut comparison_instances = instances.clone();
-        #[cfg(test)]
-        let mut simulation_instances = instances.clone();
 
-        let arbitrage_path = run_analytical_2hop(
+        let arb_paths = run_analytical_2hop(
             accounts, &mut instances, &mut group_config,
         )?;
 
         #[cfg(test)]
-        compare_golden_vs_analytical(accounts, &mut comparison_instances, &group_config, &mint_fees, &arbitrage_path);
+        compare_golden_vs_analytical(accounts, &mut comparison_instances, &group_config, &mint_fees, &arb_paths.first().cloned());
 
-
-
-        let Some(mut arb_path) = arbitrage_path else {
+        if arb_paths.is_empty() {
             continue;
-        };
+        }
 
-        #[cfg(test)]
-        {
+        // Simulate each candidate (best profit first) and execute the first one
+        // that passes simulation with profit > min_profit.
+        for mut arb_path in arb_paths {
+            let mut simulation_instances = instances.clone();
             let sim_profit = run_simulation(
                 accounts, &arb_path, &mut simulation_instances, &mut group_config, &mint_fees,
             )?;
 
-            if sim_profit <= group_config.min_profit
-                || (!test_mode && arb_path.profit <= group_config.min_profit)
-            {
-                debug_eprintln!("No Profit");
+            if sim_profit <= group_config.min_profit {
+                debug_eprintln!("No Profit (sim={}, min={})", sim_profit, group_config.min_profit);
                 continue;
             }
+
+            if test_mode {
+                arb_path.start_amount = 1_000_000;
+            }
+
+            #[cfg(test)]
+            return Ok(Some(arb_path));
+
+            execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
+
+            // Re-read start token balance after swaps and abort if not profitable
+            let balance_after = u64::from_le_bytes(
+                accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
+                    .try_into()
+                    .map_err(|_| SolarBError::InvalidAccountData)?,
+            );
+            if balance_after < max_amount_in {
+                return Err(error!(SolarBError::NoProfitFound));
+            }
+
+            return Ok(Some(arb_path));
         }
-
-        if test_mode {
-            arb_path.start_amount = 1_000_000;
-        }
-
-        #[cfg(test)]
-        continue;
-
-        // #[cfg(not(test))]
-        
-        execute_arbitrage_path(accounts, &arb_path, &mut instances, payer, data.mints)?;
-
-        // Re-read start token balance after swaps and abort if not profitable
-        let balance_after = u64::from_le_bytes(
-            accounts[5].try_borrow_data()?[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
-                .try_into()
-                .map_err(|_| SolarBError::InvalidAccountData)?,
-        );
-        if balance_after < max_amount_in {
-            return Err(error!(SolarBError::NoProfitFound));
-        }
-
-        return Ok(Some(arb_path));
-        
-
     }
     Ok(None)
 }
@@ -1172,7 +1162,6 @@ fn format_amount_i128(amount: i128, decimals: u8) -> String {
     )
 }
 
-#[cfg(test)]
 fn run_simulation<'info>(
     accounts: &[AccountInfo<'info>],
     arbitrage_path: &ArbitragePath,

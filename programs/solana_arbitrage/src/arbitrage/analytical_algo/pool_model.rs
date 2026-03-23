@@ -69,21 +69,23 @@ impl PoolModel {
     }
 }
 
-/// Extract PoolModels for both swap directions at once, sharing expensive lookups
-/// (get_vault_amounts, get_fee_factor, get_prices) between buy and sell.
+/// Extract PoolModels for both swap directions using pre-fetched prices and fees.
+///
+/// Skips `get_prices()` and `get_fee_factor()` — the caller supplies those values
+/// (typically from a Phase 1 price scan). Only vault/CLMM reads are new here.
 ///
 /// Returns (buy_model, sell_model) where buy = start_token→middle, sell = middle→start_token.
-pub fn extract_pool_model_both(
+pub fn extract_pool_model_both_cached(
     instance: &dyn ProgramMeta,
     start_token: Pubkey,
     middle_mint: Pubkey,
+    price_base_to_quote: f64,
+    price_quote_to_base: f64,
+    fee_base_to_quote: f64,
+    fee_quote_to_base: f64,
 ) -> (PoolModel, PoolModel) {
     let kind = instance.pool_kind();
     let (base_mint, _quote_mint) = instance.get_mints();
-
-    // Shared lookups — done once instead of twice
-    let (price_base_to_quote, price_quote_to_base) = instance.get_prices().unwrap_or((0.0, 0.0));
-    let (fee_base_to_quote, fee_quote_to_base) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
 
     let buy_marginal_price = if start_token == *base_mint {
         price_base_to_quote * fee_base_to_quote
@@ -168,7 +170,7 @@ pub fn extract_pool_model_both(
                     let one_bin_est = (total_max_in as f64 * bin_step_frac).max(1.0) as u64;
                     one_bin_est.min(total_max_in)
                 };
-                
+
                 PoolModel::Linear { price, fee: fee_base_to_quote, max_in, bin_step_frac, marginal_price }
             };
             (build_dlmm(start_token, buy_marginal_price), build_dlmm(middle_mint, sell_marginal_price))
@@ -217,6 +219,18 @@ pub fn extract_pool_model_both(
             (build_model(start_token, buy_marginal_price), build_model(middle_mint, sell_marginal_price))
         }
     }
+}
+
+/// Extract PoolModels for both swap directions at once.
+/// Fetches prices/fees then delegates to [`extract_pool_model_both_cached`].
+pub fn extract_pool_model_both(
+    instance: &dyn ProgramMeta,
+    start_token: Pubkey,
+    middle_mint: Pubkey,
+) -> (PoolModel, PoolModel) {
+    let (price_btq, price_qtb) = instance.get_prices().unwrap_or((0.0, 0.0));
+    let (fee_btq, fee_qtb) = instance.get_fee_factor().unwrap_or((1.0, 1.0));
+    extract_pool_model_both_cached(instance, start_token, middle_mint, price_btq, price_qtb, fee_btq, fee_qtb)
 }
 
 /// Extract a PoolModel for a specific swap direction from a ProgramInstance.

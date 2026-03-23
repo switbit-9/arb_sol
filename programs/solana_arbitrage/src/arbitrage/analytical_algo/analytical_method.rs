@@ -8,7 +8,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
 use super::formulas::{analytical_estimate_nhop, analytical_optimal_2pool, analytical_optimal_clmm_cp, analytical_optimal_dlmm_dlmm, analytical_optimal_multibin, pool_output};
-use super::pool_model::{extract_pool_model, extract_pool_model_both, PoolModel};
+use super::pool_model::{extract_pool_model, extract_pool_model_both_cached, PoolModel};
 
 /// Minimum search amount in lamports
 const MIN_SEARCH_AMOUNT: u64 = 1_000;
@@ -299,7 +299,7 @@ pub fn run_analytical_2hop<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
-) -> Result<Option<ArbitragePath>> {
+) -> Result<Vec<ArbitragePath>> {
     let start_token = config.start_token.unwrap_or(WSOL);
     let first = instances.first().unwrap();
     let (base_mint, quote_mint) = first.get_mints();
@@ -314,40 +314,41 @@ pub fn run_analytical_2hop<'info>(
                 &instances[0], &instances[1],
                 start_token, middle_mint,
             )?;
-            return Ok(Some(ArbitragePath {
+            return Ok(vec![ArbitragePath {
                 edges,
                 profit: 6_000,
                 final_amount: 6_000,
                 start_amount: 1_000_000,
-            }));
+            }]);
         }
-        return Ok(None);
+        return Ok(vec![]);
     }
 
-    let result = evaluate_candidates_single_pass(
+    let paths = evaluate_candidates_single_pass(
         &candidates, instances, accounts, &config.clock,
         start_token, middle_mint,
         config.max_amount_in, config.min_profit,
     )?;
 
-    if result.is_none() && config.test && instances.len() >= 2 {
+    if paths.is_empty() && config.test && instances.len() >= 2 {
         let edges = build_edges(
             &instances[0], &instances[1],
             start_token, middle_mint,
         )?;
-        return Ok(Some(ArbitragePath {
+        return Ok(vec![ArbitragePath {
             edges,
             profit: 6_000,
             final_amount: 6_000,
             start_amount: 1_000_000,
-        }));
+        }]);
     }
 
-    Ok(result)
+    Ok(paths)
 }
 
 /// Single-pass: lazily prepare pools, extract models, and evaluate each candidate.
 /// Each pool is prepared/modeled at most once via per-index caches.
+/// Returns all profitable paths sorted by estimated profit (best first).
 #[inline(never)]
 fn evaluate_candidates_single_pass<'info>(
     candidates: &[AnalyticalCandidate],
@@ -358,7 +359,7 @@ fn evaluate_candidates_single_pass<'info>(
     middle_mint: Pubkey,
     max_amount_in: u64,
     min_profit: i128,
-) -> Result<Option<ArbitragePath>> {
+) -> Result<Vec<ArbitragePath>> {
     let mut prepared: [bool; MAX_POOLS] = [false; MAX_POOLS];
     let mut skipped: [bool; MAX_POOLS] = [false; MAX_POOLS];
     let opaque_zero = PoolModel::Opaque { marginal_price: 0.0 };
@@ -366,8 +367,7 @@ fn evaluate_candidates_single_pass<'info>(
     let mut cached_sell: [PoolModel; MAX_POOLS] = [opaque_zero; MAX_POOLS];
     let mut model_cached: [bool; MAX_POOLS] = [false; MAX_POOLS];
 
-    let mut best_path: Option<ArbitragePath> = None;
-    let mut best_profit: i128 = min_profit;
+    let mut paths: Vec<ArbitragePath> = Vec::new();
     let cand_count = candidates.len();
 
     for (i, c) in candidates.iter().enumerate() {
@@ -429,7 +429,7 @@ fn evaluate_candidates_single_pass<'info>(
             _ => { continue; }
         };
 
-        if optimal_amount == 0 || estimated_profit <= best_profit {
+        if optimal_amount == 0 || estimated_profit <= min_profit {
             continue;
         }
 
@@ -442,8 +442,7 @@ fn evaluate_candidates_single_pass<'info>(
 
         let final_amount = (optimal_amount as i128).checked_add(estimated_profit).unwrap_or(0) as u128;
 
-        best_profit = estimated_profit;
-        best_path = Some(ArbitragePath {
+        paths.push(ArbitragePath {
             edges,
             profit: estimated_profit,
             final_amount,
@@ -451,7 +450,10 @@ fn evaluate_candidates_single_pass<'info>(
         });
     }
 
-    Ok(best_path)
+    // Sort by estimated profit, best first
+    paths.sort_by(|a, b| b.profit.cmp(&a.profit));
+
+    Ok(paths)
 }
 
 // ─── Multiple trades analytical (mode 2) ────────────────────────────────────
