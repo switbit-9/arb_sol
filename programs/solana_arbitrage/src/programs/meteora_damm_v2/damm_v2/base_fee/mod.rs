@@ -3,7 +3,7 @@ pub use fee_scheduler::*;
 pub mod fee_rate_limiter;
 pub use fee_rate_limiter::*;
 
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 
 use super::{
     activation_handler::ActivationType,

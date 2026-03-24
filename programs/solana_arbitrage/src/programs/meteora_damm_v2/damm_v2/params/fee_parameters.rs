@@ -9,10 +9,11 @@ use super::super::error::PoolError;
 use super::super::safe_math::SafeMath;
 use super::super::state::fee::{BaseFeeStruct, DynamicFeeStruct, PoolFeesStruct};
 use super::super::state::pool::CollectFeeMode;
-use anchor_lang::prelude::*;
+use crate::programs::Result;
+use pinocchio::pubkey::Pubkey;
 
 /// Information regarding fee charges
-#[derive(Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize, InitSpace, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct PoolFeeParameters {
     /// Base fee
     pub base_fee: BaseFeeParameters,
@@ -22,7 +23,7 @@ pub struct PoolFeeParameters {
     pub dynamic_fee: Option<DynamicFeeParameters>,
 }
 
-#[derive(Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize, InitSpace, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct BaseFeeParameters {
     pub cliff_fee_numerator: u64,
     pub first_factor: u16,
@@ -90,7 +91,7 @@ impl PoolFeeParameters {
     }
 }
 
-#[derive(Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize, InitSpace, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct DynamicFeeParameters {
     pub bin_step: u16,
     pub bin_step_u128: u128,
@@ -116,38 +117,12 @@ impl DynamicFeeParameters {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        // force all bin_step as 1 bps for first version
-        require!(
-            self.bin_step == BIN_STEP_BPS_DEFAULT,
-            PoolError::InvalidInput
-        );
-        require!(
-            self.bin_step_u128 == BIN_STEP_BPS_U128_DEFAULT,
-            PoolError::InvalidInput
-        );
-
-        // filter period < t < decay period
-        require!(
-            self.filter_period < self.decay_period,
-            PoolError::InvalidInput
-        );
-
-        // reduction factor decide the decay rate of variable fee, max reduction_factor is BASIS_POINT_MAX = 100% reduction
-        require!(
-            self.reduction_factor <= BASIS_POINT_MAX as u16,
-            PoolError::InvalidInput
-        );
-
-        // prevent program overflow
-        require!(
-            self.variable_fee_control <= U24_MAX,
-            PoolError::InvalidInput
-        );
-        require!(
-            self.max_volatility_accumulator <= U24_MAX,
-            PoolError::InvalidInput
-        );
-
+        if self.bin_step != BIN_STEP_BPS_DEFAULT { return Err(PoolError::InvalidInput.into()); }
+        if self.bin_step_u128 != BIN_STEP_BPS_U128_DEFAULT { return Err(PoolError::InvalidInput.into()); }
+        if !(self.filter_period < self.decay_period) { return Err(PoolError::InvalidInput.into()); }
+        if self.reduction_factor > BASIS_POINT_MAX as u16 { return Err(PoolError::InvalidInput.into()); }
+        if self.variable_fee_control > U24_MAX { return Err(PoolError::InvalidInput.into()); }
+        if self.max_volatility_accumulator > U24_MAX { return Err(PoolError::InvalidInput.into()); }
         Ok(())
     }
 }
@@ -210,7 +185,7 @@ impl PoolFeeParameters {
     }
 }
 
-#[derive(Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize, InitSpace, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct PartnerInfo {
     pub fee_percent: u8,
     pub partner_authority: Pubkey,
@@ -225,7 +200,7 @@ impl PartnerInfo {
 
     pub fn validate(&self) -> Result<()> {
         if !self.have_partner() {
-            require!(self.fee_percent == 0, PoolError::InvalidFee);
+            if self.fee_percent != 0 { return Err(PoolError::InvalidFee.into()); }
         }
 
         Ok(())

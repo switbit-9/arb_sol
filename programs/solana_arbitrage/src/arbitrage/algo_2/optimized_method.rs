@@ -1,7 +1,20 @@
 use crate::arbitrage::base::Edge;
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
-use anchor_lang::prelude::*;
+use pinocchio::account_info::AccountInfo;
+use pinocchio::program_error::ProgramError;
+use pinocchio::pubkey::Pubkey;
+
+type Result<T> = core::result::Result<T, ProgramError>;
+
+#[cfg(any(test, feature = "debug"))]
+fn short_key(key: &Pubkey) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}..{:02x}{:02x}{:02x}{:02x}",
+        key[0], key[1], key[2], key[3],
+        key[28], key[29], key[30], key[31]
+    )
+}
 
 /// Sorted array of (pool_id, index) pairs for O(log n) lookups.
 /// Replaces HashMap to avoid SipHash overhead in Solana's BPF/SBF runtime.
@@ -38,8 +51,8 @@ impl PoolIndex {
 /// profit_pct is the arb cycle's profit fraction — DLMM uses it for bin-crossing decisions.
 /// Returns (0, 0) if the pool is not found or the quote fails.
 #[inline]
-fn edge_fast_quote<'a>(
-    accounts: &[AccountInfo<'a>],
+fn edge_fast_quote(
+    accounts: &[AccountInfo],
     edge: &Edge,
     amount_in: u64,
     instances: &mut [ProgramInstance],
@@ -90,8 +103,8 @@ fn top2_by_price<'a>(edges: &[&'a Edge]) -> (Option<&'a Edge>, Option<&'a Edge>)
 /// The caller should run `find_optimal_amount_in_v2` on it to find the real optimum.
 ///
 /// Path: Root -> Token B -> Root
-pub fn find_cross_arbitrage_optimized<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn find_cross_arbitrage_optimized(
+    accounts: &[AccountInfo],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -365,9 +378,9 @@ pub fn find_cross_arbitrage_optimized<'info>(
             for edge in path_edges {
                 debug_eprintln!(
                     "  {} -> {} (pool {} @ p={:.6} fee={:.4})",
-                    edge.left.mint_account,
-                    edge.right.mint_account,
-                    edge.pool_id,
+                    short_key(&edge.left.mint_account),
+                    short_key(&edge.right.mint_account),
+                    short_key(&edge.pool_id),
                     edge.get_price(),
                     edge.fee_factor,
                 );

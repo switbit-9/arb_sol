@@ -1,8 +1,11 @@
 use super::super::*;
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token;
-use anchor_spl::token_2022::spl_token_2022;
+use pinocchio::pubkey::Pubkey;
 use ruint::aliases::U1024;
+
+const SPL_TOKEN_ID: Pubkey =
+    five8_const::decode_32_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const SPL_TOKEN_2022_ID: Pubkey =
+    five8_const::decode_32_const("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 use std::ops::Deref;
 use std::ops::Shl;
 use std::ops::Shr;
@@ -51,8 +54,8 @@ impl LbPairExtension for LbPair {
         {
             let flag: TokenProgramFlagWrapper = token_program_flag.try_into()?;
             let token_program_id = match flag.deref() {
-                TokenProgramFlags::TokenProgram => spl_token::ID,
-                TokenProgramFlags::TokenProgram2022 => spl_token_2022::ID,
+                TokenProgramFlags::TokenProgram => SPL_TOKEN_ID,
+                TokenProgramFlags::TokenProgram2022 => SPL_TOKEN_2022_ID,
             };
             token_programs_id[i] = token_program_id;
         }

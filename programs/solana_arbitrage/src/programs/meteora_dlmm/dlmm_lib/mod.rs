@@ -1,4 +1,3 @@
-use anchor_lang::prelude::declare_program;
 use anyhow::*;
 
 macro_rules! debug_eprintln {
@@ -10,10 +9,10 @@ macro_rules! debug_eprintln {
     }};
 }
 
-declare_program!(dlmm);
-
-pub use self::dlmm::accounts::*;
-pub use self::dlmm::types::*;
+pub mod dlmm;
+pub use dlmm::accounts::*;
+pub use dlmm::types::*;
+pub use dlmm::{ProtocolFee, RewardInfo, StaticParameters, VariableParameters};
 
 pub mod constants;
 pub use constants::*;

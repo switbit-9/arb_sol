@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use pinocchio::pubkey::Pubkey;
 use bytemuck::{Pod, Zeroable};
 use crate::programs::raydium_clmm::libraries::tick_math;
 
@@ -250,8 +250,8 @@ impl CompactTickArray {
         }
 
         // Compare pool_id bytes directly (no Pubkey allocation)
-        let expected_bytes = expected_pool_id.to_bytes();
-        if data[Self::POOL_ID_OFFSET..Self::POOL_ID_OFFSET + 32] != expected_bytes {
+        let expected_bytes: &[u8; 32] = expected_pool_id;
+        if data[Self::POOL_ID_OFFSET..Self::POOL_ID_OFFSET + 32] != *expected_bytes {
             return None;
         }
 

@@ -1,4 +1,5 @@
-use anchor_lang::prelude::*;
+use pinocchio::pubkey::Pubkey;
+use crate::programs::Result;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use static_assertions::const_assert_eq;
 
@@ -23,8 +24,6 @@ use super::super::{
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
     Default,
 )]
 pub enum ConfigType {
@@ -35,8 +34,8 @@ pub enum ConfigType {
     Dynamic,
 }
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PoolFeesConfig {
     pub base_fee: BaseFeeConfig,
     pub dynamic_fee: DynamicFeeConfig,
@@ -47,10 +46,10 @@ pub struct PoolFeesConfig {
     pub padding_1: [u64; 5],
 }
 
-const_assert_eq!(PoolFeesConfig::INIT_SPACE, 128);
+const_assert_eq!(core::mem::size_of::<PoolFeesConfig>(), 128);
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BaseFeeConfig {
     pub cliff_fee_numerator: u64,
     // In fee scheduler first_factor: number_of_period, second_factor: period_frequency, third_factor: reduction_factor
@@ -62,7 +61,7 @@ pub struct BaseFeeConfig {
     pub third_factor: u64,
 }
 
-const_assert_eq!(BaseFeeConfig::INIT_SPACE, 32);
+const_assert_eq!(core::mem::size_of::<BaseFeeConfig>(), 32);
 
 impl BaseFeeConfig {
     fn to_base_fee_parameters(&self) -> BaseFeeParameters {
@@ -148,8 +147,8 @@ impl PoolFeesConfig {
         }
     }
 }
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DynamicFeeConfig {
     pub initialized: u8, // 0, ignore for dynamic fee
     pub padding: [u8; 7],
@@ -163,7 +162,7 @@ pub struct DynamicFeeConfig {
     pub bin_step_u128: u128,
 }
 
-const_assert_eq!(DynamicFeeConfig::INIT_SPACE, 48);
+const_assert_eq!(core::mem::size_of::<DynamicFeeConfig>(), 48);
 
 impl DynamicFeeConfig {
     fn to_dynamic_fee_struct(&self) -> DynamicFeeStruct {
@@ -185,8 +184,8 @@ impl DynamicFeeConfig {
     }
 }
 
-#[account(zero_copy)]
-#[derive(InitSpace, Debug)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Config {
     /// Vault config key
     pub vault_config_key: Pubkey,
@@ -213,7 +212,7 @@ pub struct Config {
     pub _padding_1: [u64; 10],
 }
 
-const_assert_eq!(Config::INIT_SPACE, 320);
+const_assert_eq!(core::mem::size_of::<Config>(), 320);
 
 pub struct BootstrappingConfig {
     pub activation_point: u64,

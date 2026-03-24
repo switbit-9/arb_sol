@@ -1,4 +1,5 @@
-use anchor_lang::prelude::*;
+use crate::programs::Result;
+use pinocchio::{pubkey::Pubkey, sysvars::{clock::Clock, Sysvar}};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::convert::TryFrom;
 
@@ -10,8 +11,6 @@ use super::super::{constants::activation::*, error::PoolError, math::safe_math::
     Debug,
     PartialEq,
     Eq,
-    AnchorSerialize,
-    AnchorDeserialize,
     IntoPrimitive,
     TryFromPrimitive,
 )]

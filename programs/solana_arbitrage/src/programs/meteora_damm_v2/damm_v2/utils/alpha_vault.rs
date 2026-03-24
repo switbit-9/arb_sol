@@ -1,16 +1,17 @@
 pub mod alpha_vault {
-    use anchor_lang::prelude::Pubkey;
-    use anchor_lang::pubkey;
+    use pinocchio::pubkey::Pubkey;
 
     #[cfg(not(feature = "local"))]
-    pub const ID: Pubkey = pubkey!("vaU6kP7iNEGkbmPkLmZfGwiGxd4Mob24QQCie5R9kd2");
+    pub const ID: Pubkey =
+        five8_const::decode_32_const("vaU6kP7iNEGkbmPkLmZfGwiGxd4Mob24QQCie5R9kd2");
 
     #[cfg(feature = "local")]
-    pub const ID: Pubkey = pubkey!("SNPmGgnywBvvrAKMLundzG6StojyHTHDLu7T4sdhP4k");
+    pub const ID: Pubkey =
+        five8_const::decode_32_const("SNPmGgnywBvvrAKMLundzG6StojyHTHDLu7T4sdhP4k");
 
     pub fn derive_vault_pubkey(vault_base: Pubkey, pool: Pubkey) -> Pubkey {
         let (vault_pk, _) =
-            Pubkey::find_program_address(&[b"vault", vault_base.as_ref(), pool.as_ref()], &ID);
+            pinocchio::pubkey::find_program_address(&[b"vault", &vault_base, &pool], &ID);
         vault_pk
     }
 }

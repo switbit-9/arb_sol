@@ -1,5 +1,5 @@
 use crate::programs::{PoolKind, ProgramMeta};
-use anchor_lang::prelude::Pubkey;
+use pinocchio::pubkey::Pubkey;
 
 /// Mathematical model of a pool for one specific swap direction.
 /// Extracted from a ProgramInstance + input_mint at analysis time.

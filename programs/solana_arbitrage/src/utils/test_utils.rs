@@ -1,107 +1,77 @@
 use crate::arbitrage::algo_2::ArbitragePath;
-use anchor_lang::solana_program::account_info::AccountInfo;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use pinocchio::account_info::AccountInfo;
+use pinocchio::pubkey::Pubkey;
 
-// Helper function to create a mock AccountInfo with provided data
-pub fn create_mock_account_info_with_data(
+// Pinocchio's internal Account header is #[repr(C)] with this layout:
+//   [0]:     borrow_state: u8
+//   [1]:     is_signer: u8
+//   [2]:     is_writable: u8
+//   [3]:     executable: u8
+//   [4..8]:  original_data_len: u32
+//   [8..40]: key: [u8; 32]
+//   [40..72]: owner: [u8; 32]
+//   [72..80]: lamports: u64
+//   [80..88]: data_len: u64
+//   [88..]:  data bytes
+// AccountInfo is #[repr(C)] { raw: *mut Account } — a single pointer.
+// We allocate the header+data contiguously and transmute the pointer.
+const ACCOUNT_HEADER_SIZE: usize = 88;
+
+/// Create a pinocchio AccountInfo backed by a leaked heap buffer.
+/// Safe to use in tests — the buffer is intentionally never freed.
+pub fn create_mock_account_info(
     key: Pubkey,
     owner: Pubkey,
     data: Option<Vec<u8>>,
-) -> AccountInfo<'static> {
-    let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
-    let data_vec = Box::leak(Box::new(data_vec));
-    let lamports = Box::leak(Box::new(0u64));
-    let owner_static = Box::leak(Box::new(owner));
-    let key_static = Box::leak(Box::new(key));
+) -> AccountInfo {
+    let data = data.unwrap_or_default();
+    make_pinocchio_account_info(key, owner, 0, false, data)
+}
 
-    AccountInfo::new(
-        key_static,
-        false,
-        true,
-        lamports,
-        data_vec,
-        owner_static,
-        false,
-        0,
-    )
+/// Build a pinocchio AccountInfo from raw parts, backed by a static heap buffer.
+pub fn make_pinocchio_account_info(
+    key: Pubkey,
+    owner: Pubkey,
+    lamports: u64,
+    executable: bool,
+    data: Vec<u8>,
+) -> AccountInfo {
+    let data_len = data.len();
+    let total = ACCOUNT_HEADER_SIZE + data_len;
+    let mut buf = vec![0u8; total].into_boxed_slice();
+    buf[3] = executable as u8;
+    buf[8..40].copy_from_slice(&key);
+    buf[40..72].copy_from_slice(&owner);
+    buf[72..80].copy_from_slice(&lamports.to_le_bytes());
+    buf[80..88].copy_from_slice(&(data_len as u64).to_le_bytes());
+    if data_len > 0 {
+        buf[88..].copy_from_slice(&data);
+    }
+    let raw = Box::into_raw(buf) as *mut u8;
+    // SAFETY: AccountInfo is #[repr(C)] containing a single *mut Account.
+    // Account is #[repr(C)] with the layout we've constructed above.
+    // The buffer is leaked so the pointer remains valid for the test lifetime.
+    unsafe { std::mem::transmute::<*mut u8, AccountInfo>(raw) }
 }
 
 // Helper function to fetch account from RPC with fallback - returns Option
 pub async fn try_fetch_account_info_from_rpc(
     rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
     key: Pubkey,
-) -> Option<AccountInfo<'static>> {
+) -> Option<AccountInfo> {
     use solana_sdk::pubkey::Pubkey as SdkPubkey;
-
-    let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref()).ok()?;
+    let sdk_pubkey = SdkPubkey::new_from_array(key);
     let account = rpc_client.get_account(&sdk_pubkey).await.ok()?;
-    Some(account_to_account_info(key, account))
+    Some(sdk_account_to_pinocchio(key, account))
 }
 
-// Helper to convert solana_sdk::account::Account to AccountInfo
-pub fn account_to_account_info(
+/// Convert a solana_sdk Account to a pinocchio AccountInfo.
+pub fn sdk_account_to_pinocchio(
     key: Pubkey,
     account: solana_sdk::account::Account,
-) -> AccountInfo<'static> {
-    let data = Box::leak(Box::new(account.data));
-    let lamports = Box::leak(Box::new(account.lamports));
-    let owner_bytes: [u8; 32] = account.owner.to_bytes();
-    let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-    let owner_static = Box::leak(Box::new(owner));
-    let key_static = Box::leak(Box::new(key));
-    AccountInfo::new(
-        key_static,
-        false, // is_signer
-        false, // is_writable
-        lamports,
-        data,
-        owner_static,
-        account.executable,
-        account.rent_epoch,
-    )
-}
-
-// Helper function to fetch account from RPC and convert to AccountInfo
-pub async fn fetch_account_info_from_rpc(
-    rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-    key: Pubkey,
-) -> AccountInfo<'static> {
-    use solana_sdk::pubkey::Pubkey as SdkPubkey;
-
-    let sdk_pubkey = SdkPubkey::try_from(key.to_bytes().as_ref())
-        .expect("Failed to convert Pubkey to SdkPubkey");
-    let account = rpc_client
-        .get_account(&sdk_pubkey)
-        .await
-        .expect(&format!("Failed to fetch account {}", key));
-    account_to_account_info(key, account)
-}
-
-// Helper function to create a minimal mock AccountInfo
-pub fn create_mock_account_info(
-    key: Pubkey,
-    owner: Pubkey,
-    account_data: Option<Vec<u8>>,
-) -> AccountInfo<'static> {
-    let data = if let Some(provided_data) = account_data {
-        Box::leak(Box::new(provided_data))
-    } else {
-        Box::leak(Box::new(Vec::new()))
-    };
-    let lamports = Box::leak(Box::new(0u64));
-    let owner_static = Box::leak(Box::new(owner));
-    let key_static = Box::leak(Box::new(key));
-
-    AccountInfo::new(
-        key_static,
-        false,
-        false,
-        lamports,
-        data,
-        owner_static,
-        false,
-        0,
-    )
+) -> AccountInfo {
+    let owner: Pubkey = account.owner.to_bytes();
+    make_pinocchio_account_info(key, owner, account.lamports, account.executable, account.data)
 }
 
 pub(crate) fn write_results_to_file(results: &[Option<ArbitragePath>]) {
@@ -137,12 +107,14 @@ pub(crate) fn write_results_to_file(results: &[Option<ArbitragePath>]) {
                 label, ts, path.start_amount, path.profit as f64 / 1_000_000_000.0
             ));
             for (i, edge) in path.edges.iter().enumerate() {
+                let left = &edge.left.mint_account;
+                let right = &edge.right.mint_account;
                 log_lines.push_str(&format!(
-                    "  Edge {}: {}->[{}]->{}\n",
+                    "  Edge {}: {:02x}{:02x}{:02x}{:02x}..->[{}]->{:02x}{:02x}{:02x}{:02x}..\n",
                     i + 1,
-                    edge.left.mint_account,
+                    left[0], left[1], left[2], left[3],
                     edge.get_price(),
-                    edge.right.mint_account
+                    right[0], right[1], right[2], right[3],
                 ));
             }
             log_lines.push_str("\n");

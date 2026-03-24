@@ -1,4 +1,4 @@
-use anchor_lang::prelude::Pubkey;
+use pinocchio::pubkey::Pubkey;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pool {

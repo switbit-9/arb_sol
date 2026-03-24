@@ -1,6 +1,6 @@
 use super::big_num::U128;
 use crate::programs::raydium_clmm::error::ErrorCode;
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 
 /// The minimum tick
 pub const MIN_TICK: i32 = -443636;

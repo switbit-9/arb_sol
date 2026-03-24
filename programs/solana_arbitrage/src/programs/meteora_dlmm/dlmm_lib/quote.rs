@@ -1,6 +1,6 @@
 use super::*;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use pinocchio::pubkey::Pubkey;
+use pinocchio::account_info::AccountInfo;
 use crate::utils::token::MintFee;
 use std::result::Result::Ok;
 
@@ -19,7 +19,7 @@ pub struct SwapExactOutQuote {
 
 /// Slim copy of LbPair with only the fields needed for swap simulation (~28 bytes vs 896).
 /// Created once in MeteoraDlmm::new(), used by quote_exact_in/out.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct LbPairSlim {
     pub active_id: i32,
     pub bin_step: u16,
@@ -70,11 +70,11 @@ fn calculate_transfer_fee_included_amount_cached(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn quote_exact_out<'a>(
+pub fn quote_exact_out(
     lb_pair: &LbPairSlim,
     mut amount_out: u64,
     swap_for_y: bool,
-    bin_array: &AccountInfo<'a>,
+    bin_array: &AccountInfo,
     transfer_fee_x: MintFee,
     transfer_fee_y: MintFee,
     cache: &SwapCache,
@@ -110,7 +110,7 @@ pub fn quote_exact_out<'a>(
             break;
         }
 
-        let bin_array_data = bin_array.try_borrow_data()?;
+        let bin_array_data = unsafe { bin_array.borrow_data_unchecked() };
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
@@ -246,11 +246,11 @@ pub fn quote_exact_out<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn quote_exact_in<'a>(
+pub fn quote_exact_in(
     lb_pair: &LbPairSlim,
     amount_in: u64,
     swap_for_y: bool,
-    bin_array: &AccountInfo<'a>,
+    bin_array: &AccountInfo,
     transfer_fee_x: MintFee,
     transfer_fee_y: MintFee,
     cache: &SwapCache,
@@ -287,7 +287,7 @@ pub fn quote_exact_in<'a>(
             break;
         }
 
-        let bin_array_data = bin_array.try_borrow_data()?;
+        let bin_array_data = unsafe { bin_array.borrow_data_unchecked() };
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
         let (lower_bin_id, upper_bin_id) =
             BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)?;
@@ -513,12 +513,12 @@ pub fn get_bin_array_pubkeys_for_swap(
     Ok(bin_array_pubkeys)
 }
 
-pub fn get_active_bin_array<'a>(
+pub fn get_active_bin_array(
     lb_pair_pubkey: Pubkey,
     lb_pair: &LbPair,
     bitmap_extension: Option<&BinArrayBitmapExtension>,
     swap_for_y: bool,
-    bin_arrays: &[AccountInfo<'a>],
+    bin_arrays: &[AccountInfo],
 ) -> anyhow::Result<Bin> {
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;
@@ -530,11 +530,11 @@ pub fn get_active_bin_array<'a>(
 
     let active_bin_array_account = bin_arrays
         .iter()
-        .find(|acc| *acc.key == active_bin_array_pubkey)
+        .find(|acc| acc.key() == &active_bin_array_pubkey)
         .context("Active bin array not found in provided accounts")?;
 
     // Verify the active bin is in this bin array by reading the bin array index
-    let bin_array_data = active_bin_array_account.try_borrow_data()?;
+    let bin_array_data = unsafe { active_bin_array_account.borrow_data_unchecked() };
     let bin_array_index: i64 = bytemuck::pod_read_unaligned(&bin_array_data[8..16]);
 
     // Calculate the bin range for this bin array

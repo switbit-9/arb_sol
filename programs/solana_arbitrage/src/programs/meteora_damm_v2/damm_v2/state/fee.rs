@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use static_assertions::const_assert_eq;
 
@@ -32,8 +32,6 @@ pub struct FeeOnAmountResult {
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
 )]
 
 // https://www.desmos.com/calculator/oxdndn2xdx
@@ -46,13 +44,13 @@ pub enum BaseFeeMode {
     RateLimiter,
 }
 
-#[zero_copy]
 /// Information regarding fee charges
 /// trading_fee = amount * trade_fee_numerator / denominator
 /// protocol_fee = trading_fee * protocol_fee_percentage / 100
 /// referral_fee = protocol_fee * referral_percentage / 100
 /// partner_fee = (protocol_fee - referral_fee) * partner_fee_percentage / denominator
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PoolFeesStruct {
     /// Trade fees are extra token amounts that are held inside the token
     /// accounts during a trade, making the value of liquidity tokens rise.
@@ -78,10 +76,10 @@ pub struct PoolFeesStruct {
     pub padding_1: [u64; 2],
 }
 
-const_assert_eq!(PoolFeesStruct::INIT_SPACE, 160);
+const_assert_eq!(std::mem::size_of::<PoolFeesStruct>(), 160);
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BaseFeeStruct {
     pub cliff_fee_numerator: u64,
     // In fee scheduler first_factor: number_of_period, second_factor: period_frequency, third_factor: reduction_factor
@@ -94,7 +92,7 @@ pub struct BaseFeeStruct {
     pub padding_1: u64,
 }
 
-const_assert_eq!(BaseFeeStruct::INIT_SPACE, 40);
+const_assert_eq!(std::mem::size_of::<BaseFeeStruct>(), 40);
 
 impl BaseFeeStruct {
     pub fn get_fee_rate_limiter(&self) -> Result<FeeRateLimiter> {
@@ -297,8 +295,8 @@ impl PoolFeesStruct {
     }
 }
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DynamicFeeStruct {
     pub initialized: u8, // 0, ignore for dynamic fee
     pub padding: [u8; 7],
@@ -315,7 +313,7 @@ pub struct DynamicFeeStruct {
     pub volatility_reference: u128, // decayed volatility accumulator
 }
 
-const_assert_eq!(DynamicFeeStruct::INIT_SPACE, 96);
+const_assert_eq!(std::mem::size_of::<DynamicFeeStruct>(), 96);
 
 impl DynamicFeeStruct {
     // we approximate Px / Py = (1 + b) ^ delta_bin  = 1 + b * delta_bin (if b is too small)

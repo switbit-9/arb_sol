@@ -1,20 +1,22 @@
 use crate::utils::token::get_transfer_fee_config;
-use anchor_lang::prelude::*;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFeeConfig;
+use pinocchio::{account_info::AccountInfo, pubkey::Pubkey, sysvars::clock::Clock};
+use spl_token_2022::extension::transfer_fee::TransferFeeConfig;
 
-pub struct MintInfo<'info> {
-    pub mint: AccountInfo<'info>,
-    pub token_program: AccountInfo<'info>,
+type Result<T> = core::result::Result<T, pinocchio::program_error::ProgramError>;
+
+pub struct MintInfo {
+    pub mint: AccountInfo,
+    pub token_program: AccountInfo,
     pub transfer_fee: Option<TransferFeeConfig>,
-    pub user_token_account: AccountInfo<'info>,
+    pub user_token_account: AccountInfo,
 }
 
-impl<'info> MintInfo<'info> {
+impl MintInfo {
     pub fn new(
-        mint: AccountInfo<'info>,
-        token_program: AccountInfo<'info>,
+        mint: AccountInfo,
+        token_program: AccountInfo,
         transfer_fee: Option<TransferFeeConfig>,
-        user_token_account: AccountInfo<'info>,
+        user_token_account: AccountInfo,
     ) -> Self {
         Self {
             mint,

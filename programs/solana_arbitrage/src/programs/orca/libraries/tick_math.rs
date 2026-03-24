@@ -1,5 +1,5 @@
 use super::big_num::U128;
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 
 /// The minimum tick
 pub const MIN_TICK: i32 = -443636;
@@ -22,7 +22,7 @@ const NUM_64: U128 = U128([64, 0]);
 pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128> {
     let abs_tick = tick.abs() as u32;
     if abs_tick > MAX_TICK as u32 {
-        return Err(error!(crate::programs::SolarBError::AccountMismatch));
+        return Err(crate::programs::SolarBError::AccountMismatch.into());
     }
 
     // i = 0
@@ -116,7 +116,7 @@ pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128> {
 /// Calculates the greatest tick value such that get_sqrt_price_at_tick(tick) <= ratio
 pub fn get_tick_at_sqrt_price(sqrt_price_x64: u128) -> Result<i32> {
     if sqrt_price_x64 < MIN_SQRT_PRICE_X64 || sqrt_price_x64 >= MAX_SQRT_PRICE_X64 {
-        return Err(error!(crate::programs::SolarBError::AccountMismatch));
+        return Err(crate::programs::SolarBError::AccountMismatch.into());
     }
 
     // Determine log_b(sqrt_ratio). First by calculating integer portion (msb)

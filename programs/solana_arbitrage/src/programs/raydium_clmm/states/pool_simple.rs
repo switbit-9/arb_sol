@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use pinocchio::pubkey::Pubkey;
 use bytemuck::{Pod, Zeroable};
 
 /// Number of rewards Token

@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 use ruint::aliases::U256;
 
 use super::{
@@ -44,7 +44,7 @@ pub fn get_delta_amount_a_unsigned(
         liquidity,
         round,
     )?;
-    require!(result <= U256::from(u64::MAX), PoolError::MathOverflow);
+    if !(result <= U256::from(u64::MAX)) { return Err(PoolError::MathOverflow.into()); }
     return Ok(result.try_into().map_err(|_| PoolError::TypeCastFailed)?);
 }
 
@@ -80,7 +80,7 @@ pub fn get_delta_amount_b_unsigned(
         liquidity,
         round,
     )?;
-    require!(result <= U256::from(u64::MAX), PoolError::MathOverflow);
+    if !(result <= U256::from(u64::MAX)) { return Err(PoolError::MathOverflow.into()); }
     return Ok(result.try_into().map_err(|_| PoolError::TypeCastFailed)?);
 }
 

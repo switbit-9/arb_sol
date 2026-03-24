@@ -3,8 +3,8 @@ use crate::arbitrage::utils::find_instance_index_by_pool_id;
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use crate::utils::token::MintFee;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::programs::Result;
+use pinocchio::{account_info::AccountInfo, pubkey::Pubkey, sysvars::clock::Clock};
 
 /// Configuration for the optimization search - OPTIMIZED FOR LOW CU USAGE
 const MAX_ITERATIONS: usize = 12; // Reduced from 25 to save CU
@@ -22,8 +22,8 @@ fn golden_div(x: u64) -> u64 {
 
 /// Simulate a full arbitrage path and return the profit (DLMM + AMM)
 #[inline]
-fn simulate_path<'info>(
-    accounts: &[AccountInfo<'info>],
+fn simulate_path(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
@@ -40,8 +40,8 @@ fn simulate_path<'info>(
 
 /// Golden section search to find the optimal input amount that maximizes profit
 /// Optimized for low CU usage
-fn golden_section_search<'info>(
-    accounts: &[AccountInfo<'info>],
+fn golden_section_search(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
@@ -189,8 +189,8 @@ fn golden_section_search<'info>(
 
 /// Hybrid search: OPTIMIZED for low CU usage
 /// Reduced grid points and conditional golden section refinement
-fn hybrid_search<'info>(
-    accounts: &[AccountInfo<'info>],
+fn hybrid_search(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
@@ -449,13 +449,13 @@ fn analytical_hint_amm_dlmm(
 
 
 /// Find optimal amount for 2-hop path using hybrid search
-pub fn find_optimal_amount<'info>(
+pub fn find_optimal_amount(
     instances: &mut [ProgramInstance],
     idx_1: usize,
     idx_2: usize,
     input_mint: Pubkey,
     middle_mint: Pubkey,
-    accounts: &[AccountInfo<'info>],
+    accounts: &[AccountInfo],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
 
@@ -518,8 +518,8 @@ pub fn find_optimal_amount<'info>(
 /// Simulate N-hop arbitrage path and return the profit
 /// Works for any number of edges (2-hop, 3-hop, etc.)
 #[inline]
-fn simulate_n_hop_path<'info>(
-    accounts: &[AccountInfo<'info>],
+fn simulate_n_hop_path(
+    accounts: &[AccountInfo],
     edges: &[Edge],
     instances: &mut [ProgramInstance],
     amount_in: u64,
@@ -543,8 +543,8 @@ fn simulate_n_hop_path<'info>(
 }
 
 /// Quick profitability check for N-hop path
-fn quick_profit_check_n_hop<'info>(
-    accounts: &[AccountInfo<'info>],
+fn quick_profit_check_n_hop(
+    accounts: &[AccountInfo],
     edges: &[Edge],
     instances: &mut [ProgramInstance],
     min_amount: u64,
@@ -571,8 +571,8 @@ fn quick_profit_check_n_hop<'info>(
 }
 
 /// Golden section search for N-hop path
-fn golden_section_search_n_hop<'info>(
-    accounts: &[AccountInfo<'info>],
+fn golden_section_search_n_hop(
+    accounts: &[AccountInfo],
     edges: &[Edge],
     instances: &mut [ProgramInstance],
     min_amount: u64,
@@ -641,8 +641,8 @@ fn golden_section_search_n_hop<'info>(
 }
 
 /// Hybrid search for N-hop path
-fn hybrid_search_n_hop<'info>(
-    accounts: &[AccountInfo<'info>],
+fn hybrid_search_n_hop(
+    accounts: &[AccountInfo],
     edges: &[Edge],
     instances: &mut [ProgramInstance],
     min_amount: u64,
@@ -719,9 +719,9 @@ fn hybrid_search_n_hop<'info>(
 }
 
 /// Find optimal amount for N-hop path
-fn find_optimal_amount_n_hop<'info>(
+fn find_optimal_amount_n_hop(
     edges: &[Edge],
-    accounts: &[AccountInfo<'info>],
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     config: &BotConfig,
 ) -> Result<(u64, i128)> {
@@ -750,9 +750,9 @@ fn find_optimal_amount_n_hop<'info>(
 
 /// Main entry point to find optimal amount in for any arbitrage path
 /// Unified version that handles 2-hop, 3-hop, or N-hop paths
-pub fn find_optimal_amount_in_v2<'info>(
+pub fn find_optimal_amount_in_v2(
     edges: &[Edge],
-    accounts: &[AccountInfo<'info>],
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {
@@ -786,9 +786,9 @@ pub fn find_optimal_amount_in_v2<'info>(
 }
 
 /// Alias for backwards compatibility
-pub fn find_optimal_amount_in_v3<'info>(
+pub fn find_optimal_amount_in_v3(
     edges: &[Edge],
-    accounts: &[AccountInfo<'info>],
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(u64, i128)> {

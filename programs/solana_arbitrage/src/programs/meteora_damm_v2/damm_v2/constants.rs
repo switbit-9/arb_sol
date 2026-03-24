@@ -84,7 +84,7 @@ pub mod activation {
 /// Store constants related to fees
 pub mod fee {
     use super::super::error::PoolError;
-    use anchor_lang::prelude::*;
+    use crate::programs::Result;
 
     /// Default fee denominator. DO NOT simply update it as it will break logic that depends on it as default value.
     pub const FEE_DENOMINATOR: u64 = 1_000_000_000;

@@ -1,4 +1,4 @@
-use anchor_lang::solana_program::pubkey::Pubkey;
+use pinocchio::pubkey::Pubkey;
 
 pub const AMM_INFO_SIZE: usize = 752;
 

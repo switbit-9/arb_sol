@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash};
 
-use anchor_lang::prelude::Pubkey;
+use pinocchio::pubkey::Pubkey;
 
 use super::pool::Pool;
 

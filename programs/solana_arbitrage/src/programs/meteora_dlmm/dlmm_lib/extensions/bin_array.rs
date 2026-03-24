@@ -1,8 +1,6 @@
 use super::super::*;
 use num_integer::Integer;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta, pubkey::Pubkey,
-};
+use pinocchio::pubkey::Pubkey;
 
 pub trait BinArrayExtension {
     fn is_bin_id_within_range(&self, bin_id: i32) -> Result<bool>;
@@ -14,12 +12,6 @@ pub trait BinArrayExtension {
 
     fn get_bin_mut<'a>(&'a mut self, bin_id: i32) -> Result<&'a mut Bin>;
     fn get_bin<'a>(&'a self, bin_id: i32) -> Result<&'a Bin>;
-
-    fn get_bin_array_account_metas_coverage(
-        lower_bin_id: i32,
-        upper_bin_id: i32,
-        lb_pair: Pubkey,
-    ) -> Result<Vec<AccountMeta>>;
 
     fn get_bin_array_indexes_coverage(lower_bin_id: i32, upper_bin_id: i32) -> Result<Vec<i32>>;
 }
@@ -89,21 +81,4 @@ impl BinArrayExtension for BinArray {
         Ok(indexes)
     }
 
-    fn get_bin_array_account_metas_coverage(
-        lower_bin_id: i32,
-        upper_bin_id: i32,
-        lb_pair: Pubkey,
-    ) -> Result<Vec<AccountMeta>> {
-        let bin_array_indexes =
-            BinArray::get_bin_array_indexes_coverage(lower_bin_id, upper_bin_id)?;
-
-        Ok(bin_array_indexes
-            .into_iter()
-            .map(|index| AccountMeta {
-                pubkey: derive_bin_array_pda(lb_pair, index.into()).0,
-                is_signer: false,
-                is_writable: true,
-            })
-            .collect())
-    }
 }

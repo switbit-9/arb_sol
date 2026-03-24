@@ -1,43 +1,34 @@
-use anchor_lang::prelude::*;
+use pinocchio::program_error::ProgramError;
 
-#[error_code]
+/// Program-specific error codes. Variants map to ProgramError::Custom(N).
+/// Numbering starts at 0 (unlike Anchor which starts at 6000).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolarBError {
-    #[msg("insufficient accounts provided for the requested program")]
-    InsufficientAccounts,
-    #[msg("bin array not found in provided accounts")]
-    InsufficientBinArray,
-    #[msg("account pubkey does not match expected template")]
-    AccountMismatch,
-    #[msg("provided accounts length does not match registered span")]
-    AccountSpanMismatch,
-    #[msg("provided accounts length cannot be represented on this platform")]
-    InvalidAccountsLength,
-    #[msg("no registered program matched the supplied program id")]
-    UnknownProgram,
-    #[msg("unused accounts remain after parsing instruction data")]
-    TrailingAccounts,
-    #[msg("TransferFee calculate not match")]
-    TransferFeeCalculateNotMatch,
-    #[msg("Not Found")]
-    NoProfitFound,
-    #[msg("Not")]
-    NoProfitFound2,
-    #[msg("insufficient funds in payer account")]
-    InsufficientFunds,
-    #[msg("TransferFee calculation error")]
-    TransferFeeCalculationError,
-    #[msg("Invalid path length for optimization")]
-    InvalidPathLength,
-    #[msg("Invalid path type for this optimization method")]
-    InvalidPathType,
-    #[msg("Invalid program type for this operation")]
-    InvalidProgramType,
-    #[msg("Fee overflow")]
-    FeeOverflow,
-    #[msg("Invalid account data format")]
-    InvalidAccountData,
-    #[msg("Invalid arbitrage mode specified")]
-    InvalidMode,
-    #[msg("Unauthorized: invalid auth key")]
-    Unauthorized,
+    InsufficientAccounts = 0,
+    InsufficientBinArray = 1,
+    AccountMismatch = 2,
+    AccountSpanMismatch = 3,
+    InvalidAccountsLength = 4,
+    UnknownProgram = 5,
+    TrailingAccounts = 6,
+    TransferFeeCalculateNotMatch = 7,
+    NoProfitFound = 8,
+    NoProfitFound2 = 9,
+    InsufficientFunds = 10,
+    TransferFeeCalculationError = 11,
+    InvalidPathLength = 12,
+    InvalidPathType = 13,
+    InvalidProgramType = 14,
+    FeeOverflow = 15,
+    InvalidAccountData = 16,
+    InvalidMode = 17,
+    Unauthorized = 18,
+}
+
+impl From<SolarBError> for ProgramError {
+    #[inline(always)]
+    fn from(e: SolarBError) -> Self {
+        ProgramError::Custom(e as u32)
+    }
 }

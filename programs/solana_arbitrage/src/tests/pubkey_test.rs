@@ -4,10 +4,13 @@ mod tests {
     use crate::InstructionData;
     use crate::utils::test_utils::{
         create_mock_account_info, try_fetch_account_info_from_rpc, write_results_to_file,
+        sdk_account_to_pinocchio,
     };
-    use anchor_lang::prelude::Clock;
-    use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+    use pinocchio::account_info::AccountInfo;
+    use pinocchio::pubkey::Pubkey;
+    use pinocchio::sysvars::clock::Clock;
     use solana_client::nonblocking::rpc_client::RpcClient;
+    use solana_sdk::pubkey::Pubkey as SdkPubkey;
     use std::str::FromStr;
 
     fn get_api_url() -> String {
@@ -16,7 +19,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_sdk::sysvar;
         let clock_account = rpc_client
             .get_account(&sysvar::clock::ID)
             .await
@@ -49,17 +52,19 @@ mod tests {
         data: InstructionData,
     ) -> Option<crate::arbitrage::algo_2::ArbitragePath> {
         let rpc_client = RpcClient::new(get_api_url());
-        let system_id = system_program::id();
+        // System program pubkey = all zeros
+        let system_id: Pubkey = [0u8; 32];
 
-        let mut accounts: Vec<AccountInfo<'static>> = Vec::with_capacity(pubkey_list.len());
+        let mut accounts: Vec<AccountInfo> = Vec::with_capacity(pubkey_list.len());
 
         for (i, pubkey_str) in pubkey_list.iter().enumerate() {
-            let key = Pubkey::from_str(pubkey_str.trim())
+            let sdk_key = SdkPubkey::from_str(pubkey_str.trim())
                 .unwrap_or_else(|_| panic!("Invalid pubkey at index {}: {}", i, pubkey_str));
+            let key: Pubkey = sdk_key.to_bytes();
             let account = match try_fetch_account_info_from_rpc(&rpc_client, key).await {
                 Some(info) => info,
                 None => {
-                    eprintln!("  [{}] mock fallback: {}", i, key);
+                    eprintln!("  [{}] mock fallback: {}", i, sdk_key);
                     create_mock_account_info(key, system_id, None)
                 }
             };
@@ -110,8 +115,8 @@ mod tests {
 "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",  // memo [3]
 "So11111111111111111111111111111111111111112",  // wsol_mint [4]
 "Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk",  // user_wsol_ata [5]
-"2TpMjYXnrgxoeVCq2i6EAR8vNWqe5MNvHCz3bENNpump",  // mint [6]
-"9BvUUpvAW5PjWWuKEmyuoisHYjA1pjUv3LxTwqpy6YPY",  // user_token_ata [7]
+"84cAEWqiDsV5xXh6CB69Hi3HcnumBbdjH4THfyorpump",  // mint [6]
+"7fxc9ZCxePt2BZFp7kXVjAz1keiSkLtpcPPTWwahUZjz",  // user_token_ata [7]
 "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  // pump_amm program_id [8]
 "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",  // pump_amm protocol_fee_recipient [9]
 "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",  // pump_amm protocol_fee_token_acc [10]
@@ -122,50 +127,34 @@ mod tests {
 "11111111111111111111111111111111",  // pump_amm system_program [15]
 "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  // pump_amm assoc_token_prog [16]
 "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",  // pump_amm global_vol_acc [17]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm program_id [18]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm host_fee_in [19]
-"D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",  // meteora_dlmm event_authority [20]
-"HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv",  // pump_amm [HJAqvquM] pool_id [21]
-"3J8k6Aw4CQV5BfFqmDeSEkmrmn6czQP17PX5avHSUWq6",  // pump_amm [HJAqvquM] base_vault [22]
-"DWx3Z5qQYLp2eVCFJb8AzW4LYw35z7qArWS8WF5uXZ1a",  // pump_amm [HJAqvquM] quote_vault [23]
-"WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i",  // pump_amm [HJAqvquM] user_volume_acc [24]
-"4shRJJF5itY9W29tVSJWVQxxSBmu6ny1BR3X1z5XyqzS",  // pump_amm [HJAqvquM] pool_v2 [25]
-"C8uZReppTGXRTnTuWBPrSgjk33fskeyCCTSxKRKSbPN2",  // pump_amm [HJAqvquM] user_vol_wsol_ata [26]
-"EfXELLTEt6H8Kgsf5LPB2A55Pue8B4GNxViWr9Aiz9AT",  // pump_amm [HJAqvquM] vault_ata [27]
-"CWmKWBryCUW5mBQcrncCEs9CamP9qWa8S6q6i6gMFTb1",  // pump_amm [HJAqvquM] vault_authority [28]
-"8dem2dfPchbvP5HauNYWBY7sUgEg2ayUZwtL2nkQGJDB",  // meteora_dlmm [8dem2dfP] pool_id [29]
-"7NZMKCnCdfuYfrdvi5RKSUbe1JSv5RPHUuE1vDLPJWXF",  // meteora_dlmm [8dem2dfP] base_vault [30]
-"EE3iaQ6gU6i2ZmteqQkxM7ticyNdHoFrwKXgeShggovP",  // meteora_dlmm [8dem2dfP] quote_vault [31]
-"J5JAe9KTZ7JPZQpgwZQegd8TqecgW9BB1vmgwyMmeBan",  // meteora_dlmm [8dem2dfP] oracle [32]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8dem2dfP] bitmap_ext [33]
-"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_0 [34]
-"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_1 [35]
-"7ik5kwcwjD9W22THNqU5spBA9pELjhzfPg2eGvKtNEGn",  // meteora_dlmm [7ik5kwcw] pool_id [36]
-"7JQ4WYhJhxBAhCghN3miadj5CL876khFFK7Bd5Kvf2mT",  // meteora_dlmm [7ik5kwcw] base_vault [37]
-"GzWDHkTcovg7r6GxS1qcyJD5kVWHccx3Ms2MkvXTQssP",  // meteora_dlmm [7ik5kwcw] quote_vault [38]
-"ZC1SdfhtapP6oavipqSSBjisawVQmb9R1HxrHxw7QuE",  // meteora_dlmm [7ik5kwcw] oracle [39]
-"DAet93xfSzooiqSXN3LWhD7jTj5CNyMvNmuLSEiyPyYn",  // meteora_dlmm [7ik5kwcw] bitmap_ext [40]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_0 [41]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_1 [42]
-"8EtW6HneUzxefKpVMJgQBtFerdYVzbrzKTzC5PzpQR29",  // meteora_dlmm [8EtW6Hne] pool_id [43]
-"brEp1B9kyPLLrr8cVfJVktzMamnQTRtTpenE91N5P7K",  // meteora_dlmm [8EtW6Hne] base_vault [44]
-"EFATbMKovt15TDKpBPGLL37HtduBMLWdCgAQVRaLhjXK",  // meteora_dlmm [8EtW6Hne] quote_vault [45]
-"7U4SGofGoknUxbF8pqmi2Y6Uo1r6Sc1mMPycC781qKcR",  // meteora_dlmm [8EtW6Hne] oracle [46]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8EtW6Hne] bitmap_ext [47]
-"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_0 [48]
-"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_1 [49]
+"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  // whirlpool program_id [18]
+"EgpJVVi6pBFhbmso2vu93EA7HmW74Tjs3E1cjPtMsUUc",  // pump_amm [EgpJVVi6] pool_id [19]
+"E4vB9iFu8xrAFiU35xJnpoLhzXBvQKTJ24eKNt8N8742",  // pump_amm [EgpJVVi6] base_vault [20]
+"3GGCbxEZ6fRu8WuSksgFa2iD9Ycm8sjEJPNxQEqMATD6",  // pump_amm [EgpJVVi6] quote_vault [21]
+"WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i",  // pump_amm [EgpJVVi6] user_volume_acc [22]
+"4shRJJF5itY9W29tVSJWVQxxSBmu6ny1BR3X1z5XyqzS",  // pump_amm [EgpJVVi6] pool_v2 [23]
+"2L3qWhNRTKLkYGGLL3YXZ28HFY41M8QJxX5aE4WNp5hZ",  // pump_amm [EgpJVVi6] user_vol_wsol_ata [24]
+"5ZGY3sjvmDLwPbb7qXVSMkh8iCG4ErUSpwyg1HdQHm1E",  // pump_amm [EgpJVVi6] vault_ata [25]
+"9FppjisnoaWhVVJn3m9tBKscAWZNs1j45KrWjYDjR2NX",  // pump_amm [EgpJVVi6] vault_authority [26]
+"3oU24aYf87eoY5XHmn5tjGvtHNCrCSas3wd5hNoTACDr",  // whirlpool [3oU24aYf] pool_id [27]
+"TpA3fxmURsGY8ihsGHE4Q22XcTnsBwciQa8veKHuXbe",  // whirlpool [3oU24aYf] base_vault [28]
+"LJciDmhZ2E7JEdPcW2yPXKRoPHUnNBcQkPfqxpw4CWk",  // whirlpool [3oU24aYf] quote_vault [29]
+"BDopgozjxaTrXqx7oNEeGqUxeigJgDJCGaFWXzAYBVuo",  // whirlpool [3oU24aYf] oracle [30]
+"AS6HuRchG6G7Va36oeV12HxnUTMvTyf1pUeScqX3DEqt",  // whirlpool [3oU24aYf] tick_array_0 [31]
+"8fji6iEut5ins9Suq7egzxvmMF9xHiGb5bTPzwsmnu65",  // whirlpool [3oU24aYf] tick_array_1 [32]
+"6BmUYXkedFU8toMxxLU4r2b4yxKx6n3nUWeZEKMbpJcA",  // whirlpool [3oU24aYf] tick_array_2 [33]
 ];
 
     fn make_instruction_data(test_mode: bool) -> InstructionData {
         InstructionData                                                              {
         mints: 2,
-        shared_statics_len: 13,
-        pool_types: [9, 3, 3, 3, 0, 0, 0, 0],
-        type_static_offsets: [0, 10, 10, 10, 0, 0, 0, 0],
+        shared_statics_len: 11,
+        pool_types: [9, 4, 0, 0, 0, 0, 0, 0],
+        type_static_offsets: [0, 10, 0, 0, 0, 0, 0, 0],
         mode: 0,
-        test: true,
+        test: false,
         group_sizes: [0, 0, 0, 0],
-        pool_fees: vec![5000],
+        pool_fees: vec![8000],
     }
     }
 

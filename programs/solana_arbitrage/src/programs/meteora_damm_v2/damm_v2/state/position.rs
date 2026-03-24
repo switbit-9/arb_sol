@@ -1,4 +1,5 @@
-use anchor_lang::prelude::*;
+use pinocchio::pubkey::Pubkey;
+use crate::programs::Result;
 use ruint::aliases::U256;
 use static_assertions::const_assert_eq;
 use std::{cell::RefMut, u64};
@@ -12,8 +13,8 @@ use super::super::{
     PoolError,
 };
 
-#[zero_copy]
-#[derive(Default, Debug, InitSpace, PartialEq)]
+#[repr(C)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UserRewardInfo {
     /// The latest update reward checkpoint
     pub reward_per_token_checkpoint: [u8; 32], // U256
@@ -23,7 +24,7 @@ pub struct UserRewardInfo {
     pub total_claimed_rewards: u64,
 }
 
-const_assert_eq!(UserRewardInfo::INIT_SPACE, 48);
+const_assert_eq!(core::mem::size_of::<UserRewardInfo>(), 48);
 
 impl UserRewardInfo {
     pub fn update_rewards(
@@ -49,8 +50,8 @@ impl UserRewardInfo {
     }
 }
 
-#[account(zero_copy)]
-#[derive(InitSpace, Debug, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Position {
     pub pool: Pubkey,
     /// nft mint
@@ -77,16 +78,16 @@ pub struct Position {
     pub padding: [u128; 6],
 }
 
-const_assert_eq!(Position::INIT_SPACE, 400);
+const_assert_eq!(core::mem::size_of::<Position>(), 400);
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PositionMetrics {
     pub total_claimed_a_fee: u64,
     pub total_claimed_b_fee: u64,
 }
 
-const_assert_eq!(PositionMetrics::INIT_SPACE, 16);
+const_assert_eq!(core::mem::size_of::<PositionMetrics>(), 16);
 
 impl PositionMetrics {
     pub fn accumulate_claimed_fee(
@@ -394,7 +395,7 @@ pub struct SplitFeeAmount {
     pub fee_b_amount: u64,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct SplitPositionInfo {
     pub liquidity: u128,
     pub fee_a: u64,

@@ -15,7 +15,7 @@ pub use meteora_damm_v2::MeteoraDammV2;
 pub use meteora_dlmm::MeteoraDlmm;
 pub use orca::OrcaWhirlpool;
 pub use pump_amm::PumpAmm;
-pub use programs::{PoolKind, ProgramInstance, ProgramMeta};
+pub use programs::{PoolKind, ProgramInstance, ProgramMeta, Result};
 pub use raydium_amm::RaydiumAmm;
 pub use raydium_clmm::RaydiumCLMM;
 pub use raydium_cpmm::RaydiumCPMM;

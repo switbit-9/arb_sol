@@ -16,18 +16,16 @@ use crate::{
     programs::{PoolKind, ProgramMeta},
     utils::cpi::invoke_cpi,
 };
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    account_info::AccountInfo,
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use pinocchio::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
+use pinocchio::instruction::AccountMeta;
+use pinocchio::sysvars::clock::Clock;
+use crate::programs::programs::Result;
+use crate::programs::SolarBError;
 use bytemuck;
 
 // pub const PROGRAM_ID: Pubkey =
     // Pubkey::from_str_const("CPMDWBwJDtYax9qW7AyRuVC19Cc4L4Vcy4n2BHAbHkCW"); //TO DO: be changed for mainnet
-pub const PROGRAM_ID: Pubkey = Pubkey::from_str_const("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
+pub const PROGRAM_ID: Pubkey = five8_const::decode_32_const("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
 const SWAP_BASE_IN_DISC: [u8; 8] = [143, 190, 90, 218, 196, 30, 51, 222];
 const SWAP_BASE_OUT_DISC: [u8; 8] = [55, 217, 98, 86, 163, 74, 180, 173];
 // Static accounts (from static_base, 2 accounts)
@@ -124,11 +122,11 @@ impl ProgramMeta for RaydiumCPMM {
         Ok((self.base_vault_amount, self.quote_vault_amount))
     }
 
-    fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_in(&self, _accounts: &[AccountInfo], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
     }
 
-    fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
+    fn get_max_amount_out(&self, _accounts: &[AccountInfo], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_out) } else { Ok(self.sell_max_out) }
     }
 
@@ -138,7 +136,7 @@ impl ProgramMeta for RaydiumCPMM {
 
 
 
-    fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
+    fn fast_quote(&mut self, _accounts: &[AccountInfo], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = amount_in.min(max_in);
         debug_eprintln!("[RAYD CPMM] Fast quote: {:.9} SOL ({}) -> {:.6} tokens ({})", amount_in as f64 / 1_000_000_000.0, amount_in, max_out as f64 / 1_000_000.0, max_out);
@@ -167,9 +165,9 @@ impl ProgramMeta for RaydiumCPMM {
         Ok((amount_in, out.min(max_out)))
     }
 
-    fn swap_base_in<'a>(
+    fn swap_base_in(
         &mut self,
-        accounts: &[AccountInfo<'a>],
+        accounts: &[AccountInfo],
         input_mint: Pubkey,
         amount_in: u64,
         input_transfer_fee: MintFee,
@@ -209,9 +207,9 @@ impl ProgramMeta for RaydiumCPMM {
         Ok(amount_out)
     }
 
-    fn swap_base_out<'a>(
+    fn swap_base_out(
         &mut self,
-        accounts: &[AccountInfo<'a>],
+        accounts: &[AccountInfo],
         output_mint: Pubkey,
         amount_out: u64,
         input_transfer_fee: MintFee,
@@ -260,19 +258,19 @@ impl ProgramMeta for RaydiumCPMM {
         Ok(input_transfer_amount)
     }
 
-    fn invoke_swap_base_in<'a>(
+    fn invoke_swap_base_in(
         &mut self,
-        accounts: &[AccountInfo<'a>],
+        accounts: &[AccountInfo],
         input_mint: Pubkey,
         amount_in: u64,
         min_amount_out: Option<u64>,
-        payer: &AccountInfo<'a>,
-        user_mint_1_token_account: &AccountInfo<'a>,
-        user_mint_2_token_account: &AccountInfo<'a>,
-        mint_1_account: &AccountInfo<'a>,
-        mint_2_account: &AccountInfo<'a>,
-        mint_1_token_program: &AccountInfo<'a>,
-        mint_2_token_program: &AccountInfo<'a>,
+        payer: &AccountInfo,
+        user_mint_1_token_account: &AccountInfo,
+        user_mint_2_token_account: &AccountInfo,
+        mint_1_account: &AccountInfo,
+        mint_2_account: &AccountInfo,
+        mint_1_token_program: &AccountInfo,
+        mint_2_token_program: &AccountInfo,
     ) -> Result<()> {
         self.invoke_swap(
             accounts, input_mint, &SWAP_BASE_IN_DISC,
@@ -282,19 +280,19 @@ impl ProgramMeta for RaydiumCPMM {
         )
     }
 
-    fn invoke_swap_base_out<'a>(
+    fn invoke_swap_base_out(
         &mut self,
-        accounts: &[AccountInfo<'a>],
+        accounts: &[AccountInfo],
         input_mint: Pubkey,
         max_amount_in: u64,
         amount_out: Option<u64>,
-        payer: &AccountInfo<'a>,
-        user_mint_1_token_account: &AccountInfo<'a>,
-        user_mint_2_token_account: &AccountInfo<'a>,
-        mint_1_account: &AccountInfo<'a>,
-        mint_2_account: &AccountInfo<'a>,
-        mint_1_token_program: &AccountInfo<'a>,
-        mint_2_token_program: &AccountInfo<'a>,
+        payer: &AccountInfo,
+        user_mint_1_token_account: &AccountInfo,
+        user_mint_2_token_account: &AccountInfo,
+        mint_1_account: &AccountInfo,
+        mint_2_account: &AccountInfo,
+        mint_1_token_program: &AccountInfo,
+        mint_2_token_program: &AccountInfo,
     ) -> Result<()> {
         self.invoke_swap(
             accounts, input_mint, &SWAP_BASE_OUT_DISC,
@@ -305,15 +303,8 @@ impl ProgramMeta for RaydiumCPMM {
     }
 
     #[cfg(any(test, feature = "debug"))]
-    fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()> {
-        msg!("=== Raydium CPMM ===");
-        msg!("[static] S0 program_id: {}", accounts[self.static_base + S_PROGRAM_ID].key);
-        msg!("[static] S1 vault_authority: {}", accounts[self.static_base + S_VAULT_AUTHORITY].key);
-        msg!("[dyn]    D0 pool: {}", accounts[self.dyn_start + D_POOL].key);
-        msg!("[dyn]    D1 base_vault: {}", accounts[self.dyn_start + D_BASE_VAULT].key);
-        msg!("[dyn]    D2 quote_vault: {}", accounts[self.dyn_start + D_QUOTE_VAULT].key);
-        msg!("[dyn]    D3 amm_config: {}", accounts[self.dyn_start + D_AMM_CONFIG].key);
-        msg!("[dyn]    D4 observation: {}", accounts[self.dyn_start + D_OBSERVATION].key);
+    fn log_accounts(&self, _accounts: &[AccountInfo]) -> Result<()> {
+        pinocchio::log::sol_log("=== Raydium CPMM ===");
         Ok(())
     }
 }
@@ -341,20 +332,20 @@ impl RaydiumCPMM {
     }
 
     /// Unified CPI invoke for both swap_base_in and swap_base_out.
-    fn invoke_swap<'a>(
+    fn invoke_swap(
         &self,
-        accounts: &[AccountInfo<'a>],
+        accounts: &[AccountInfo],
         input_mint: Pubkey,
         disc: &[u8; 8],
         arg1: u64,
         arg2: u64,
-        payer: &AccountInfo<'a>,
-        user_mint_1_token_account: &AccountInfo<'a>,
-        user_mint_2_token_account: &AccountInfo<'a>,
-        mint_1_account: &AccountInfo<'a>,
-        mint_2_account: &AccountInfo<'a>,
-        mint_1_token_program: &AccountInfo<'a>,
-        mint_2_token_program: &AccountInfo<'a>,
+        payer: &AccountInfo,
+        user_mint_1_token_account: &AccountInfo,
+        user_mint_2_token_account: &AccountInfo,
+        mint_1_account: &AccountInfo,
+        mint_2_account: &AccountInfo,
+        mint_1_token_program: &AccountInfo,
+        mint_2_token_program: &AccountInfo,
     ) -> Result<()> {
         let pool_id = &accounts[self.dyn_start + D_POOL];
         let base_vault = &accounts[self.dyn_start + D_BASE_VAULT];
@@ -369,7 +360,7 @@ impl RaydiumCPMM {
             (quote_vault, base_vault)
         };
 
-        let (input_token_program, output_token_program, user_input_token_account, user_output_token_account, input_mint_acc, output_mint_acc) = if input_mint == *mint_1_account.key {
+        let (input_token_program, output_token_program, user_input_token_account, user_output_token_account, input_mint_acc, output_mint_acc) = if input_mint == *mint_1_account.key() {
             (mint_1_token_program, mint_2_token_program, user_mint_1_token_account, user_mint_2_token_account, mint_1_account, mint_2_account)
         } else {
             (mint_2_token_program, mint_1_token_program, user_mint_2_token_account, user_mint_1_token_account, mint_2_account, mint_1_account)
@@ -381,42 +372,37 @@ impl RaydiumCPMM {
         data[16..24].copy_from_slice(&arg2.to_le_bytes());
 
         let metas = [
-            AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*authority_account.key, false),
-            AccountMeta::new_readonly(*amm_config_account.key, false),
-            AccountMeta::new(*pool_id.key, false),
-            AccountMeta::new(*user_input_token_account.key, false),
-            AccountMeta::new(*user_output_token_account.key, false),
-            AccountMeta::new(*input_vault.key, false),
-            AccountMeta::new(*output_vault.key, false),
-            AccountMeta::new_readonly(*input_token_program.key, false),
-            AccountMeta::new_readonly(*output_token_program.key, false),
-            AccountMeta::new_readonly(*input_mint_acc.key, false),
-            AccountMeta::new_readonly(*output_mint_acc.key, false),
-            AccountMeta::new(*observation_account.key, false),
+            AccountMeta::new(payer.key(), true, true),
+            AccountMeta::new(authority_account.key(), false, false),
+            AccountMeta::new(amm_config_account.key(), false, false),
+            AccountMeta::new(pool_id.key(), true, false),
+            AccountMeta::new(user_input_token_account.key(), true, false),
+            AccountMeta::new(user_output_token_account.key(), true, false),
+            AccountMeta::new(input_vault.key(), true, false),
+            AccountMeta::new(output_vault.key(), true, false),
+            AccountMeta::new(input_token_program.key(), false, false),
+            AccountMeta::new(output_token_program.key(), false, false),
+            AccountMeta::new(input_mint_acc.key(), false, false),
+            AccountMeta::new(output_mint_acc.key(), false, false),
+            AccountMeta::new(observation_account.key(), true, false),
         ];
 
-        let mut accs: [core::mem::MaybeUninit<AccountInfo<'a>>; 13] = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
-        let mut ai = 0usize;
-        macro_rules! push_acc {
-            (ref $e:expr) => { accs[ai] = core::mem::MaybeUninit::new(unsafe { core::ptr::read($e as *const _) }); ai += 1; };
-        }
-        push_acc!(ref payer);
-        push_acc!(ref authority_account);
-        push_acc!(ref amm_config_account);
-        push_acc!(ref pool_id);
-        push_acc!(ref user_input_token_account);
-        push_acc!(ref user_output_token_account);
-        push_acc!(ref input_vault);
-        push_acc!(ref output_vault);
-        push_acc!(ref input_token_program);
-        push_acc!(ref output_token_program);
-        push_acc!(ref input_mint_acc);
-        push_acc!(ref output_mint_acc);
-        push_acc!(ref observation_account);
-
-        let accs_slice = unsafe { core::slice::from_raw_parts(accs.as_ptr().cast::<AccountInfo<'a>>(), ai) };
-        invoke_cpi(&PROGRAM_ID, &metas, &data, accs_slice)?;
+        let accs: [&AccountInfo; 13] = [
+            payer,
+            authority_account,
+            amm_config_account,
+            pool_id,
+            user_input_token_account,
+            user_output_token_account,
+            input_vault,
+            output_vault,
+            input_token_program,
+            output_token_program,
+            input_mint_acc,
+            output_mint_acc,
+            observation_account,
+        ];
+        invoke_cpi(&PROGRAM_ID, &metas, &data, &accs)?;
         Ok(())
     }
 
@@ -425,29 +411,25 @@ impl RaydiumCPMM {
     ///          fees_token_0, fees_token_1, enable_creator_fee, creator_fee_on,
     ///          base_is_token_0)
     #[inline(always)]
-    fn read_fees<'a>(
-        amm_config_acc: &AccountInfo<'a>,
-        pool_acc: &AccountInfo<'a>,
+    fn read_fees(
+        amm_config_acc: &AccountInfo,
+        pool_acc: &AccountInfo,
         base_vault_key: &Pubkey,
     ) -> Result<(u64, u64, u64, u64, u64, u64, bool, u8, bool)> {
         // Read fee rates directly from AmmConfig bytes
         // Layout after 8-byte discriminator: bump(1) + disable_create_pool(1) + index(2) = 4 bytes
         // then trade_fee_rate(8), protocol_fee_rate(8), fund_fee_rate(8), create_pool_fee(8),
         // protocol_owner(32), fund_owner(32), creator_fee_rate(8)
-        let config_data = amm_config_acc.try_borrow_data()
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-        let d = &*config_data;
+        let d = unsafe { amm_config_acc.borrow_data_unchecked() };
         let trade_fee_rate = u64::from_le_bytes(d[12..20].try_into().unwrap());
         let protocol_fee_rate = u64::from_le_bytes(d[20..28].try_into().unwrap());
         let fund_fee_rate = u64::from_le_bytes(d[28..36].try_into().unwrap());
         let creator_fee_rate = u64::from_le_bytes(d[108..116].try_into().unwrap());
-        drop(config_data);
 
         // Read accumulated fees and pool flags from PoolState (zero-copy)
-        let pool_data = pool_acc.try_borrow_data()
-            .map_err(|_| ProgramError::InvalidAccountData)?;
+        let pool_data = unsafe { pool_acc.borrow_data_unchecked() };
         let pool_size = std::mem::size_of::<PoolState>();
-        let pool: &PoolState = bytemuck::from_bytes(&pool_data[8..8 + pool_size]);
+        let pool: &PoolState = unsafe { &*(pool_data[8..8 + pool_size].as_ptr() as *const PoolState) };
 
         let fees_token_0 = pool.protocol_fees_token_0
             .saturating_add(pool.fund_fees_token_0)
@@ -464,8 +446,8 @@ impl RaydiumCPMM {
             base_is_token_0))
     }
 
-    pub fn new<'a>(
-        accounts: &[AccountInfo<'a>],
+    pub fn new(
+        accounts: &[AccountInfo],
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
@@ -485,7 +467,7 @@ impl RaydiumCPMM {
         // Read all fee data from AmmConfig + PoolState accounts
         let (trade_fee_rate, creator_fee_rate, protocol_fee_rate, fund_fee_rate,
              fees_token_0, fees_token_1, enable_creator_fee, creator_fee_on,
-             base_is_token_0) = Self::read_fees(amm_config_acc, pool_acc, base_vault.key)?;
+             base_is_token_0) = Self::read_fees(amm_config_acc, pool_acc, base_vault.key())?;
 
         let adjusted_creator_fee_rate = if enable_creator_fee { creator_fee_rate } else { 0 };
         let total_fee_numerator = trade_fee_rate + adjusted_creator_fee_rate;
@@ -498,11 +480,11 @@ impl RaydiumCPMM {
         let sell_creator_fee_on_input = matches!(creator_fee_on, 0 | 2);
 
         let instance = RaydiumCPMM {
-            pool_id: *pool_acc.key,
+            pool_id: *pool_acc.key(),
             base_token_pk,
             quote_token_pk,
-            base_vault_key: *base_vault.key,
-            quote_vault_key: *quote_vault.key,
+            base_vault_key: *base_vault.key(),
+            quote_vault_key: *quote_vault.key(),
             base_vault_amount,
             quote_vault_amount,
             price,
@@ -550,9 +532,9 @@ impl RaydiumCPMM {
     /// Compute deferred fields: cached max amounts.
     /// Called only for instances that participate in a profitable arb path.
     /// Fee data is already read in new() via read_fees().
-    pub fn prepare_for_execution<'a>(
+    pub fn prepare_for_execution(
         &mut self,
-        _accounts: &[AccountInfo<'a>],
+        _accounts: &[AccountInfo],
     ) {
         if self.prepared {
             return;
@@ -568,215 +550,7 @@ impl RaydiumCPMM {
     }
 }
 
+// TODO: rewrite tests using LiteSVM/Mollusk
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::utils::token::MintFee;
-    use solana_client::nonblocking::rpc_client::RpcClient;
-    use solana_sdk::pubkey::Pubkey as SdkPubkey;
-
-    fn create_mock_account_info_with_data(
-        key: Pubkey,
-        owner: Pubkey,
-        data: Option<Vec<u8>>,
-    ) -> AccountInfo<'static> {
-        let data_vec = data.unwrap_or_else(|| vec![0u8; 8]);
-        let data_vec = Box::leak(Box::new(data_vec));
-        let lamports = Box::leak(Box::new(0u64));
-        let owner_static = Box::leak(Box::new(owner));
-        let key_static = Box::leak(Box::new(key));
-        AccountInfo::new(
-            key_static, false, true, lamports, data_vec, owner_static, false, 0,
-        )
-    }
-
-    fn account_to_account_info(
-        key: Pubkey,
-        account: solana_sdk::account::Account,
-    ) -> AccountInfo<'static> {
-        let data = Box::leak(Box::new(account.data));
-        let lamports = Box::leak(Box::new(account.lamports));
-        let owner_bytes: [u8; 32] = account.owner.to_bytes();
-        let owner = Pubkey::try_from(owner_bytes.as_ref()).unwrap();
-        let owner_static = Box::leak(Box::new(owner));
-        let key_static = Box::leak(Box::new(key));
-        AccountInfo::new(
-            key_static, false, false, lamports, data, owner_static,
-            account.executable, account.rent_epoch,
-        )
-    }
-
-    fn to_sdk(key: Pubkey) -> SdkPubkey {
-        SdkPubkey::try_from(key.to_bytes().as_ref()).unwrap()
-    }
-
-    fn get_rpc_client() -> RpcClient {
-        let api_key = "f230200b-f911-43c1-a242-4e7b066d0993";
-        RpcClient::new(format!("https://mainnet.helius-rpc.com/?api-key={}", api_key))
-    }
-
-    async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
-        let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
-            .expect("Failed to fetch clock");
-        let data = &clock_account.data;
-        assert!(data.len() >= 40, "Clock account data too short");
-        Clock {
-            slot: u64::from_le_bytes(data[0..8].try_into().unwrap()),
-            epoch_start_timestamp: i64::from_le_bytes(data[8..16].try_into().unwrap()),
-            epoch: u64::from_le_bytes(data[16..24].try_into().unwrap()),
-            leader_schedule_epoch: u64::from_le_bytes(data[24..32].try_into().unwrap()),
-            unix_timestamp: i64::from_le_bytes(data[32..40].try_into().unwrap()),
-        }
-    }
-
-    async fn build_from_pool_id(
-        pool_id: Pubkey,
-    ) -> (RaydiumCPMM, Vec<AccountInfo<'static>>, Clock) {
-        let rpc_client = get_rpc_client();
-
-        // Fetch pool account and parse PoolState
-        let pool_account = rpc_client.get_account(&to_sdk(pool_id)).await
-            .unwrap_or_else(|e| panic!("Failed to fetch pool {}: {}", pool_id, e));
-        let pool_state_size = std::mem::size_of::<PoolState>();
-        let pool: PoolState = bytemuck::pod_read_unaligned(&pool_account.data[8..8 + pool_state_size]);
-
-        eprintln!("Pool: {}", pool_id);
-        eprintln!("  token_0 (base): {}", pool.token_0_mint);
-        eprintln!("  token_1 (quote): {}", pool.token_1_mint);
-
-        // Fetch AMM config account (fees are read from it in new() via read_fees())
-        let amm_config_raw = rpc_client.get_account(&to_sdk(pool.amm_config)).await
-            .expect("Failed to fetch AMM config");
-
-        // Fetch vault accounts
-        let vault_0_account = rpc_client.get_account(&to_sdk(pool.token_0_vault)).await
-            .expect("Failed to fetch vault 0");
-        let vault_1_account = rpc_client.get_account(&to_sdk(pool.token_1_vault)).await
-            .expect("Failed to fetch vault 1");
-
-        // Build AccountInfo array
-        let pool_id_info = account_to_account_info(pool_id, pool_account);
-        let base_vault_info = account_to_account_info(pool.token_0_vault, vault_0_account);
-        let quote_vault_info = account_to_account_info(pool.token_1_vault, vault_1_account);
-        let amm_config_info = account_to_account_info(pool.amm_config, amm_config_raw);
-
-        let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
-        );
-        let vault_authority_info = create_mock_account_info_with_data(
-            Pubkey::new_unique(), anchor_lang::solana_program::system_program::id(), None,
-        );
-        let observation_info = create_mock_account_info_with_data(
-            pool.observation_key, anchor_lang::solana_program::system_program::id(), None,
-        );
-
-        // Layout:
-        // Static (static_base=0): [program_id, vault_authority]
-        // Dynamic (dyn_start=2): [pool, base_vault, quote_vault, amm_config, observation]
-        let accounts = vec![
-            program_id_info,         // S0
-            vault_authority_info,    // S1
-            pool_id_info,            // D0
-            base_vault_info,         // D1
-            quote_vault_info,        // D2
-            amm_config_info,         // D3
-            observation_info,        // D4
-        ];
-
-        let static_base: usize = 0;
-        let dyn_start: usize = 2;
-        let dyn_end: usize = accounts.len();
-
-        // Fees are now read directly from accounts in new() via read_fees()
-        let mut cpmm = RaydiumCPMM::new(&accounts, static_base, dyn_start, dyn_end)
-            .expect("RaydiumCPMM::new failed");
-
-        cpmm.prepare_for_execution(&accounts);
-
-        let clock = get_clock_from_rpc(&rpc_client).await;
-
-        eprintln!("  price: {}", cpmm.price);
-        eprintln!("  total_fee_numerator: {}", cpmm.total_fee_numerator);
-
-        (cpmm, accounts, clock)
-    }
-
-    #[tokio::test]
-    async fn test_cpmm_round_trip() {
-        let pool_id = Pubkey::from_str_const("BSh8SjXvauDvNRAzsVGibW1kB8eaaXWJYnf36SC9T7HC");
-        let (mut cpmm, accounts, clock) = build_from_pool_id(pool_id).await;
-
-        let sol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
-        let no_fee = MintFee::ZERO;
-
-        // 1. Print all account pubkeys
-        eprintln!("\n=== Account Pubkeys ===");
-        eprintln!("base_mint        : {}", cpmm.base_token_pk);
-        eprintln!("quote_mint       : {}", cpmm.quote_token_pk);
-        eprintln!("pool_id          : {}", accounts[2 + D_POOL].key);
-        eprintln!("base_vault       : {}", accounts[2 + D_BASE_VAULT].key);
-        eprintln!("quote_vault      : {}", accounts[2 + D_QUOTE_VAULT].key);
-        eprintln!("amm_config       : {}", accounts[2 + D_AMM_CONFIG].key);
-        eprintln!("observation      : {}", accounts[2 + D_OBSERVATION].key);
-        eprintln!("program_id       : {}", accounts[S_PROGRAM_ID].key);
-        eprintln!("vault_authority  : {}", accounts[S_VAULT_AUTHORITY].key);
-
-        // 2. Prices
-        let (price, inverse_price) = cpmm.get_prices().unwrap();
-        eprintln!("\n=== Prices ===");
-        eprintln!("price            : {}", price);
-        eprintln!("inverse_price    : {}", inverse_price);
-
-        // 3. Fees
-        let (fee_factor, fee_factor_2) = cpmm.get_fee_factor().unwrap();
-        eprintln!("\n=== Fees ===");
-        eprintln!("total_fee_num    : {}", cpmm.total_fee_numerator);
-        eprintln!("fee_factor       : {}", fee_factor);
-        eprintln!("fee_factor_2     : {}", fee_factor_2);
-
-        // 4. Max amounts
-        eprintln!("\n=== After prepare_for_execution ===");
-        eprintln!("buy_max_in       : {}", cpmm.buy_max_in);
-        eprintln!("buy_max_out      : {}", cpmm.buy_max_out);
-        eprintln!("sell_max_in      : {}", cpmm.sell_max_in);
-        eprintln!("sell_max_out     : {}", cpmm.sell_max_out);
-
-        // 5. Round-trip with start_amount = 1 WSOL
-        let start_amount: u64 = 1_000_000_000;
-
-        let other_mint = if cpmm.base_token_pk == sol_mint {
-            cpmm.quote_token_pk
-        } else {
-            cpmm.base_token_pk
-        };
-
-        let rpc = get_rpc_client();
-        let other_mint_account = rpc.get_account(
-            &SdkPubkey::try_from(other_mint.to_bytes().as_ref()).unwrap()
-        ).await.unwrap();
-        let token_decimals = other_mint_account.data[44] as i32;
-        let sol_div = 10f64.powi(9);
-        let tok_div = 10f64.powi(token_decimals);
-
-        // Direction 1: SOL -> TOKEN -> SOL
-        eprintln!("\n=== Direction 1: SOL -> TOKEN -> SOL ===");
-        let token_out = cpmm.swap_base_in(
-            &accounts, sol_mint, start_amount, no_fee, no_fee, &clock,
-        ).unwrap();
-        let max_sol_in = cpmm.swap_base_out(
-            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
-        ).unwrap();
-        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", start_amount as f64 / sol_div, token_out as f64 / tok_div, max_sol_in as f64 / sol_div);
-
-        // Direction 2: TOKEN -> SOL -> TOKEN
-        eprintln!("\n=== Direction 2: TOKEN -> SOL -> TOKEN ===");
-        let sol_out = cpmm.swap_base_in(
-            &accounts, other_mint, token_out, no_fee, no_fee, &clock,
-        ).unwrap();
-        let max_token_in = cpmm.swap_base_out(
-            &accounts, sol_mint, sol_out, no_fee, no_fee, &clock,
-        ).unwrap();
-        eprintln!("AMOUNT_IN {} -> AMOUNT_OUT {} -> MAX_AMOUNT_IN {}", token_out as f64 / tok_div, sol_out as f64 / sol_div, max_token_in as f64 / tok_div);
-    }
-}
+mod tests {}

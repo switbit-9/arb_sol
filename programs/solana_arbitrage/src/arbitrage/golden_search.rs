@@ -1,8 +1,14 @@
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use crate::utils::token::{get_transfer_fees, MintFee};
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token::native_mint::ID as WSOL;
+use pinocchio::account_info::AccountInfo;
+use pinocchio::program_error::ProgramError;
+use pinocchio::pubkey::Pubkey;
+use pinocchio::sysvars::clock::Clock;
+
+type Result<T> = core::result::Result<T, ProgramError>;
+
+const WSOL: Pubkey = five8_const::decode_32_const("So11111111111111111111111111111111111111112");
 
 /// Maximum golden-section iterations. 50 iterations on a 1 SOL range narrows
 /// well below 1 lamport — fully exhaustive.
@@ -20,8 +26,8 @@ fn golden_div(x: u64) -> u64 {
 /// Simulate a 2-hop swap: buy on pool `buy_idx`, sell on pool `sell_idx`.
 /// Returns profit = final_output - amount_in.
 #[inline]
-fn simulate_2hop<'info>(
-    accounts: &[AccountInfo<'info>],
+fn simulate_2hop(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     buy_idx: usize,
     sell_idx: usize,
@@ -46,8 +52,8 @@ fn simulate_2hop<'info>(
 
 /// Simulate a 3-hop swap and return profit.
 #[inline]
-fn simulate_3hop<'info>(
-    accounts: &[AccountInfo<'info>],
+fn simulate_3hop(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     indices: &[usize; 3],
     mints: &[Pubkey; 4],
@@ -80,8 +86,8 @@ pub struct GoldenSearchResult {
 /// For every (buy, sell) pair it runs a full golden-section search to find the
 /// input amount that maximises profit, then returns the best pair + amount.
 /// This is the ground-truth reference — accurate but expensive (many swap calls).
-pub fn golden_search_2hop<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn golden_search_2hop(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     config: &BotConfig,
     mint_fees: &[(Pubkey, MintFee)],
@@ -122,8 +128,8 @@ pub fn golden_search_2hop<'info>(
 
 /// Run golden-section search on a single (buy, sell) pair.
 /// Returns `Some((optimal_amount, profit))` or `None` if the pair errors out.
-fn golden_section_on_pair<'info>(
-    accounts: &[AccountInfo<'info>],
+fn golden_section_on_pair(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     buy_idx: usize,
     sell_idx: usize,
@@ -179,8 +185,8 @@ pub struct GoldenSearch3HopResult {
 }
 
 /// Golden-section search for a specific 3-hop path using real `swap_base_in`.
-pub fn golden_search_3hop_path<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn golden_search_3hop_path(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     indices: &[usize; 3],
     mints: &[Pubkey; 4],

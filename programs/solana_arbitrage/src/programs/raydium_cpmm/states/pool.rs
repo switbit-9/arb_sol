@@ -1,7 +1,7 @@
 use crate::programs::raydium_cpmm::curve::TradeDirection;
 use crate::programs::raydium_cpmm::error::ErrorCode;
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::Mint;
+use crate::programs::Result;
+use pinocchio::pubkey::Pubkey;
 use std::ops::{BitAnd, BitOr, BitXor};
 /// Seed to derive account address and signature
 pub const POOL_SEED: &str = "pool";
@@ -22,7 +22,7 @@ pub enum PoolStatusBitFlag {
     Disable,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreatorFeeOn {
     /// Both token0 and token1 can be used as trade fees.
     /// It depends on what the input token is.
@@ -61,9 +61,8 @@ pub struct SwapParams {
     pub is_creator_fee_on_input: bool,
 }
 
-#[account(zero_copy(unsafe))]
 #[repr(C, packed)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct PoolState {
     /// Which config the pool belongs
     pub amm_config: Pubkey,
@@ -141,35 +140,40 @@ impl PoolState {
         amm_config: Pubkey,
         token_0_vault: Pubkey,
         token_1_vault: Pubkey,
-        token_0_mint: &InterfaceAccount<Mint>,
-        token_1_mint: &InterfaceAccount<Mint>,
+        token_0_mint: Pubkey,
+        token_1_mint: Pubkey,
+        token_0_program: Pubkey,
+        token_1_program: Pubkey,
+        mint_0_decimals: u8,
+        mint_1_decimals: u8,
         lp_mint: Pubkey,
         lp_mint_decimals: u8,
         observation_key: Pubkey,
         creator_fee_on: CreatorFeeOn,
         enable_creator_fee: bool,
+        recent_epoch: u64,
     ) {
-        self.amm_config = amm_config.key();
-        self.pool_creator = pool_creator.key();
+        self.amm_config = amm_config;
+        self.pool_creator = pool_creator;
         self.token_0_vault = token_0_vault;
         self.token_1_vault = token_1_vault;
-        self.lp_mint = lp_mint.key();
-        self.token_0_mint = token_0_mint.key();
-        self.token_1_mint = token_1_mint.key();
-        self.token_0_program = *token_0_mint.to_account_info().owner;
-        self.token_1_program = *token_1_mint.to_account_info().owner;
+        self.lp_mint = lp_mint;
+        self.token_0_mint = token_0_mint;
+        self.token_1_mint = token_1_mint;
+        self.token_0_program = token_0_program;
+        self.token_1_program = token_1_program;
         self.observation_key = observation_key;
         self.auth_bump = auth_bump;
         self.lp_mint_decimals = lp_mint_decimals;
-        self.mint_0_decimals = token_0_mint.decimals;
-        self.mint_1_decimals = token_1_mint.decimals;
+        self.mint_0_decimals = mint_0_decimals;
+        self.mint_1_decimals = mint_1_decimals;
         self.lp_supply = lp_supply;
         self.protocol_fees_token_0 = 0;
         self.protocol_fees_token_1 = 0;
         self.fund_fees_token_0 = 0;
         self.fund_fees_token_1 = 0;
         self.open_time = open_time;
-        self.recent_epoch = Clock::get().unwrap().epoch;
+        self.recent_epoch = recent_epoch;
         self.creator_fee_on = creator_fee_on.to_u8();
         self.enable_creator_fee = enable_creator_fee;
         self.padding1 = [0u8; 6];
@@ -304,7 +308,7 @@ impl PoolState {
                 self.is_creator_fee_on_input(TradeDirection::OneForZero)?,
             )
         } else {
-            return err!(ErrorCode::InvalidVault);
+            return Err(ErrorCode::InvalidVault.into());
         };
         Ok(SwapParams {
             trade_direction,
@@ -332,7 +336,7 @@ impl PoolState {
         direction: TradeDirection,
     ) -> Result<()> {
         if !self.enable_creator_fee {
-            require_eq!(creator_fee, 0)
+            if creator_fee != 0 { return Err(ErrorCode::InvalidFeeModel.into()); }
         }
         let is_creator_fee_on_input = self.is_creator_fee_on_input(direction)?;
         match direction {

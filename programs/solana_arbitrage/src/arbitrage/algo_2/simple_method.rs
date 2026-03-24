@@ -1,14 +1,21 @@
 use crate::arbitrage::base::{Edge, EdgeSide, Pool};
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
-use anchor_lang::prelude::*;
+use pinocchio::account_info::AccountInfo;
+use pinocchio::program_error::ProgramError;
+use pinocchio::pubkey::Pubkey;
 use std::collections::HashMap;
 
-/// Format a pubkey as short string: first4..last4
+type Result<T> = core::result::Result<T, ProgramError>;
+
+/// Format a pubkey as short hex string: first4bytes..last4bytes
 #[cfg(any(test, feature = "debug"))]
 fn short_key(key: &Pubkey) -> String {
-    let s = key.to_string();
-    format!("{}..{}", &s[..4], &s[s.len() - 4..])
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}..{:02x}{:02x}{:02x}{:02x}",
+        key[0], key[1], key[2], key[3],
+        key[28], key[29], key[30], key[31]
+    )
 }
 
 /// Format arbitrage path as a readable route string.
@@ -48,8 +55,8 @@ fn build_pool_index(
 /// Call fast_quote on the program instance for the given edge.
 /// Returns (actual_amount_in, amount_out) — programs clamp to their max amounts.
 #[inline]
-fn edge_fast_quote<'a>(
-    accounts: &[AccountInfo<'a>],
+fn edge_fast_quote(
+    accounts: &[AccountInfo],
     edge: &Edge,
     amount_in: u64,
     pool_index: &HashMap<Pubkey, usize>,
@@ -64,8 +71,8 @@ fn edge_fast_quote<'a>(
 /// Highly efficient iterative check for 2-hop (Cross) Arbitrage.
 /// O(E) complexity. Safe for on-chain execution (no recursion).
 /// Path: Start -> Token B -> Start
-pub fn find_cross_arbitrage_iterative<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn find_cross_arbitrage_iterative(
+    accounts: &[AccountInfo],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -188,8 +195,8 @@ pub fn find_cross_arbitrage_iterative<'info>(
 /// Optimized O(E) check for 3-hop (Triangular) Arbitrage using Map lookup.
 /// Best performance for on-chain execution.
 /// Path: Start -> Token B -> Token C -> Start
-pub fn find_triangular_arbitrage_iterative<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn find_triangular_arbitrage_iterative(
+    accounts: &[AccountInfo],
     edges: &[&Edge],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
@@ -339,11 +346,11 @@ pub fn generate_edges(program: &ProgramInstance) -> Result<Vec<Edge>> {
     {
         debug_eprintln!("================================================");
         debug_eprintln!(
-            "Gen Edges: {:?} Pool={} Base={} Quote={} P={} IP={} F={} IF={}",
-            program_id,
-            pool_id,
-            base_mint,
-            quote_mint,
+            "Gen Edges: {} Pool={} Base={} Quote={} P={} IP={} F={} IF={}",
+            short_key(&program_id),
+            short_key(&pool_id),
+            short_key(base_mint),
+            short_key(quote_mint),
             price,
             inverse_price,
             fee_a_to_b,
@@ -397,8 +404,8 @@ pub fn get_edges(instances: &[ProgramInstance]) -> Result<Vec<Edge>> {
     Ok(edges)
 }
 
-pub fn check_arbitrage<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn check_arbitrage(
+    accounts: &[AccountInfo],
     instances: &mut [ProgramInstance],
     config: &mut BotConfig,
 ) -> Result<(Vec<Edge>, i128, u128)> {

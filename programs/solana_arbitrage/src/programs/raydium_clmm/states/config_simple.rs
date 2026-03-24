@@ -1,4 +1,6 @@
-use anchor_lang::prelude::*;
+use pinocchio::pubkey::Pubkey;
+use pinocchio::program_error::ProgramError;
+use crate::programs::SolarBError;
 use bytemuck::{Pod, Zeroable};
 
 pub const FEE_RATE_DENOMINATOR_VALUE: u32 = 1_000_000;
@@ -39,10 +41,10 @@ impl AmmConfigSimple {
     /// Size without discriminator: 1 + 2 + 32 + 4 + 4 + 2 + 4 + 4 + 32 + 24 = 109 bytes
     pub const LEN: usize = 1 + 2 + 32 + 4 + 4 + 2 + 4 + 4 + 32 + 24;
 
-    pub fn try_from_bytes(data: &[u8]) -> Result<Self> {
+    pub fn try_from_bytes(data: &[u8]) -> core::result::Result<Self, ProgramError> {
         let struct_size = std::mem::size_of::<Self>();
         if data.len() < 8 + struct_size {
-            return Err(anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into());
+            return Err(ProgramError::from(SolarBError::InsufficientAccounts));
         }
         Ok(bytemuck::pod_read_unaligned(&data[8..8 + struct_size]))
     }

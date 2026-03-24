@@ -1,4 +1,4 @@
-use anchor_lang::prelude::Result;
+use crate::programs::Result;
 use num_traits::cast::FromPrimitive;
 use ruint::aliases::U256;
 

@@ -1,6 +1,6 @@
 use super::pool_model::PoolModel;
 use crate::programs::ProgramMeta;
-use anchor_lang::prelude::*;
+use pinocchio::{account_info::AccountInfo, pubkey::Pubkey};
 
 /// Debug context for analytical_estimate logging.
 pub struct EstimateDebugCtx {
@@ -691,8 +691,8 @@ pub fn analytical_estimate(
         if let Some(ctx) = debug_ctx {
             debug_eprintln!("");
             debug_eprintln!(
-                "ESTIMATE {}+{} pool1={} pool2={} {} -> {} P={:.4}%, fee1={:.4}%, fee2={:.4}%, p1={:.6}, p2={:.6}, profit={:.6} (input={:.6} mid={:.6} out={:.6} dlmm={})",
-                pool1.label(), pool2.label(), ctx.pool1_id, ctx.pool2_id, ctx.start_mint, ctx.middle_mint,
+                "ESTIMATE {}+{} pool1={:02x?}.. pool2={:02x?}.. {:02x?}.. -> {:02x?}.. P={:.4}%, fee1={:.4}%, fee2={:.4}%, p1={:.6}, p2={:.6}, profit={:.6} (input={:.6} mid={:.6} out={:.6} dlmm={})",
+                pool1.label(), pool2.label(), &ctx.pool1_id[..4], &ctx.pool2_id[..4], &ctx.start_mint[..4], &ctx.middle_mint[..4],
                 price_diff_pct, (1.0 - f1) * 100.0, (1.0 - f2) * 100.0, p1_buy, p2_buy, profit / 1e9,
                 input_amount / 1e9, middle_amount / 1e9, output_amount / 1e9, result.dlmm_capped
             );
@@ -935,8 +935,8 @@ enum CpFeeType {
 /// - We run out of bin data or max_amount_in
 ///
 /// Returns `Some((optimal_amount, estimated_profit))` or `None` if no improvement.
-pub fn analytical_optimal_multibin<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn analytical_optimal_multibin(
+    accounts: &[AccountInfo],
     dlmm_instance: &dyn ProgramMeta,
     input_mint: Pubkey,
     pool1: &PoolModel,
@@ -1105,10 +1105,11 @@ pub fn analytical_optimal_multibin<'info>(
             best_profit = boundary_profit;
         }
 
-        // Marginal rate early-exit: check if the composed marginal rate at the
-        // boundary can still exceed 1.0 with the current bin's slope.
-        // If the marginal is already <= 1 at this slope, no future bin (with
-        // worse slope) can improve things.
+        // Marginal rate early-exit: peek at the ACTUAL next non-empty bin's
+        // real slope (real price × real variable fee from get_bin_segment),
+        // then check if combined with the CP marginal it can still exceed 1.0.
+        // Using the next bin's real slope avoids the optimism bias of re-using
+        // the current bin's (better) slope for a future-bin decision.
         //
         // CP marginal at boundary:
         //   Pool2 (CP→DLMM): d(mid)/d(dx) evaluated at dx = boundary_amount
@@ -1137,9 +1138,34 @@ pub fn analytical_optimal_multibin<'info>(
                 f_amm * r_in * r_out / (denom * denom)
             }
         };
-        // Composed marginal: DLMM_slope × CP_marginal (or CP_marginal × DLMM_slope).
-        // Must exceed 1.0 for the next unit to be profitable.
-        if bin_slope * cp_marginal <= 1.0 {
+
+        // Peek ahead: find the next non-empty bin (up to 4 ahead) and use its
+        // real slope (actual bin price × actual variable fee) for the gate check.
+        // Skip empty bins; if no next bin exists at all, stop walking.
+        let next_bin_slope: f64 = {
+            let mut found = 0.0f64;
+            for peek in 1..=4i32 {
+                match dlmm_instance.get_bin_segment(accounts, input_mint, bin_offset + peek) {
+                    Ok(Some((s, c, _f))) if s > 0.0 && c > 0 => {
+                        found = s;
+                        break;
+                    }
+                    Ok(Some(_)) => continue, // empty bin — keep peeking
+                    _ => break,              // no more bins
+                }
+            }
+            found
+        };
+
+        // If there is no next bin at all, the current bin was the last one —
+        // there is nowhere to continue, so stop the outer walk.
+        if next_bin_slope == 0.0 {
+            break;
+        }
+
+        // Composed marginal using NEXT bin's real slope.
+        // Must exceed 1.0 for the next bin to be worth entering.
+        if next_bin_slope * cp_marginal <= 1.0 {
             break;
         }
 
@@ -1216,8 +1242,8 @@ enum CpFee { OnInput, OnOutput }
 /// The composed function (CP + CP-per-tick) has a closed-form optimal per segment.
 ///
 /// Returns `Some((optimal_amount, estimated_profit))` or `None`.
-pub fn analytical_optimal_clmm_cp<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn analytical_optimal_clmm_cp(
+    accounts: &[AccountInfo],
     clmm_instance: &dyn ProgramMeta,
     clmm_input_mint: Pubkey,
     pool1: &PoolModel,
@@ -1529,8 +1555,8 @@ fn compute_clmm_profit(
 /// We greedily fill bin pairs while profitable, advancing whichever bin is exhausted first.
 ///
 /// Returns `Some((optimal_amount, estimated_profit))` or `None`.
-pub fn analytical_optimal_dlmm_dlmm<'info>(
-    accounts: &[AccountInfo<'info>],
+pub fn analytical_optimal_dlmm_dlmm(
+    accounts: &[AccountInfo],
     buy_instance: &dyn ProgramMeta,
     sell_instance: &dyn ProgramMeta,
     buy_input_mint: Pubkey,

@@ -9,7 +9,7 @@ use super::super::{
     state::pool::CollectFeeMode,
     PoolError,
 };
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use super::BaseFeeHandler;
@@ -88,22 +88,18 @@ impl BaseFeeHandler for FeeScheduler {
         _activation_type: ActivationType,
     ) -> Result<()> {
         if self.period_frequency != 0 || self.number_of_period != 0 || self.reduction_factor != 0 {
-            require!(
-                self.number_of_period != 0
-                    && self.period_frequency != 0
-                    && self.reduction_factor != 0,
-                PoolError::InvalidFeeScheduler
-            );
+            if !(self.number_of_period != 0 && self.period_frequency != 0 && self.reduction_factor != 0) {
+                return Err(PoolError::InvalidFeeScheduler.into());
+            }
         }
         let min_fee_numerator = self.get_min_base_fee_numerator()?;
         let max_fee_numerator = self.get_max_base_fee_numerator();
         validate_fee_fraction(min_fee_numerator, FEE_DENOMINATOR)?;
         validate_fee_fraction(max_fee_numerator, FEE_DENOMINATOR)?;
-        require!(
-            min_fee_numerator >= MIN_FEE_NUMERATOR
-                && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?,
-            PoolError::ExceedMaxFeeBps
-        );
+        if !(min_fee_numerator >= MIN_FEE_NUMERATOR
+            && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?) {
+            return Err(PoolError::ExceedMaxFeeBps.into());
+        }
         Ok(())
     }
 

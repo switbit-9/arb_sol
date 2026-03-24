@@ -16,7 +16,7 @@ use super::super::{
 };
 
 use super::BaseFeeHandler;
-use anchor_lang::prelude::*;
+use crate::programs::Result;
 use num_integer::Integer;
 use ruint::aliases::U256;
 
@@ -277,10 +277,7 @@ impl FeeRateLimiter {
         )?;
 
         // sanity check
-        require!(
-            fee_numerator >= self.cliff_fee_numerator,
-            PoolError::UndeterminedError
-        );
+        if !(fee_numerator >= self.cliff_fee_numerator) { return Err(PoolError::UndeterminedError.into()); }
         Ok(fee_numerator)
     }
 }
@@ -291,61 +288,42 @@ impl BaseFeeHandler for FeeRateLimiter {
         collect_fee_mode: CollectFeeMode,
         activation_type: ActivationType,
     ) -> Result<()> {
-        // can only be applied in OnlyB collect fee mode
-        require!(
-            collect_fee_mode == CollectFeeMode::OnlyB,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if collect_fee_mode != CollectFeeMode::OnlyB { return Err(PoolError::InvalidFeeRateLimiter.into()); }
         let max_fee_numerator_from_bps =
             to_numerator(self.max_fee_bps.into(), FEE_DENOMINATOR.into())?;
 
-        require!(
-            self.cliff_fee_numerator >= MIN_FEE_NUMERATOR
-                && self.cliff_fee_numerator <= max_fee_numerator_from_bps,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if !(self.cliff_fee_numerator >= MIN_FEE_NUMERATOR
+            && self.cliff_fee_numerator <= max_fee_numerator_from_bps) {
+            return Err(PoolError::InvalidFeeRateLimiter.into());
+        }
 
         if self.is_zero_rate_limiter() {
             return Ok(());
         }
 
-        require!(
-            self.is_non_zero_rate_limiter(),
-            PoolError::InvalidFeeRateLimiter
-        );
+        if !self.is_non_zero_rate_limiter() { return Err(PoolError::InvalidFeeRateLimiter.into()); }
 
         let max_limiter_duration = match activation_type {
             ActivationType::Slot => MAX_RATE_LIMITER_DURATION_IN_SLOTS,
             ActivationType::Timestamp => MAX_RATE_LIMITER_DURATION_IN_SECONDS,
         };
 
-        require!(
-            self.max_limiter_duration <= max_limiter_duration,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if self.max_limiter_duration > max_limiter_duration { return Err(PoolError::InvalidFeeRateLimiter.into()); }
 
         let fee_increment_numerator =
             to_numerator(self.fee_increment_bps.into(), FEE_DENOMINATOR.into())?;
-        require!(
-            fee_increment_numerator < FEE_DENOMINATOR,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if fee_increment_numerator >= FEE_DENOMINATOR { return Err(PoolError::InvalidFeeRateLimiter.into()); }
 
         let max_fee_bps_u64 =
             u64::try_from(self.max_fee_bps).map_err(|_| PoolError::TypeCastFailed)?;
-        require!(
-            max_fee_bps_u64 <= get_max_fee_bps(CURRENT_POOL_VERSION)?,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if max_fee_bps_u64 > get_max_fee_bps(CURRENT_POOL_VERSION)? { return Err(PoolError::InvalidFeeRateLimiter.into()); }
 
-        // validate max fee (more amount, then more fee)
         let min_fee_numerator = self.get_fee_numerator_from_included_fee_amount(0)?;
         let max_fee_numerator = self.get_fee_numerator_from_included_fee_amount(u64::MAX)?;
-        require!(
-            min_fee_numerator >= MIN_FEE_NUMERATOR
-                && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?,
-            PoolError::InvalidFeeRateLimiter
-        );
+        if !(min_fee_numerator >= MIN_FEE_NUMERATOR
+            && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?) {
+            return Err(PoolError::InvalidFeeRateLimiter.into());
+        }
 
         Ok(())
     }
