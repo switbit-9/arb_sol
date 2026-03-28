@@ -40,6 +40,10 @@ struct PoolInfo {
     buy_price_q32: u64,
     sell_price_q32: u64,
     kind: PoolKind,
+    /// Depth proxy for buy direction (start_token → mid_token): max input in start_token lamports.
+    buy_depth: u64,
+    /// Depth proxy for sell direction (mid_token → start_token): max input in mid_token lamports.
+    sell_depth: u64,
 }
 
 /// Extract arbitrage_checker pools from ProgramInstance and run the checker.
@@ -68,6 +72,8 @@ pub fn run_arb_checker<'info>(
         buy_price_q32: 0,
         sell_price_q32: 0,
         kind: PoolKind::PumpAmm,
+        buy_depth: 0,
+        sell_depth: 0,
     } }; MAX_POOLS]);
     for i in 0..n {
         let inst = &instances[i];
@@ -86,12 +92,34 @@ pub fn run_arb_checker<'info>(
         let eff_qtb_q32 = (price_qtb * fee_qtb * Q32) as u64;
         let buy = if start_token == *base { eff_btq_q32 } else { eff_qtb_q32 };
         let sell = if middle_mint == *base { eff_btq_q32 } else { eff_qtb_q32 };
+        // Compute liquidity depth proxy per direction (~20-200 CU per pool).
+        // buy_depth: max start_token this pool can absorb as buy pool (start_token lamports).
+        // sell_depth: max mid_token this pool can absorb as sell pool (mid_token lamports).
+        // For AMMs, input reserve ≈ max useful input before extreme slippage.
+        // For DLMM, active bin capacity in the input denomination.
+        let kind = inst.pool_kind();
+        let (buy_depth, sell_depth) = if kind == PoolKind::MeteoraDlmm {
+            let bd = inst.get_active_bin_max_in(start_token).unwrap_or(0);
+            let sd = inst.get_active_bin_max_in(middle_mint).unwrap_or(0);
+            (bd, sd)
+        } else if let Ok((base_v, quote_v)) = inst.get_vault_amounts() {
+            // start_token reserve = buy_depth, mid_token reserve = sell_depth
+            if start_token == *base {
+                (base_v, quote_v)
+            } else {
+                (quote_v, base_v)
+            }
+        } else {
+            (0, 0)
+        };
         info[i] = PoolInfo {
             base: *base,
             quote: *quote,
             buy_price_q32: buy,
             sell_price_q32: sell,
-            kind: inst.pool_kind(),
+            kind,
+            buy_depth,
+            sell_depth,
         };
     }
     msg!("  [CU] price_extract: {}", cu_price_start.saturating_sub(sol_remaining_cu()));
@@ -106,9 +134,10 @@ pub fn run_arb_checker<'info>(
         bi: u8,
         si: u8,
         excess: u128,
+        score: u128, // excess * min(buy_depth, sell_depth, max_in) — estimated absolute profit
     }
 
-    let mut candidates: [Candidate; MAX_CANDIDATES] = [const { Candidate { bi: 0, si: 0, excess: 0 } }; MAX_CANDIDATES];
+    let mut candidates: [Candidate; MAX_CANDIDATES] = [const { Candidate { bi: 0, si: 0, excess: 0, score: 0 } }; MAX_CANDIDATES];
     let mut cand_count: usize = 0;
 
     for bi in 0..n {
@@ -153,28 +182,40 @@ pub fn run_arb_checker<'info>(
 
             if (max_in as u128).saturating_mul(excess) <= 5000u128 << 64 { continue; }
 
+            // Depth-weighted score: approximate absolute profit.
+            // buy_depth is in start_token lamports (max start_token the buy pool absorbs).
+            // sell_depth is in mid_token lamports (max mid_token the sell pool absorbs).
+            // Convert sell_depth → start_token via buy price:
+            //   sell_depth_start = sell_depth * 2^32 / buy_price_q32
+            let sell_depth_start = if bi_info.buy_price_q32 > 0 {
+                ((si_info.sell_depth as u128) << 32) / (bi_info.buy_price_q32 as u128)
+            } else { 0 } as u64;
+            let pair_depth = bi_info.buy_depth.min(sell_depth_start).min(max_in) as u128;
+            let score = (excess >> 32).saturating_mul(pair_depth);
+
             if cand_count < MAX_CANDIDATES {
-                candidates[cand_count] = Candidate { bi: bi as u8, si: si as u8, excess };
+                candidates[cand_count] = Candidate { bi: bi as u8, si: si as u8, excess, score };
                 cand_count += 1;
             }
         }
     }
 
-    // Sort candidates descending by excess (insertion sort — tiny array)
+    // Sort candidates descending by score (insertion sort — tiny array).
+    // Score = excess * min_depth approximates absolute profit.
     for i in 1..cand_count {
         let mut j = i;
-        while j > 0 && candidates[j].excess > candidates[j - 1].excess {
+        while j > 0 && candidates[j].score > candidates[j - 1].score {
             candidates.swap(j, j - 1);
             j -= 1;
         }
     }
 
-    debug_eprintln!("checker: {} candidates ranked by excess", cand_count);
+    debug_eprintln!("checker: {} candidates ranked by score", cand_count);
     msg!("  [CU] n2_filter+sort: {}", cu_n2_start.saturating_sub(sol_remaining_cu()));
 
     // ---------- Phase 2: Check top-2, then fallback ----------
-    // Run checker on #1 and #2. If both profit → take best. If one profits → take it.
-    // If neither profits → continue down the ranked list, execute first profitable.
+    // Run checker on #1 and #2. If either profits → take best and return immediately.
+    // If neither profits → continue down the ranked list, return first profitable.
     let mut pools: Box<[Option<Option<CheckerPool>>; MAX_POOLS]> = Box::new([const { None }; MAX_POOLS]);
     let mut buy_flags: [bool; MAX_POOLS] = [false; MAX_POOLS];
     let mut sell_flags: [bool; MAX_POOLS] = [false; MAX_POOLS];
@@ -299,6 +340,17 @@ pub fn run_arb_checker<'info>(
             best.hops[0] = Hop { instance_idx: bi as u8, left_to_right: buy_ltr };
             best.hops[1] = Hop { instance_idx: si as u8, left_to_right: sell_ltr };
             best.hop_count = 2;
+        }
+
+        // Early exit: after checking top-2 candidates, if we found profit → return.
+        // Beyond top-2, return immediately on first profitable result.
+        if ci == 1 && best.profit > 0 {
+            debug_eprintln!("checker: early exit after top-2 (profit={})", best.profit);
+            return best;
+        }
+        if ci >= 2 && best.profit > 0 {
+            debug_eprintln!("checker: fallback exit at cand#{} (profit={})", ci, best.profit);
+            return best;
         }
 
     }
