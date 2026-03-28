@@ -33,28 +33,21 @@ pub struct DlmmPool {
     pub max_volatility_accumulator: u32,
     // Pre-computed base fee (constant for a given pool)
     base_fee_cached: u128,
-    // Bins split by swap direction — each loaded from its own bin array (no merge/sort).
-    // Already sorted (sequential within a single bin array).
-    bins_sfy: [DlmmBin; MAX_BINS_PER_DIR],  // used when swap_for_y = true
-    bins_sfy_count: usize,
-    bins_sfx: [DlmmBin; MAX_BINS_PER_DIR],  // used when swap_for_y = false
-    bins_sfx_count: usize,
+    // Account-backed bin access: bins are read from account data on demand.
+    // acc_idx = index into the accounts[] slice passed to read_bin / quote methods.
+    pub(crate) sfy_acc_idx: usize,
+    pub(crate) sfx_acc_idx: usize,
+    pub(crate) sfy_lower_bin_id: i32,
+    pub(crate) sfx_lower_bin_id: i32,
+    pub(crate) sfy_range: (u8, u8),  // (start, end) bin positions in the 70-slot array
+    pub(crate) sfx_range: (u8, u8),
 }
 
 impl DlmmPool {
-    /// Access bins for a given swap direction.
-    #[inline]
-    pub fn bins(&self, swap_for_y: bool) -> &[DlmmBin] {
-        if swap_for_y {
-            &self.bins_sfy[..self.bins_sfy_count]
-        } else {
-            &self.bins_sfx[..self.bins_sfx_count]
-        }
-    }
-
-    /// Construct from a slice of bins (for tests and off-chain callers).
-    /// Bins are placed in both sfy and sfx arrays so the pool works in either direction.
-    pub fn new(
+    /// Construct a pool with config only. Bin access is account-backed:
+    /// call `set_bin_source()` to specify which accounts hold the bin arrays,
+    /// then use `read_bin()` to read individual bins on demand.
+    pub fn new_config(
         active_id: i32,
         bin_step: u16,
         base_factor: u16,
@@ -64,14 +57,7 @@ impl DlmmPool {
         volatility_reference: u32,
         index_reference: i32,
         max_volatility_accumulator: u32,
-        bins: &[DlmmBin],
     ) -> Self {
-        let count = bins.len().min(MAX_BINS_PER_DIR);
-        let empty = [DlmmBin { id: 0, amount_x: 0, amount_y: 0, price: 0 }; MAX_BINS_PER_DIR];
-        let mut sfy = empty;
-        let mut sfx = empty;
-        sfy[..count].clone_from_slice(&bins[..count]);
-        sfx[..count].clone_from_slice(&bins[..count]);
         let base_fee_cached = (base_factor as u128)
             * (bin_step as u128)
             * 10u128
@@ -87,100 +73,62 @@ impl DlmmPool {
             index_reference,
             max_volatility_accumulator,
             base_fee_cached,
-            bins_sfy: sfy,
-            bins_sfy_count: count,
-            bins_sfx: sfx,
-            bins_sfx_count: count,
+            sfy_acc_idx: usize::MAX,
+            sfx_acc_idx: usize::MAX,
+            sfy_lower_bin_id: 0,
+            sfx_lower_bin_id: 0,
+            sfy_range: (0, 0),
+            sfx_range: (0, 0),
         }
     }
 
-    /// Push a bin for a given swap direction. Returns false if storage is full.
+    /// Set which account holds bin data for a given swap direction.
+    /// `acc_idx`: index into the accounts[] slice.
+    /// `lower_bin_id`: first bin id of the bin array (bin_array_index * 70).
+    /// `start`, `end`: range of bin positions (0..70) to iterate.
     #[inline]
-    pub fn push_bin(&mut self, bin: DlmmBin, swap_for_y: bool) -> bool {
+    pub fn set_bin_source(&mut self, swap_for_y: bool, acc_idx: usize, lower_bin_id: i32, start: u8, end: u8) {
         if swap_for_y {
-            if self.bins_sfy_count >= MAX_BINS_PER_DIR { return false; }
-            self.bins_sfy[self.bins_sfy_count] = bin;
-            self.bins_sfy_count += 1;
+            self.sfy_acc_idx = acc_idx;
+            self.sfy_lower_bin_id = lower_bin_id;
+            self.sfy_range = (start, end);
         } else {
-            if self.bins_sfx_count >= MAX_BINS_PER_DIR { return false; }
-            self.bins_sfx[self.bins_sfx_count] = bin;
-            self.bins_sfx_count += 1;
-        }
-        true
-    }
-
-    /// Create an empty pool (bins added later via push_bin).
-    pub fn empty(
-        active_id: i32,
-        bin_step: u16,
-        base_factor: u16,
-        base_fee_power_factor: u8,
-        variable_fee_control: u32,
-        volatility_accumulator: u32,
-        volatility_reference: u32,
-        index_reference: i32,
-        max_volatility_accumulator: u32,
-    ) -> Self {
-        let base_fee_cached = (base_factor as u128)
-            * (bin_step as u128)
-            * 10u128
-            * 10u128.pow(base_fee_power_factor as u32);
-        let empty_bins = [DlmmBin { id: 0, amount_x: 0, amount_y: 0, price: 0 }; MAX_BINS_PER_DIR];
-        Self {
-            active_id,
-            bin_step,
-            base_factor,
-            base_fee_power_factor,
-            variable_fee_control,
-            volatility_accumulator,
-            volatility_reference,
-            index_reference,
-            max_volatility_accumulator,
-            base_fee_cached,
-            bins_sfy: empty_bins,
-            bins_sfy_count: 0,
-            bins_sfx: empty_bins,
-            bins_sfx_count: 0,
+            self.sfx_acc_idx = acc_idx;
+            self.sfx_lower_bin_id = lower_bin_id;
+            self.sfx_range = (start, end);
         }
     }
 
-    /// Heap-allocate an empty pool directly, avoiding the 5KB stack intermediate.
-    pub fn box_empty(
-        active_id: i32,
-        bin_step: u16,
-        base_factor: u16,
-        base_fee_power_factor: u8,
-        variable_fee_control: u32,
-        volatility_accumulator: u32,
-        volatility_reference: u32,
-        index_reference: i32,
-        max_volatility_accumulator: u32,
-    ) -> Box<Self> {
-        let base_fee_cached = (base_factor as u128)
-            * (bin_step as u128)
-            * 10u128
-            * 10u128.pow(base_fee_power_factor as u32);
-        // Allocate zeroed on heap via Vec to avoid putting 5KB DlmmPool on the stack.
-        let size = core::mem::size_of::<Self>();
-        let align = core::mem::align_of::<Self>();
-        let mut bytes: Vec<u8> = vec![0u8; size + align];
-        let offset = bytes.as_ptr().align_offset(align);
-        let ptr = unsafe { bytes.as_mut_ptr().add(offset) as *mut Self };
-        core::mem::forget(bytes); // prevent dealloc, Box will own it
-        let mut pool = unsafe { Box::from_raw(ptr) };
-        pool.active_id = active_id;
-        pool.bin_step = bin_step;
-        pool.base_factor = base_factor;
-        pool.base_fee_power_factor = base_fee_power_factor;
-        pool.variable_fee_control = variable_fee_control;
-        pool.volatility_accumulator = volatility_accumulator;
-        pool.volatility_reference = volatility_reference;
-        pool.index_reference = index_reference;
-        pool.max_volatility_accumulator = max_volatility_accumulator;
-        pool.base_fee_cached = base_fee_cached;
-        pool.bins_sfy_count = 0;
-        pool.bins_sfx_count = 0;
-        pool
+    /// Read a single bin at the given position from account data.
+    /// `position` is an absolute index (0..69) within the 70-slot bin array.
+    #[inline]
+    pub fn read_bin(&self, accounts: &[anchor_lang::prelude::AccountInfo], position: usize, swap_for_y: bool) -> Option<DlmmBin> {
+        let (acc_idx, lower_bin_id) = if swap_for_y {
+            (self.sfy_acc_idx, self.sfy_lower_bin_id)
+        } else {
+            (self.sfx_acc_idx, self.sfx_lower_bin_id)
+        };
+        if acc_idx >= accounts.len() { return None; }
+        let data = accounts[acc_idx].try_borrow_data().ok()?;
+        let inner = &data[8..]; // skip discriminator
+        let base = 48 + position * 144;
+        if base + 32 > inner.len() { return None; }
+        let amount_x = u64::from_le_bytes(inner[base..base + 8].try_into().ok()?);
+        let amount_y = u64::from_le_bytes(inner[base + 8..base + 16].try_into().ok()?);
+        let price = u128::from_le_bytes(inner[base + 16..base + 32].try_into().ok()?);
+        Some(DlmmBin {
+            id: lower_bin_id + position as i32,
+            amount_x,
+            amount_y,
+            price,
+        })
+    }
+
+    /// Number of bin positions in the iteration range for a given direction.
+    #[inline]
+    pub fn bin_range(&self, swap_for_y: bool) -> (usize, usize) {
+        let (s, e) = if swap_for_y { self.sfy_range } else { self.sfx_range };
+        (s as usize, e as usize)
     }
 }
 
@@ -408,52 +356,50 @@ impl DlmmPool {
         va.min(self.max_volatility_accumulator as u64) as u32
     }
 
-    pub fn find_bin_index(&self, bin_id: i32, swap_for_y: bool) -> Option<usize> {
-        self.bins(swap_for_y).binary_search_by_key(&bin_id, |b| b.id).ok()
-    }
-
-    /// Find starting cursor for sequential bin walk from active_id.
-    /// Returns the index of the active bin (or nearest in the walk direction).
+    /// Find starting cursor (bin position) for sequential bin walk from active_id.
+    /// Cursor is an absolute position (0..69) within the 70-slot bin array.
+    /// Returns the position of active_id (or nearest in the walk direction).
     #[inline]
     pub fn start_cursor(&self, swap_for_y: bool) -> Option<usize> {
-        let bins = self.bins(swap_for_y);
-        match bins.binary_search_by_key(&self.active_id, |b| b.id) {
-            Ok(idx) => Some(idx),
-            Err(idx) => {
-                // active_id not found — pick nearest in walk direction
-                if swap_for_y {
-                    // walking down: pick the bin just below
-                    if idx > 0 { Some(idx - 1) } else { None }
-                } else {
-                    // walking up: pick the bin at insert point
-                    if idx < bins.len() { Some(idx) } else { None }
-                }
-            }
+        let (start, end) = self.bin_range(swap_for_y);
+        if start >= end { return None; }
+        let lower = if swap_for_y { self.sfy_lower_bin_id } else { self.sfx_lower_bin_id };
+        let active_pos = (self.active_id - lower).max(0).min(69) as usize;
+        if swap_for_y {
+            // walking down: start at active_id position or top of range
+            if active_pos >= start { Some(active_pos.min(end - 1)) }
+            else { None }
+        } else {
+            // walking up: start at active_id position or bottom of range
+            if active_pos < end { Some(active_pos.max(start)) }
+            else { None }
         }
     }
 
-    /// Advance cursor to next bin in walk direction. Returns None if out of bounds.
+    /// Advance cursor to next bin position in walk direction. Returns None if out of range.
     #[inline]
     pub fn advance_cursor(&self, cursor: usize, swap_for_y: bool) -> Option<usize> {
+        let (start, end) = self.bin_range(swap_for_y);
         if swap_for_y {
-            cursor.checked_sub(1)
+            if cursor > start { Some(cursor - 1) } else { None }
         } else {
             let next = cursor + 1;
-            if next < self.bins(swap_for_y).len() { Some(next) } else { None }
+            if next < end { Some(next) } else { None }
         }
     }
 
     /// Simulate swap_exact_in: given `amount_in` of input token, return output amount.
-    /// Uses sequential cursor instead of binary search per bin.
+    /// Reads bins on demand from account data via `read_bin`.
     /// Returns (amount_out, total_fee)
-    pub fn quote_exact_in(&self, amount_in: u64, swap_for_y: bool) -> Option<(u64, u64)> {
+    pub fn quote_exact_in(&self, accounts: &[anchor_lang::prelude::AccountInfo], amount_in: u64, swap_for_y: bool) -> Option<(u64, u64)> {
         if amount_in == 0 {
             return Some((0, 0));
         }
 
+        let (_, range_end) = self.bin_range(swap_for_y);
         debug_eprintln!(
-            "[dlmm_sim::quote_exact_in] amount_in={} swap_for_y={} active_id={} bin_step={} num_bins={}",
-            amount_in, swap_for_y, self.active_id, self.bin_step, self.bins(swap_for_y).len()
+            "[dlmm_sim::quote_exact_in] amount_in={} swap_for_y={} active_id={} bin_step={} range_end={}",
+            amount_in, swap_for_y, self.active_id, self.bin_step, range_end
         );
 
         let mut cursor = self.start_cursor(swap_for_y)?;
@@ -462,13 +408,23 @@ impl DlmmPool {
         let mut total_fee: u64 = 0;
         let mut vol_acc = self.initial_vol_acc();
         let mut first_bin = true;
-        let bins = self.bins(swap_for_y);
 
         debug_eprintln!("[dlmm_sim::quote_exact_in] start_cursor={}", cursor);
 
         loop {
-            if amount_left == 0 || cursor >= bins.len() { break; }
-            let bin = &bins[cursor];
+            if amount_left == 0 { break; }
+            let bin = match self.read_bin(accounts, cursor, swap_for_y) {
+                Some(b) => b,
+                None => break,
+            };
+
+            // Skip empty bins before updating volatility — matches old behavior
+            // where only non-empty bins were in the array.
+            let max_amount_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
+            if max_amount_out == 0 {
+                cursor = match self.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
+                continue;
+            }
 
             if !first_bin {
                 vol_acc = self.update_volatility_accumulator(vol_acc, bin.id);
@@ -476,17 +432,12 @@ impl DlmmPool {
             first_bin = false;
 
             let total_fee_rate = self.get_total_fee(vol_acc);
-            let price = bin.price; // pre-computed
+            let price = bin.price;
 
-            let max_amount_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
             debug_eprintln!(
                 "[dlmm_sim::quote_exact_in] bin[{}] id={} amt_x={} amt_y={} price={} max_out={} amount_left={} fee_rate={}",
                 cursor, bin.id, bin.amount_x, bin.amount_y, bin.price, max_amount_out, amount_left, total_fee_rate
             );
-            if max_amount_out == 0 {
-                cursor = match self.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-                continue;
-            }
 
             let max_amount_in_raw = if swap_for_y {
                 shl_div(max_amount_out as u128, price, SCALE_OFFSET, true)? as u64
@@ -534,9 +485,9 @@ impl DlmmPool {
     }
 
     /// Simulate swap_exact_out: given desired `amount_out`, return required input amount.
-    /// Uses sequential cursor instead of binary search per bin.
+    /// Reads bins on demand from account data via `read_bin`.
     /// Returns (amount_in_with_fees, total_fee)
-    pub fn quote_exact_out(&self, amount_out: u64, swap_for_y: bool) -> Option<(u64, u64)> {
+    pub fn quote_exact_out(&self, accounts: &[anchor_lang::prelude::AccountInfo], amount_out: u64, swap_for_y: bool) -> Option<(u64, u64)> {
         if amount_out == 0 {
             return Some((0, 0));
         }
@@ -547,11 +498,19 @@ impl DlmmPool {
         let mut total_fee: u64 = 0;
         let mut vol_acc = self.initial_vol_acc();
         let mut first_bin = true;
-        let bins = self.bins(swap_for_y);
 
         loop {
-            if remaining_out == 0 || cursor >= bins.len() { break; }
-            let bin = &bins[cursor];
+            if remaining_out == 0 { break; }
+            let bin = match self.read_bin(accounts, cursor, swap_for_y) {
+                Some(b) => b,
+                None => break,
+            };
+
+            let max_amount_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
+            if max_amount_out == 0 {
+                cursor = match self.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
+                continue;
+            }
 
             if !first_bin {
                 vol_acc = self.update_volatility_accumulator(vol_acc, bin.id);
@@ -559,13 +518,7 @@ impl DlmmPool {
             first_bin = false;
 
             let total_fee_rate = self.get_total_fee(vol_acc);
-            let price = bin.price; // pre-computed
-
-            let max_amount_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
-            if max_amount_out == 0 {
-                cursor = match self.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-                continue;
-            }
+            let price = bin.price;
 
             if remaining_out >= max_amount_out {
                 let max_in = if swap_for_y {
@@ -715,8 +668,8 @@ pub struct DlmmPoolParams {
 }
 
 impl DlmmPool {
-    pub fn from_params(params: DlmmPoolParams, bins: &[DlmmBin]) -> Self {
-        let mut pool = Self::new(
+    pub fn from_params(params: DlmmPoolParams) -> Self {
+        Self::new_config(
             params.active_id,
             params.bin_step,
             params.base_factor,
@@ -726,23 +679,63 @@ impl DlmmPool {
             params.volatility_reference,
             params.index_reference,
             params.max_volatility_accumulator,
-            bins,
-        );
-        // Pre-compute all bin prices eagerly to avoid repeated pow_q64 calls
-        for i in 0..pool.bins_sfy_count {
-            if pool.bins_sfy[i].price == 0 {
-                pool.bins_sfy[i].price =
-                    get_price_from_id(pool.bins_sfy[i].id, params.bin_step).unwrap_or(0);
-            }
-        }
-        for i in 0..pool.bins_sfx_count {
-            if pool.bins_sfx[i].price == 0 {
-                pool.bins_sfx[i].price =
-                    get_price_from_id(pool.bins_sfx[i].id, params.bin_step).unwrap_or(0);
-            }
-        }
-        pool
+        )
     }
+}
+
+/// Build raw bin array account data from a slice of DlmmBin (for tests).
+/// Returns the byte buffer (8-byte discriminator + 48-byte header + 70 * 144-byte bins).
+#[cfg(test)]
+pub fn make_test_bin_array_data(bins: &[DlmmBin], bin_array_index: i64) -> Vec<u8> {
+    let lower_bin_id = (bin_array_index as i32) * MAX_BIN_PER_ARRAY;
+    let mut data = vec![0u8; 8 + 48 + 70 * 144];
+    // bin_array_index at inner offset 0..8
+    data[8..16].copy_from_slice(&bin_array_index.to_le_bytes());
+    for bin in bins {
+        let idx = (bin.id - lower_bin_id) as usize;
+        if idx >= 70 { continue; }
+        let off = 8 + 48 + idx * 144;
+        data[off..off + 8].copy_from_slice(&bin.amount_x.to_le_bytes());
+        data[off + 8..off + 16].copy_from_slice(&bin.amount_y.to_le_bytes());
+        data[off + 16..off + 32].copy_from_slice(&bin.price.to_le_bytes());
+    }
+    data
+}
+
+/// Create a DlmmPool with bin sources set up for testing.
+/// Both sfy and sfx point to the same account indices (0 for sfy, 1 for sfx).
+/// Range covers the bins provided (around active_id, up to 10 in each direction).
+#[cfg(test)]
+pub fn make_test_dlmm_pool(
+    active_id: i32,
+    bin_step: u16,
+    base_factor: u16,
+    base_fee_power_factor: u8,
+    variable_fee_control: u32,
+    volatility_accumulator: u32,
+    volatility_reference: u32,
+    index_reference: i32,
+    max_volatility_accumulator: u32,
+    bins: &[DlmmBin],
+    bin_array_index: i64,
+) -> DlmmPool {
+    let lower_bin_id = (bin_array_index as i32) * MAX_BIN_PER_ARRAY;
+    let active_pos = (active_id - lower_bin_id).max(0).min(69) as u8;
+    // sfy (walk down): range from active_pos-9 to active_pos+1
+    let sfy_end = (active_pos + 1).min(70);
+    let sfy_start = sfy_end.saturating_sub(10);
+    // sfx (walk up): range from active_pos to active_pos+10
+    let sfx_start = active_pos;
+    let sfx_end = (active_pos + 10).min(70);
+
+    let mut pool = DlmmPool::new_config(
+        active_id, bin_step, base_factor, base_fee_power_factor,
+        variable_fee_control, volatility_accumulator, volatility_reference,
+        index_reference, max_volatility_accumulator,
+    );
+    pool.set_bin_source(true, 0, lower_bin_id, sfy_start, sfy_end);
+    pool.set_bin_source(false, 1, lower_bin_id, sfx_start, sfx_end);
+    pool
 }
 
 #[cfg(test)]
@@ -776,22 +769,37 @@ mod tests {
         assert!(price < ONE);
     }
 
+    /// Helper: create AccountInfo array from bin data for testing.
+    fn make_test_accounts(bins: &[DlmmBin], bin_array_index: i64) -> (Vec<u8>, Vec<u8>) {
+        let d1 = super::make_test_bin_array_data(bins, bin_array_index);
+        let d2 = super::make_test_bin_array_data(bins, bin_array_index);
+        (d1, d2)
+    }
+
     #[test]
     fn test_simple_swap_single_bin() {
         // Create a pool with a single bin at id=0, bin_step=100 (1%)
         // Bin has 1000 Y tokens, price=1.0 (Q64.64 = ONE)
-        let pool = DlmmPool::new(
-            0, 100, 10, 0, 0, 0, 0, 0, 0,
-            &[DlmmBin {
-                id: 0,
-                amount_x: 0,
-                amount_y: 1_000_000_000, // 1B lamports
-                price: ONE,
-            }],
-        );
+        let bins = [DlmmBin {
+            id: 0,
+            amount_x: 0,
+            amount_y: 1_000_000_000,
+            price: ONE,
+        }];
+        let (mut d1, mut d2) = make_test_accounts(&bins, 0);
+        let key1 = anchor_lang::prelude::Pubkey::default();
+        let key2 = anchor_lang::prelude::Pubkey::default();
+        let owner = anchor_lang::prelude::Pubkey::default();
+        let mut l1 = 0u64;
+        let mut l2 = 0u64;
+        let acc1 = anchor_lang::prelude::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = anchor_lang::prelude::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let accounts = [acc1, acc2];
+
+        let pool = super::make_test_dlmm_pool(0, 100, 10, 0, 0, 0, 0, 0, 0, &bins, 0);
 
         // Swap 100M X for Y (swap_for_y=true)
-        let (out, fee) = pool.quote_exact_in(100_000_000, true).unwrap();
+        let (out, fee) = pool.quote_exact_in(&accounts, 100_000_000, true).unwrap();
         assert!(out > 0, "should get some Y output");
         assert!(fee > 0, "should have some fee");
         assert!(out < 100_000_000, "output should be less than input due to fee");
@@ -922,34 +930,47 @@ mod tests {
     #[test]
     fn test_quote_exact_in_multibin_lockdown() {
         // 3-bin pool with realistic prices, fees, and partial fills
-        let pool = DlmmPool::new(
+        let bins = [
+            DlmmBin {
+                id: 99,
+                amount_x: 0,
+                amount_y: 500_000_000,
+                price: get_price_from_id(99, 20).unwrap(),
+            },
+            DlmmBin {
+                id: 100,
+                amount_x: 200_000_000,
+                amount_y: 300_000_000,
+                price: get_price_from_id(100, 20).unwrap(),
+            },
+            DlmmBin {
+                id: 101,
+                amount_x: 400_000_000,
+                amount_y: 0,
+                price: get_price_from_id(101, 20).unwrap(),
+            },
+        ];
+        // bin_array_index = 100 / 70 = 1, lower_bin_id = 70
+        let bin_array_index = 1i64;
+        let (mut d1, mut d2) = make_test_accounts(&bins, bin_array_index);
+        let key1 = anchor_lang::prelude::Pubkey::default();
+        let key2 = anchor_lang::prelude::Pubkey::default();
+        let owner = anchor_lang::prelude::Pubkey::default();
+        let mut l1 = 0u64;
+        let mut l2 = 0u64;
+        let acc1 = anchor_lang::prelude::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = anchor_lang::prelude::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let accounts = [acc1, acc2];
+
+        let pool = super::make_test_dlmm_pool(
             100, 20, 50, 0, 40_000, 5_000, 2_000, 100, 350_000,
-            &[
-                DlmmBin {
-                    id: 99,
-                    amount_x: 0,
-                    amount_y: 500_000_000,
-                    price: get_price_from_id(99, 20).unwrap(),
-                },
-                DlmmBin {
-                    id: 100,
-                    amount_x: 200_000_000,
-                    amount_y: 300_000_000,
-                    price: get_price_from_id(100, 20).unwrap(),
-                },
-                DlmmBin {
-                    id: 101,
-                    amount_x: 400_000_000,
-                    amount_y: 0,
-                    price: get_price_from_id(101, 20).unwrap(),
-                },
-            ],
+            &bins, bin_array_index,
         );
 
         // swap_for_y: X→Y, walks down through bins 100, 99
-        let (out_y, fee_y) = pool.quote_exact_in(250_000_000, true).unwrap();
+        let (out_y, fee_y) = pool.quote_exact_in(&accounts, 250_000_000, true).unwrap();
         // swap_for_x: Y→X, walks up through bins 100, 101
-        let (out_x, fee_x) = pool.quote_exact_in(250_000_000, false).unwrap();
+        let (out_x, fee_x) = pool.quote_exact_in(&accounts, 250_000_000, false).unwrap();
 
         // These must be nonzero and sane
         assert!(out_y > 0 && fee_y > 0);

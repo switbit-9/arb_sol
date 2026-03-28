@@ -2,6 +2,7 @@ use super::dlmm_sim::DlmmPool;
 use super::amm_sim::AmmPool;
 use super::optimizer::optimal_linear_vs_cp;
 use super::{ArbitrageResult, FEE_PRECISION, FEE_PRECISION_SHL32, SCALE_OFFSET, FD};
+use anchor_lang::prelude::AccountInfo;
 
 const HALF_SHIFT: u8 = 32;
 
@@ -32,11 +33,12 @@ pub fn check_dlmm_dlmm(
     pool_b: &DlmmPool,
     swap_for_y_b: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     debug_eprintln!(
         "[check_dlmm_dlmm] pool_a: active_id={} bins={} swap_for_y={} | pool_b: active_id={} bins={} swap_for_y={} | max_in={}",
-        pool_a.active_id, pool_a.bins(swap_for_y_a).len(), swap_for_y_a,
-        pool_b.active_id, pool_b.bins(swap_for_y_b).len(), swap_for_y_b,
+        pool_a.active_id, pool_a.bin_range(swap_for_y_a).1 - pool_a.bin_range(swap_for_y_a).0, swap_for_y_a,
+        pool_b.active_id, pool_b.bin_range(swap_for_y_b).1 - pool_b.bin_range(swap_for_y_b).0, swap_for_y_b,
         max_amount_in
     );
     let mut total_in: u64 = 0;
@@ -73,8 +75,12 @@ pub fn check_dlmm_dlmm(
         // Load pool_a bin if needed
         if need_load_a {
             loop {
-                if cursor_a >= pool_a.bins(swap_for_y_a).len() { return finish(total_in, total_out); }
-                let bin = &pool_a.bins(swap_for_y_a)[cursor_a];
+                let bin = match pool_a.read_bin(accounts, cursor_a, swap_for_y_a) { Some(b) => b, None => return finish(total_in, total_out) };
+                let out_available = if swap_for_y_a { bin.amount_y } else { bin.amount_x };
+                if out_available == 0 {
+                    cursor_a = match pool_a.advance_cursor(cursor_a, swap_for_y_a) { Some(c) => c, None => return finish(total_in, total_out) };
+                    continue;
+                }
                 let fee_adj = if const_fee_a {
                     cached_fee_rate_a
                 } else {
@@ -82,12 +88,6 @@ pub fn check_dlmm_dlmm(
                     FEE_PRECISION - pool_a.get_total_fee(vol_a)
                 };
                 first_a = false;
-
-                let out_available = if swap_for_y_a { bin.amount_y } else { bin.amount_x };
-                if out_available == 0 {
-                    cursor_a = match pool_a.advance_cursor(cursor_a, swap_for_y_a) { Some(c) => c, None => return finish(total_in, total_out) };
-                    continue;
-                }
 
                 let price = bin.price; // pre-computed
                 price_a = price;
@@ -113,8 +113,12 @@ pub fn check_dlmm_dlmm(
         // Load pool_b bin if needed
         if need_load_b {
             loop {
-                if cursor_b >= pool_b.bins(swap_for_y_b).len() { return finish(total_in, total_out); }
-                let bin = &pool_b.bins(swap_for_y_b)[cursor_b];
+                let bin = match pool_b.read_bin(accounts, cursor_b, swap_for_y_b) { Some(b) => b, None => return finish(total_in, total_out) };
+                let out_available = if swap_for_y_b { bin.amount_y } else { bin.amount_x };
+                if out_available == 0 {
+                    cursor_b = match pool_b.advance_cursor(cursor_b, swap_for_y_b) { Some(c) => c, None => return finish(total_in, total_out) };
+                    continue;
+                }
                 let fee_adj = if const_fee_b {
                     cached_fee_rate_b
                 } else {
@@ -122,12 +126,6 @@ pub fn check_dlmm_dlmm(
                     FEE_PRECISION - pool_b.get_total_fee(vol_b)
                 };
                 first_b = false;
-
-                let out_available = if swap_for_y_b { bin.amount_y } else { bin.amount_x };
-                if out_available == 0 {
-                    cursor_b = match pool_b.advance_cursor(cursor_b, swap_for_y_b) { Some(c) => c, None => return finish(total_in, total_out) };
-                    continue;
-                }
 
                 let price = bin.price;
                 price_b = price;
@@ -185,8 +183,8 @@ pub fn check_dlmm_dlmm(
         if cap_a_remaining == 0 {
             let next_a = match pool_a.advance_cursor(cursor_a, swap_for_y_a) { Some(c) => c, None => break };
             // Pre-check: next bin's price with current rate_b — if composite <= 1, no point loading
-            if next_a < pool_a.bins(swap_for_y_a).len() {
-                let np = pool_a.bins(swap_for_y_a)[next_a].price >> 32;
+            if let Some(next_bin_a) = pool_a.read_bin(accounts, next_a, swap_for_y_a) {
+                let np = next_bin_a.price >> 32;
                 let (nra_num, nra_den) = if swap_for_y_a {
                     (np * fee_adj_a, FEE_PRECISION_SHL32)
                 } else {
@@ -200,8 +198,8 @@ pub fn check_dlmm_dlmm(
         if cap_b_remaining_mid == 0 {
             let next_b = match pool_b.advance_cursor(cursor_b, swap_for_y_b) { Some(c) => c, None => break };
             // Pre-check: next bin's price with current rate_a — if composite <= 1, no point loading
-            if next_b < pool_b.bins(swap_for_y_b).len() {
-                let np = pool_b.bins(swap_for_y_b)[next_b].price >> 32;
+            if let Some(next_bin_b) = pool_b.read_bin(accounts, next_b, swap_for_y_b) {
+                let np = next_bin_b.price >> 32;
                 let (nrb_num, nrb_den) = if swap_for_y_b {
                     (np * fee_adj_b, FEE_PRECISION_SHL32)
                 } else {
@@ -245,10 +243,11 @@ pub fn check_dlmm_to_amm(
     amm: &AmmPool,
     amm_sells_base: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     debug_eprintln!(
         "[check_dlmm_to_amm] dlmm: active_id={} bins={} swap_for_y={} | amm: base={} quote={} sells_base={} | max_in={}",
-        dlmm.active_id, dlmm.bins(swap_for_y).len(), swap_for_y,
+        dlmm.active_id, dlmm.bin_range(swap_for_y).1 - dlmm.bin_range(swap_for_y).0, swap_for_y,
         amm.base_vault, amm.quote_vault, amm_sells_base,
         max_amount_in
     );
@@ -272,7 +271,7 @@ pub fn check_dlmm_to_amm(
 
     debug_eprintln!(
         "[check_dlmm_to_amm] bins_sfy_true={} bins_sfy_false={}",
-        dlmm.bins(true).len(), dlmm.bins(false).len()
+        dlmm.bin_range(true).1 - dlmm.bin_range(true).0, dlmm.bin_range(false).1 - dlmm.bin_range(false).0
     );
     let mut cursor = match dlmm.start_cursor(swap_for_y) { Some(c) => c, None => { debug_eprintln!("[check_dlmm_to_amm] no start_cursor for dlmm (bins empty for sfy={}))", swap_for_y); return ArbitrageResult::none() } };
     let mut vol_acc = dlmm.initial_vol_acc();
@@ -283,8 +282,17 @@ pub fn check_dlmm_to_amm(
     let cached_fee_adj = if const_fee { FEE_PRECISION - dlmm.get_base_fee() } else { 0 };
 
     for _ in 0..70 {
-        if cursor >= dlmm.bins(swap_for_y).len() { break; }
-        let bin = &dlmm.bins(swap_for_y)[cursor];
+        let bin = match dlmm.read_bin(accounts, cursor, swap_for_y) { Some(b) => b, None => break };
+
+        let bin_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
+        if bin_out == 0 {
+            debug_eprintln!(
+                "[check_dlmm_to_amm] bin[{}] id={} skipped: bin_out=0 (amount_x={} amount_y={} sfy={})",
+                cursor, bin.id, bin.amount_x, bin.amount_y, swap_for_y
+            );
+            cursor = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
+            continue;
+        }
 
         let fee_adj = if const_fee {
             cached_fee_adj
@@ -297,16 +305,6 @@ pub fn check_dlmm_to_amm(
         first_bin = false;
 
         let price = bin.price;
-
-        let bin_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
-        if bin_out == 0 {
-            debug_eprintln!(
-                "[check_dlmm_to_amm] bin[{}] id={} skipped: bin_out=0 (amount_x={} amount_y={} sfy={})",
-                cursor, bin.id, bin.amount_x, bin.amount_y, swap_for_y
-            );
-            cursor = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-            continue;
-        }
 
         let max_in_bin = if swap_for_y {
             let in_raw = ((bin_out as u128) << SCALE_OFFSET) / price + 1;
@@ -380,8 +378,8 @@ pub fn check_dlmm_to_amm(
         // amm_marginal ≈ virt_out * cp_fi * cp_fo / (virt_in * FD^2)
         // So: next_rate_num * virt_out * cp_fi * cp_fo > next_rate_den * virt_in * FD * FD
         let next_c = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-        if next_c < dlmm.bins(swap_for_y).len() {
-            let np = dlmm.bins(swap_for_y)[next_c].price >> 32;
+        if let Some(next_bin) = dlmm.read_bin(accounts, next_c, swap_for_y) {
+            let np = next_bin.price >> 32;
             let (nr_num, nr_den) = if swap_for_y {
                 (np * fee_adj, FEE_PRECISION_SHL32)
             } else {
@@ -424,8 +422,9 @@ pub fn check_amm_to_dlmm(
     dlmm: &DlmmPool,
     swap_for_y: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    analytical_amm_to_dlmm(amm, amm_buys_base, dlmm, swap_for_y, max_amount_in)
+    analytical_amm_to_dlmm(amm, amm_buys_base, dlmm, swap_for_y, max_amount_in, accounts)
 }
 
 /// Analytical per-bin approach for AMM→DLMM arb.
@@ -448,11 +447,12 @@ fn analytical_amm_to_dlmm(
     dlmm: &DlmmPool,
     swap_for_y: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     debug_eprintln!(
         "[amm_to_dlmm] amm: base={} quote={} buys_base={} | dlmm: active_id={} bins={} swap_for_y={} | max_in={}",
         amm.base_vault, amm.quote_vault, amm_buys_base,
-        dlmm.active_id, dlmm.bins(swap_for_y).len(), swap_for_y,
+        dlmm.active_id, dlmm.bin_range(swap_for_y).1 - dlmm.bin_range(swap_for_y).0, swap_for_y,
         max_amount_in
     );
     let mut total_in: u64 = 0;
@@ -477,8 +477,13 @@ fn analytical_amm_to_dlmm(
     let cached_fee_adj = if const_fee { FEE_PRECISION - dlmm.get_base_fee() } else { 0 };
 
     for _ in 0..70 {
-        if cursor >= dlmm.bins(swap_for_y).len() { break; }
-        let bin = &dlmm.bins(swap_for_y)[cursor];
+        let bin = match dlmm.read_bin(accounts, cursor, swap_for_y) { Some(b) => b, None => break };
+
+        let bin_out_available = if swap_for_y { bin.amount_y } else { bin.amount_x };
+        if bin_out_available == 0 {
+            cursor = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
+            continue;
+        }
 
         let fee_adj = if const_fee {
             cached_fee_adj
@@ -491,12 +496,6 @@ fn analytical_amm_to_dlmm(
         first_bin = false;
 
         let price = bin.price;
-
-        let bin_out_available = if swap_for_y { bin.amount_y } else { bin.amount_x };
-        if bin_out_available == 0 {
-            cursor = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-            continue;
-        }
 
         let (dlmm_rate_num, dlmm_rate_den): (u128, u128) = if swap_for_y {
             let num = (price >> HALF_SHIFT).saturating_mul(fee_adj);
@@ -556,7 +555,7 @@ fn analytical_amm_to_dlmm(
         let mut amount_in: u64 = (in_eff_opt * FD / fi).min(u64::MAX as u128) as u64;
         debug_eprintln!(
             "[amm_to_dlmm] bin[{}] id={} dlmm_rate={}/{} virt_base={} virt_quote={} amount_in={} bin_out={}",
-            cursor, dlmm.bins(swap_for_y)[cursor].id, dlmm_rate_num, dlmm_rate_den, virt_base, virt_quote, amount_in, bin_out_available
+            cursor, bin.id, dlmm_rate_num, dlmm_rate_den, virt_base, virt_quote, amount_in, bin_out_available
         );
 
         let remaining = max_amount_in.saturating_sub(total_in);
@@ -629,8 +628,8 @@ fn analytical_amm_to_dlmm(
         // Profitable if: amm_marginal * next_dlmm_rate > 1
         // => fi * fo * virt_base * next_dlmm_num > virt_quote * FD^2 * next_dlmm_den
         let next_c = match dlmm.advance_cursor(cursor, swap_for_y) { Some(c) => c, None => break };
-        if next_c < dlmm.bins(swap_for_y).len() {
-            let np = dlmm.bins(swap_for_y)[next_c].price >> 32;
+        if let Some(next_bin) = dlmm.read_bin(accounts, next_c, swap_for_y) {
+            let np = next_bin.price >> 32;
             let (nd_num, nd_den): (u128, u128) = if swap_for_y {
                 (np * fee_adj, FEE_PRECISION << 32)
             } else {
@@ -667,28 +666,47 @@ fn analytical_amm_to_dlmm(
 mod tests {
     use super::*;
     use super::super::dlmm_sim::DlmmBin;
+    use anchor_lang::prelude::Pubkey;
+
+    fn make_test_accounts(bins: &[DlmmBin], bin_array_index: i64) -> (Vec<u8>, Vec<u8>) {
+        let d1 = super::super::dlmm_sim::make_test_bin_array_data(bins, bin_array_index);
+        let d2 = super::super::dlmm_sim::make_test_bin_array_data(bins, bin_array_index);
+        (d1, d2)
+    }
 
     fn make_dlmm_pool(bins: &[DlmmBin]) -> DlmmPool {
         let active_id = bins.first().map(|b| b.id).unwrap_or(0);
-        DlmmPool::new(active_id, 10, 10, 0, 0, 0, 0, 0, 0, bins)
+        let bin_array_index = (active_id as i64) / 70;
+        super::super::dlmm_sim::make_test_dlmm_pool(active_id, 10, 10, 0, 0, 0, 0, 0, 0, bins, bin_array_index)
     }
 
     #[test]
     fn test_dlmm_amm_arb() {
         let one = 1u128 << 64;
-        let dlmm = make_dlmm_pool(&[DlmmBin {
+        let bins = [DlmmBin {
             id: 0,
             amount_x: 10_000_000_000,
             amount_y: 0,
             price: one,
-        }]);
+        }];
+        let dlmm = make_dlmm_pool(&bins);
+        let bin_array_index = (bins[0].id as i64) / 70;
+        let (mut d1, mut d2) = make_test_accounts(&bins, bin_array_index);
+        let key1 = Pubkey::default();
+        let key2 = Pubkey::default();
+        let owner = Pubkey::default();
+        let mut l1 = 0u64;
+        let mut l2 = 0u64;
+        let acc1 = AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let accounts = [acc1, acc2];
 
         let amm = AmmPool::from_pump(
             5_000_000_000,
             50_000_000_000,
         );
 
-        let result = check_dlmm_to_amm(&dlmm, false, &amm, true, u64::MAX);
+        let result = check_dlmm_to_amm(&dlmm, false, &amm, true, u64::MAX, &accounts);
         assert!(
             result.profit > 0,
             "should find arb: profit={}, amount_in={}",
@@ -702,17 +720,27 @@ mod tests {
         let one = 1u128 << 64;
         let amm = AmmPool::from_pump(1_000_000_000_000, 10_000_000);
 
-        let dlmm = DlmmPool::new(
-            0, 100, 10, 0, 0, 0, 0, 0, 0,
-            &[DlmmBin {
-                id: 0,
-                amount_x: 0,
-                amount_y: 10_000_000_000,
-                price: one,
-            }],
+        let bins = [DlmmBin {
+            id: 0,
+            amount_x: 0,
+            amount_y: 10_000_000_000,
+            price: one,
+        }];
+        let bin_array_index = (bins[0].id as i64) / 70;
+        let dlmm = super::super::dlmm_sim::make_test_dlmm_pool(
+            0, 100, 10, 0, 0, 0, 0, 0, 0, &bins, bin_array_index,
         );
+        let (mut d1, mut d2) = make_test_accounts(&bins, bin_array_index);
+        let key1 = Pubkey::default();
+        let key2 = Pubkey::default();
+        let owner = Pubkey::default();
+        let mut l1 = 0u64;
+        let mut l2 = 0u64;
+        let acc1 = AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let accounts = [acc1, acc2];
 
-        let result = check_amm_to_dlmm(&amm, true, &dlmm, true, u64::MAX);
+        let result = check_amm_to_dlmm(&amm, true, &dlmm, true, u64::MAX, &accounts);
         assert!(
             result.profit > 0,
             "should find arb: profit={}, amount_in={}",
@@ -724,20 +752,40 @@ mod tests {
     #[test]
     fn test_dlmm_dlmm_no_arb() {
         let one = 1u128 << 64;
-        let pool_a = make_dlmm_pool(&[DlmmBin {
+        let bins_a = [DlmmBin {
             id: 0,
             amount_x: 0,
             amount_y: 1_000_000_000,
             price: one,
-        }]);
-        let pool_b = make_dlmm_pool(&[DlmmBin {
+        }];
+        let pool_a = make_dlmm_pool(&bins_a);
+        let bins_b = [DlmmBin {
             id: 0,
             amount_x: 1_000_000_000,
             amount_y: 0,
             price: one,
-        }]);
+        }];
+        let pool_b = make_dlmm_pool(&bins_b);
 
-        let result = check_dlmm_dlmm(&pool_a, true, &pool_b, false, u64::MAX);
+        let bin_array_index = 0i64;
+        let (mut da1, mut da2) = make_test_accounts(&bins_a, bin_array_index);
+        let (mut db1, mut db2) = make_test_accounts(&bins_b, bin_array_index);
+        let key1 = Pubkey::default();
+        let key2 = Pubkey::default();
+        let key3 = Pubkey::default();
+        let key4 = Pubkey::default();
+        let owner = Pubkey::default();
+        let mut l1 = 0u64;
+        let mut l2 = 0u64;
+        let mut l3 = 0u64;
+        let mut l4 = 0u64;
+        let acc1 = AccountInfo::new(&key1, false, false, &mut l1, &mut da1, &owner, false, 0);
+        let acc2 = AccountInfo::new(&key2, false, false, &mut l2, &mut da2, &owner, false, 0);
+        let acc3 = AccountInfo::new(&key3, false, false, &mut l3, &mut db1, &owner, false, 0);
+        let acc4 = AccountInfo::new(&key4, false, false, &mut l4, &mut db2, &owner, false, 0);
+        let accounts = [acc1, acc2, acc3, acc4];
+
+        let result = check_dlmm_dlmm(&pool_a, true, &pool_b, false, u64::MAX, &accounts);
         assert!(
             result.profit <= 0,
             "same price should have no arb: profit={}",

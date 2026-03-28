@@ -20,10 +20,10 @@ use super::clmm_checker::{
 use whirlpool_sim::{WhirlpoolPool, WhirlpoolTick};
 use programs::orca::{D_TICK_ARRAY_0, D_TICK_ARRAY_1, D_TICK_ARRAY_2};
 use programs::orca::states::TickArraySimple;
-/// Pre-extracted checker pool: either AMM (stack), DLMM (heap-boxed), or Whirlpool (heap-boxed).
+/// Pre-extracted checker pool: AMM (stack), DLMM (stack, account-backed), or Whirlpool/CLMM (heap-boxed).
 enum CheckerPool {
     Amm(amm_sim::AmmPool),
-    Dlmm(Box<dlmm_sim::DlmmPool>),
+    Dlmm(dlmm_sim::DlmmPool),
     Whirlpool(Box<whirlpool_sim::WhirlpoolPool>),
     Clmm(Box<clmm_sim::ClmmPool>),
 }
@@ -244,13 +244,13 @@ pub fn run_arb_checker<'info>(
                 check_amm_amm(&a_oriented, &b_oriented, max_in)
             }
             (CheckerPool::Amm(amm), CheckerPool::Dlmm(dlmm)) => {
-                check_amm_to_dlmm(amm, buy_mid_is_base, dlmm, sell_flags[si], max_in)
+                check_amm_to_dlmm(amm, buy_mid_is_base, dlmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Dlmm(dlmm), CheckerPool::Amm(amm)) => {
-                check_dlmm_to_amm(dlmm, buy_flags[bi], amm, sell_mid_is_base, max_in)
+                check_dlmm_to_amm(dlmm, buy_flags[bi], amm, sell_mid_is_base, max_in, accounts)
             }
             (CheckerPool::Dlmm(da), CheckerPool::Dlmm(db)) => {
-                check_dlmm_dlmm(da, buy_flags[bi], db, sell_flags[si], max_in)
+                check_dlmm_dlmm(da, buy_flags[bi], db, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Whirlpool(wp), CheckerPool::Amm(amm)) => {
                 check_whirlpool_to_amm(wp, buy_flags[bi], amm, sell_mid_is_base, max_in)
@@ -262,10 +262,10 @@ pub fn run_arb_checker<'info>(
                 check_whirlpool_whirlpool(wa, buy_flags[bi], wb, sell_flags[si], max_in)
             }
             (CheckerPool::Whirlpool(wp), CheckerPool::Dlmm(dlmm)) => {
-                check_whirlpool_to_dlmm(wp, buy_flags[bi], dlmm, sell_flags[si], max_in)
+                check_whirlpool_to_dlmm(wp, buy_flags[bi], dlmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Dlmm(dlmm), CheckerPool::Whirlpool(wp)) => {
-                check_dlmm_to_whirlpool(dlmm, buy_flags[bi], wp, sell_flags[si], max_in)
+                check_dlmm_to_whirlpool(dlmm, buy_flags[bi], wp, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Amm(amm)) => {
                 check_clmm_to_amm(clmm, buy_flags[bi], amm, sell_mid_is_base, max_in)
@@ -277,10 +277,10 @@ pub fn run_arb_checker<'info>(
                 check_clmm_clmm(ca, buy_flags[bi], cb, sell_flags[si], max_in)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Dlmm(dlmm)) => {
-                check_clmm_to_dlmm(clmm, buy_flags[bi], dlmm, sell_flags[si], max_in)
+                check_clmm_to_dlmm(clmm, buy_flags[bi], dlmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Dlmm(dlmm), CheckerPool::Clmm(clmm)) => {
-                check_dlmm_to_clmm(dlmm, buy_flags[bi], clmm, sell_flags[si], max_in)
+                check_dlmm_to_clmm(dlmm, buy_flags[bi], clmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Whirlpool(wp)) => {
                 check_clmm_to_whirlpool(clmm, buy_flags[bi], wp, sell_flags[si], max_in)
@@ -351,18 +351,14 @@ pub(crate) fn extract_amm(inst: &ProgramInstance) -> Option<amm_sim::AmmPool> {
 }
 
 /// Extract a checker DlmmPool from a MeteoraDlmm ProgramInstance.
-/// Reads bin data from the bin array AccountInfos.
-/// `buy_sfy`: the swap_for_y value when this pool is used as buy leg.
-///   D_BIN_BUY bins → swap_for_y == buy_sfy direction.
-///   D_BIN_SELL bins → swap_for_y == !buy_sfy direction.
-/// Each bin array is already internally sorted — no merge/sort needed.
-/// Returns Box<DlmmPool> to avoid stack overflow on BPF (DlmmPool is ~5KB).
+/// Records account indices and bin ranges — bins are read on demand by the checker.
+/// D_BIN_BUY → swap_for_y=true, D_BIN_SELL → swap_for_y=false (independent of arb direction).
 pub(crate) fn extract_dlmm<'info>(
     inst: &ProgramInstance,
     accounts: &[AccountInfo<'info>],
-    buy_sfy: bool,
-) -> Option<Box<dlmm_sim::DlmmPool>> {
-    use dlmm_sim::{DlmmPool, DlmmBin};
+    _buy_sfy: bool,
+) -> Option<dlmm_sim::DlmmPool> {
+    use dlmm_sim::DlmmPool;
     use programs::meteora_dlmm::{D_BIN_BUY, D_BIN_SELL};
 
     let dlmm = match inst {
@@ -386,7 +382,7 @@ pub(crate) fn extract_dlmm<'info>(
         (bf, bfp)
     };
 
-    let mut pool = DlmmPool::box_empty(
+    let mut pool = DlmmPool::new_config(
         slim.active_id,
         slim.bin_step,
         base_factor,
@@ -398,8 +394,7 @@ pub(crate) fn extract_dlmm<'info>(
         slim.max_vol_acc,
     );
 
-    // D_BIN_BUY always corresponds to swap_for_y=true in the real DLMM impl,
-    // D_BIN_SELL always corresponds to swap_for_y=false — independent of arb direction.
+    // Record account indices and compute bin ranges — no bin data is read here.
     for (bin_arr_offset, sfy_dir) in [(D_BIN_BUY, true), (D_BIN_SELL, false)] {
         let acc_idx = dlmm.dyn_start + bin_arr_offset;
         if acc_idx >= accounts.len() { continue; }
@@ -413,34 +408,15 @@ pub(crate) fn extract_dlmm<'info>(
         let bin_array_index = i64::from_le_bytes(inner[0..8].try_into().ok()?);
         let lower_bin_id = (bin_array_index as i32) * 70;
 
-        // BinArray layout after discriminator: index(8) + version(1) + padding(7) + lb_pair(32) = 48 bytes header
-        // Only parse bins near active_id in the swap direction to save CU.
-        // Arb swaps rarely cross more than a few bins.
         let active_idx_in_array = (slim.active_id - lower_bin_id).max(0).min(69) as usize;
         let (start, end) = if sfy_dir {
-            // swap_for_y walks down: need bins from active_id downward
             let end = (active_idx_in_array + 1).min(70);
             (end.saturating_sub(MAX_BINS_TO_LOAD), end)
         } else {
-            // swap_for_x walks up: need bins from active_id upward
             let start = active_idx_in_array;
             (start, (start + MAX_BINS_TO_LOAD).min(70))
         };
-        for i in start..end {
-            let base = 48 + i * 144; // header_size + bin_index * bin_size
-            if base + 32 > inner.len() { break; }
-            let amount_x = u64::from_le_bytes(inner[base..base + 8].try_into().ok()?);
-            let amount_y = u64::from_le_bytes(inner[base + 8..base + 16].try_into().ok()?);
-            let price = u128::from_le_bytes(inner[base + 16..base + 32].try_into().ok()?);
-            if amount_x > 0 || amount_y > 0 {
-                pool.push_bin(DlmmBin {
-                    id: lower_bin_id + i as i32,
-                    amount_x,
-                    amount_y,
-                    price,
-                }, sfy_dir);
-            }
-        }
+        pool.set_bin_source(sfy_dir, acc_idx, lower_bin_id, start as u8, end as u8);
     }
 
     Some(pool)

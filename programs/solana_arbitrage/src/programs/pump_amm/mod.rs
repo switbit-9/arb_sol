@@ -674,7 +674,7 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
 
         // #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.05) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.1) as u64;
 
 
         let price = get_price_f64(base_vault_amount, quote_vault_amount);

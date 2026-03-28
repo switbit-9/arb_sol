@@ -353,17 +353,18 @@ pub fn check_clmm_to_dlmm(
     dlmm: &DlmmPool,
     swap_for_y: bool,
     max_amount_in: u64,
+    accounts: &[anchor_lang::prelude::AccountInfo],
 ) -> ArbitrageResult {
     let test_amt = 10_000u64.min(max_amount_in);
     if test_amt == 0 { return ArbitrageResult::none(); }
     let mid = clmm.quote_exact_in(test_amt, zero_for_one);
-    let (out, _fee) = dlmm.quote_exact_in(mid, swap_for_y).unwrap_or((0, 0));
+    let (out, _fee) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
     if out <= test_amt { return ArbitrageResult::none(); }
 
     let profit_fn = |amount_in: u64| -> i128 {
         if amount_in == 0 { return 0; }
         let mid = clmm.quote_exact_in(amount_in, zero_for_one);
-        let (out, _) = dlmm.quote_exact_in(mid, swap_for_y).unwrap_or((0, 0));
+        let (out, _) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
         out as i128 - amount_in as i128
     };
 
@@ -383,16 +384,17 @@ pub fn check_dlmm_to_clmm(
     clmm: &ClmmPool,
     zero_for_one: bool,
     max_amount_in: u64,
+    accounts: &[anchor_lang::prelude::AccountInfo],
 ) -> ArbitrageResult {
     let test_amt = 10_000u64.min(max_amount_in);
     if test_amt == 0 { return ArbitrageResult::none(); }
-    let (mid, _fee) = dlmm.quote_exact_in(test_amt, swap_for_y).unwrap_or((0, 0));
+    let (mid, _fee) = dlmm.quote_exact_in(accounts, test_amt, swap_for_y).unwrap_or((0, 0));
     let out = clmm.quote_exact_in(mid, zero_for_one);
     if out <= test_amt { return ArbitrageResult::none(); }
 
     let profit_fn = |amount_in: u64| -> i128 {
         if amount_in == 0 { return 0; }
-        let (mid, _) = dlmm.quote_exact_in(amount_in, swap_for_y).unwrap_or((0, 0));
+        let (mid, _) = dlmm.quote_exact_in(accounts, amount_in, swap_for_y).unwrap_or((0, 0));
         let out = clmm.quote_exact_in(mid, zero_for_one);
         out as i128 - amount_in as i128
     };
