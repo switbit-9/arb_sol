@@ -50,6 +50,7 @@ impl<'info> MintInfo<'info> {
     }
 }
 
+#[derive(Clone)]
 pub struct BotConfig {
     pub start_token: Option<Pubkey>,
     pub max_amount_in: u64,

@@ -686,8 +686,10 @@ impl ProgramMeta for RaydiumCLMM {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
+        _prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
         self.get_tick_segment_impl(accounts, input_mint, bin_offset)
+            .map(|opt| opt.map(|(s, c, f)| (s, c, 0u64, f, 0u128)))
     }
 
     #[cfg(any(test, feature = "debug"))]
@@ -754,7 +756,7 @@ impl RaydiumCLMM {
         let fee_rate = trade_fee_rate_raw as f64 / FEE_RATE_DENOMINATOR_VALUE as f64;
         let price = sqrt_price_to_f64(sqrt_price_x64);
 
-        debug_eprintln!("RaydiumCLMM: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_id.key, price, 1.0 / price, fee_rate);
+        debug_eprintln!("RaydiumCLMM: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_id.key, price, 1.0 / price, fee_rate * 100.0);
 
         let instance = RaydiumCLMM {
             pool_id: *pool_id.key,

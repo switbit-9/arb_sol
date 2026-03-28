@@ -1,4 +1,4 @@
-use crate::arbitrage::algo_2::ArbitragePath;
+use crate::arbitrage::ArbitragePath;
 use anchor_lang::solana_program::account_info::AccountInfo;
 use anchor_lang::solana_program::pubkey::Pubkey;
 

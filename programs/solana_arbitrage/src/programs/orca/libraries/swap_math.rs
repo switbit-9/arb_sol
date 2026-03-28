@@ -18,6 +18,18 @@ pub struct SwapStep {
     pub fee_amount: u64,
 }
 
+/// Ceiling division: (a * b + (c - 1)) / c
+#[inline]
+fn checked_mul_div_round_up(a: u128, b: u128, c: u128) -> Option<u64> {
+    let numerator = a.checked_mul(b)?;
+    let result = (numerator + c - 1) / c;
+    if result > u64::MAX as u128 {
+        None
+    } else {
+        Some(result as u64)
+    }
+}
+
 /// Compute a swap step within a single tick range
 ///
 /// # Arguments
@@ -69,47 +81,51 @@ pub fn compute_swap_step(
             a_to_b,
         ).unwrap_or(u64::MAX);
 
-        let (sqrt_price_next_x64, amount_in, amount_out, fee_amount) =
-            if amount_remaining_less_fee >= amount_in_max {
-                // We can reach the target price
-                let amount_out = liquidity_math::get_amount_out_for_liquidity(
-                    sqrt_price_current_x64,
-                    sqrt_price_target_x64,
-                    liquidity,
-                    a_to_b,
-                ).unwrap_or(0);
+        let is_max_swap = amount_remaining_less_fee >= amount_in_max;
 
-                let fee_amount = if fee_rate_64 > 0 && amount_in_max > 0 {
-                    let amount_in_with_fee = ((amount_in_max as u128) * FEE_RATE_DENOMINATOR as u128)
-                        .checked_div(FEE_RATE_DENOMINATOR as u128 - fee_rate_64 as u128)
-                        .map(|v| v as u64)
-                        .unwrap_or(amount_in_max);
-                    amount_in_with_fee.saturating_sub(amount_in_max)
-                } else {
-                    0
-                };
+        let sqrt_price_next_x64 = if is_max_swap {
+            sqrt_price_target_x64
+        } else {
+            sqrt_price_math::get_next_sqrt_price_from_input(
+                sqrt_price_current_x64,
+                liquidity,
+                amount_remaining_less_fee,
+                a_to_b,
+            ).unwrap_or(sqrt_price_current_x64)
+        };
 
-                (sqrt_price_target_x64, amount_in_max, amount_out, fee_amount)
-            } else {
-                // We can't reach the target price, calculate new price from input
-                let sqrt_price_next = sqrt_price_math::get_next_sqrt_price_from_input(
-                    sqrt_price_current_x64,
-                    liquidity,
-                    amount_remaining_less_fee,
-                    a_to_b,
-                ).unwrap_or(sqrt_price_current_x64);
+        // Re-derive amount_in from actual price movement (accounts for rounding)
+        let amount_in = if is_max_swap {
+            amount_in_max
+        } else {
+            liquidity_math::get_amount_in_for_liquidity(
+                sqrt_price_current_x64,
+                sqrt_price_next_x64,
+                liquidity,
+                a_to_b,
+            ).unwrap_or(0)
+        };
 
-                let amount_out = liquidity_math::get_amount_out_for_liquidity(
-                    sqrt_price_current_x64,
-                    sqrt_price_next,
-                    liquidity,
-                    a_to_b,
-                ).unwrap_or(0);
+        let amount_out = liquidity_math::get_amount_out_for_liquidity(
+            sqrt_price_current_x64,
+            sqrt_price_next_x64,
+            liquidity,
+            a_to_b,
+        ).unwrap_or(0);
 
-                let fee_amount = amount_remaining.saturating_sub(amount_remaining_less_fee);
-
-                (sqrt_price_next, amount_remaining_less_fee, amount_out, fee_amount)
-            };
+        let fee_amount = if is_base_input && !is_max_swap {
+            // Non-max swap: fee is remainder after amount_in
+            amount_remaining.saturating_sub(amount_in)
+        } else if fee_rate_64 > 0 && amount_in > 0 {
+            // Max swap or exact output: ceil(amount_in * fee_rate / (1M - fee_rate))
+            checked_mul_div_round_up(
+                amount_in as u128,
+                fee_rate_64 as u128,
+                (FEE_RATE_DENOMINATOR - fee_rate_64) as u128,
+            ).unwrap_or(0)
+        } else {
+            0
+        };
 
         SwapStep {
             sqrt_price_next_x64,
@@ -127,43 +143,49 @@ pub fn compute_swap_step(
             a_to_b,
         ).unwrap_or(0);
 
-        let (sqrt_price_next_x64, amount_in, amount_out) = if amount_remaining >= amount_out_max {
-            // We can reach the target price
-            let amount_in = liquidity_math::get_amount_in_for_liquidity(
-                sqrt_price_current_x64,
-                sqrt_price_target_x64,
-                liquidity,
-                a_to_b,
-            ).unwrap_or(0);
+        let is_max_swap = amount_remaining >= amount_out_max;
 
-            (sqrt_price_target_x64, amount_in, amount_out_max)
+        let sqrt_price_next_x64 = if is_max_swap {
+            sqrt_price_target_x64
         } else {
-            // Calculate new price from desired output
-            let sqrt_price_next = sqrt_price_math::get_next_sqrt_price_from_output(
+            sqrt_price_math::get_next_sqrt_price_from_output(
                 sqrt_price_current_x64,
                 liquidity,
                 amount_remaining,
                 a_to_b,
-            ).unwrap_or(sqrt_price_current_x64);
-
-            let amount_in = liquidity_math::get_amount_in_for_liquidity(
-                sqrt_price_current_x64,
-                sqrt_price_next,
-                liquidity,
-                a_to_b,
-            ).unwrap_or(0);
-
-            (sqrt_price_next, amount_in, amount_remaining)
+            ).unwrap_or(sqrt_price_current_x64)
         };
 
-        // Calculate fee on input
+        let amount_in = liquidity_math::get_amount_in_for_liquidity(
+            sqrt_price_current_x64,
+            sqrt_price_next_x64,
+            liquidity,
+            a_to_b,
+        ).unwrap_or(0);
+
+        let mut amount_out = if is_max_swap {
+            amount_out_max
+        } else {
+            liquidity_math::get_amount_out_for_liquidity(
+                sqrt_price_current_x64,
+                sqrt_price_next_x64,
+                liquidity,
+                a_to_b,
+            ).unwrap_or(0)
+        };
+
+        // Cap output amount
+        if !is_base_input && amount_out > amount_remaining {
+            amount_out = amount_remaining;
+        }
+
+        // Calculate fee on input: ceil(amount_in * fee_rate / (1M - fee_rate))
         let fee_amount = if fee_rate_64 > 0 && amount_in > 0 {
-            let fee_complement = FEE_RATE_DENOMINATOR - fee_rate_64;
-            let amount_in_with_fee = ((amount_in as u128) * FEE_RATE_DENOMINATOR as u128)
-                .checked_div(fee_complement as u128)
-                .map(|v| v as u64)
-                .unwrap_or(amount_in);
-            amount_in_with_fee.saturating_sub(amount_in)
+            checked_mul_div_round_up(
+                amount_in as u128,
+                fee_rate_64 as u128,
+                (FEE_RATE_DENOMINATOR - fee_rate_64) as u128,
+            ).unwrap_or(0)
         } else {
             0
         };

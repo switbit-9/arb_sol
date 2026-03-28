@@ -579,8 +579,10 @@ impl ProgramMeta for OrcaWhirlpool {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
+        _prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
         self.get_tick_segment_impl(accounts, input_mint, bin_offset)
+            .map(|opt| opt.map(|(s, c, f)| (s, c, 0u64, f, 0u128)))
     }
 }
 
@@ -620,7 +622,7 @@ impl OrcaWhirlpool {
             oracle_data.as_deref().map(|d| &**d),
         );
 
-        debug_eprintln!("OrcaWhirlpool: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_account.key, price, 1.0 / price, total_fee_rate);
+        debug_eprintln!("OrcaWhirlpool: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_account.key, price, 1.0 / price, total_fee_rate as f64 / 1_000_000.0 * 100.0);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = OrcaWhirlpool {
@@ -882,8 +884,7 @@ impl OrcaWhirlpool {
         // Search through tick arrays - only parse when we actually check each one
         for maybe_data in [data_0, data_1, data_2].iter() {
             if let Some(data) = maybe_data {
-                // Only parse this specific array if we need to check it
-                // Dereference Ref<&mut [u8]> to get &[u8]
+                // Try fixed TickArray first
                 if let Some(array) = TickArraySimple::try_from_bytes(&**data) {
                     if array.contains_tick(current_tick, tick_spacing) {
                         if let Some((found_tick_index, tick)) =
@@ -891,13 +892,16 @@ impl OrcaWhirlpool {
                         {
                             return Some((found_tick_index, Some(tick)));
                         }
-                        // Array contains this tick but no initialized tick found in direction
-                        // Return the array boundary so the loop can advance past it
                         let boundary = array.get_boundary_tick(a_to_b, tick_spacing);
                         return Some((boundary, None));
                     }
                 }
-                // TickArraySimple is dropped here - only one parsed at a time
+                // Try DynamicTickArray
+                else if let Some(result) = states::tick::dynamic_find_next_initialized_tick(
+                    &**data, current_tick, tick_spacing, a_to_b,
+                ) {
+                    return Some(result);
+                }
             }
         }
 

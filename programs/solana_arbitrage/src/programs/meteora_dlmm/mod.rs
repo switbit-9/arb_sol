@@ -51,15 +51,6 @@ pub const DYNAMIC_ACCOUNTS: usize = 7;
 /// Avoids recomputing `(1u128 << 64) as f64` on every call
 const Q64_SCALE: f64 = 18446744073709551616.0; // (1u128 << SCALE_OFFSET) as f64
 
-fn compute_fee_numerator(lb_pair: &LbPair) -> anyhow::Result<u64> {
-    Ok(lb_pair.get_total_fee()? as u64)
-}
-
-fn compute_fee_rate(lb_pair: &LbPair) -> anyhow::Result<f64> {
-    let total_fee_rate = lb_pair.get_total_fee()?;
-    Ok(total_fee_rate as f64 / FEE_PRECISION as f64)
-}
-
 /// Compute price as f64 from lb_price (Q64-scaled).
 fn get_price_f64(lb_price: u128) -> f64 {
     lb_price as f64 / (1u128 << 64) as f64
@@ -295,20 +286,24 @@ impl ProgramMeta for MeteoraDlmm {
                 let max_bins = (profit_bps / bin_step_bps).min(70) as i32;
 
                 // Walk bins using get_bin_segment for real per-bin capacity and price
+                let mut prev_price_q64: Option<u128> = None;
                 for bin_offset in 0..=max_bins {
                     if remaining == 0 { break; }
 
-                    let (slope, capacity, bin_fee) = match self.get_bin_segment_impl(accounts, input_mint, bin_offset) {
-                        Ok(Some((s, c, f))) if s > 0.0 && c > 0 && f > 0.0 => (s, c, f),
-                        Ok(Some(_)) => continue, // empty bin — skip
+                    let (capacity, max_out, bin_pq64) = match self.get_bin_segment_impl(accounts, input_mint, bin_offset, prev_price_q64) {
+                        Ok(Some((s, c, mo, f, p))) if s > 0.0 && c > 0 && f > 0.0 => { prev_price_q64 = Some(p); (c, mo, p) }
+                        Ok(Some((_, _, _, _, p))) => { prev_price_q64 = Some(p); continue; } // empty bin — skip
                         _ => break,              // no more bin data
                     };
 
                     // capacity is pre-fee max input for this bin
                     let bin_in = remaining.min(capacity);
-                    // Output: bin_in * slope where slope = price * fee_factor (already includes fee)
-                    // But quote_int uses Q64 price + separate fee — reconstruct for consistency
-                    let bin_out = (bin_in as f64 * slope) as u64;
+                    // Use exact max_out for fully consumed bins; Q64 integer arithmetic for partial.
+                    let bin_out = if bin_in == capacity {
+                        max_out
+                    } else {
+                        quote_int(bin_in, bin_pq64, fee_factor as u128)
+                    };
                     total_in += bin_in;
                     total_out += bin_out;
                     remaining -= bin_in;
@@ -344,8 +339,9 @@ impl ProgramMeta for MeteoraDlmm {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
-        MeteoraDlmm::get_bin_segment_impl(self, accounts, input_mint, bin_offset)
+        prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
+        MeteoraDlmm::get_bin_segment_impl(self, accounts, input_mint, bin_offset, prev_price_q64)
     }
 
     fn invoke_swap_base_in<'a>(
@@ -626,6 +622,19 @@ impl MeteoraDlmm {
             return Ok(false);
         }
 
+        // In tests, skew the raw bin array data to match the analytical price skew
+        // applied in new(). This must happen before any bin reads.
+        // #[cfg(test)]
+        // {
+        //     let skew: f64 = if self.lb_pair_slim.active_id % 2 == 0 { 1.1 } else { 0.90 };
+        //     let buy_acc = &accounts[self.dyn_start + D_BIN_BUY];
+        //     let sell_acc = &accounts[self.dyn_start + D_BIN_SELL];
+        //     Self::skew_bin_array_data(buy_acc, skew);
+        //     if sell_acc.key != buy_acc.key {
+        //         Self::skew_bin_array_data(sell_acc, skew);
+        //     }
+        // }
+
         let pool_acc = &accounts[self.dyn_start + D_POOL];
 
         // Read only the fields we need from pool data instead of copying the full ~896-byte LbPair.
@@ -701,19 +710,7 @@ impl MeteoraDlmm {
             let mut active_bin: Bin = bytemuck::pod_read_unaligned(&bin_data[bin_offset..bin_offset + BIN_SIZE]);
             let _ = active_bin.get_or_store_bin_price(active_id, bin_step);
 
-        //     #[cfg(test)]
-        //     {
-        //         // Match the price skew applied in new() — use active_id parity (same key)
-        //         let skew: f64 = if active_id % 2 == 0 { 1.1 } else { 0.90 };
-        //         // Scale liquidity so bin capacity is consistent with the skewed price
-        //         active_bin.amount_x = (active_bin.amount_x as f64 * skew) as u64;
-        //         active_bin.amount_y = (active_bin.amount_y as f64 * skew) as u64;
-        //         // Also skew the bin's stored Q64 price to match
-        //         active_bin.price = (active_bin.price as f64 * skew) as u128;
-        //     }
-
-        //     self.active_bin = active_bin;
-        // }
+            self.active_bin = active_bin;
         }
 
         // Inline update_references: only reads a few fields, avoids full LbPair copy
@@ -792,6 +789,7 @@ impl MeteoraDlmm {
         static_base: usize,
         dyn_start: usize,
         dyn_end: usize,
+        clock: &Clock,
     ) -> Result<Self> {
         let pool_acc = &accounts[dyn_start + D_POOL];
         // Read only the fields we need directly from account bytes (~50 CU vs ~600 for full LbPair parse + Box).
@@ -814,15 +812,48 @@ impl MeteoraDlmm {
             let active_id = i32::from_le_bytes([d[68], d[69], d[70], d[71]]);
             let bin_step = u16::from_le_bytes([d[72], d[73]]);
 
+            // Apply update_references to get the CURRENT fee (matching prepare_for_execution).
+            // Without this, the marginal rate filter uses a stale volatility_accumulator,
+            // which can be significantly higher than the actual swap fee.
+            let filter_period = u16::from_le_bytes([d[2], d[3]]);
+            let decay_period = u16::from_le_bytes([d[4], d[5]]);
+            let reduction_factor = u16::from_le_bytes([d[6], d[7]]);
+            let max_volatility_accumulator = u32::from_le_bytes([d[12], d[13], d[14], d[15]]);
+            let v_volatility_reference = u32::from_le_bytes([d[36], d[37], d[38], d[39]]);
+            let v_index_reference = i32::from_le_bytes([d[40], d[41], d[42], d[43]]);
+            let v_last_update_timestamp = i64::from_le_bytes([d[48], d[49], d[50], d[51], d[52], d[53], d[54], d[55]]);
+
+            let elapsed = clock.unix_timestamp.saturating_sub(v_last_update_timestamp);
+            let (updated_index_reference, updated_volatility_reference) = if elapsed >= filter_period as i64 {
+                let new_vol_ref = if elapsed < decay_period as i64 {
+                    volatility_accumulator
+                        .saturating_mul(reduction_factor as u32)
+                        / BASIS_POINT_MAX as u32
+                } else {
+                    0
+                };
+                (active_id, new_vol_ref)
+            } else {
+                (v_index_reference, v_volatility_reference)
+            };
+
+            // Compute effective volatility_accumulator with updated references
+            let effective_vol_acc = {
+                let delta_id = (i64::from(updated_index_reference) - i64::from(active_id)).unsigned_abs();
+                let va = u64::from(updated_volatility_reference)
+                    .saturating_add(delta_id.saturating_mul(BASIS_POINT_MAX as u64));
+                std::cmp::min(va, max_volatility_accumulator.into()) as u32
+            };
+
             // Inline get_base_fee: base_factor * bin_step * 10 * 10^base_fee_power_factor
             let base_fee = (base_factor as u128)
                 .saturating_mul(bin_step as u128)
                 .saturating_mul(10u128)
                 .saturating_mul(10u128.saturating_pow(base_fee_power_factor as u32));
 
-            // Inline get_variable_fee
+            // Inline get_variable_fee using effective (post-update) volatility
             let variable_fee = if variable_fee_control > 0 {
-                let square_vfa_bin = (volatility_accumulator as u128)
+                let square_vfa_bin = (effective_vol_acc as u128)
                     .saturating_mul(bin_step as u128)
                     .saturating_pow(2);
                 (variable_fee_control as u128)
@@ -874,7 +905,7 @@ impl MeteoraDlmm {
         // falls back to get_cached_max_amounts (u64::MAX) with conservative price.
         let active_bin: Bin = bytemuck::Zeroable::zeroed();
 
-        debug_eprintln!("MeteoraDlmm: pool_id {} , price {}, inverse_price {}, fee_numerator {}", *pool_acc.key, price, 1.0 / price, fee_numerator);
+        debug_eprintln!("MeteoraDlmm: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_acc.key, price, 1.0 / price, fee_numerator as f64 / 1_000_000_000.0 * 100.0);
 
         let instance = MeteoraDlmm {
             base_token_pk,
@@ -927,6 +958,41 @@ impl MeteoraDlmm {
         (total_x, total_y)
     }
 
+    /// In tests, skew all bin reserves and stored prices in a bin array account so that
+    /// quote_exact_in / get_bin_segment_impl see data consistent with the analytical price skew.
+    #[cfg(test)]
+    fn skew_bin_array_data(acc: &AccountInfo, skew: f64) {
+        let mut data = match acc.try_borrow_mut_data() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        if data.len() < BIN_ARRAY_HEADER_SIZE { return; }
+
+        for i in 0..MAX_BIN_PER_ARRAY {
+            let base = BIN_ARRAY_HEADER_SIZE + i * BIN_SIZE;
+            if base + BIN_SIZE > data.len() { break; }
+
+            // amount_x at offset 0 (u64 LE)
+            let amount_x = u64::from_le_bytes(data[base..base + 8].try_into().unwrap());
+            // amount_y at offset 8 (u64 LE)
+            let amount_y = u64::from_le_bytes(data[base + 8..base + 16].try_into().unwrap());
+            // price at offset 16 (u128 LE)
+            let price = u128::from_le_bytes(data[base + 16..base + 32].try_into().unwrap());
+
+            // Skip empty bins
+            if amount_x == 0 && amount_y == 0 && price == 0 { continue; }
+
+            // Skew reserves and price
+            let new_amount_x = (amount_x as f64 / skew) as u64;
+            let new_amount_y = (amount_y as f64 * skew) as u64;
+            let new_price = (price as f64 * skew) as u128;
+
+            data[base..base + 8].copy_from_slice(&new_amount_x.to_le_bytes());
+            data[base + 8..base + 16].copy_from_slice(&new_amount_y.to_le_bytes());
+            data[base + 16..base + 32].copy_from_slice(&new_price.to_le_bytes());
+        }
+    }
+
     /// Read the bin array index (i64) from the first 8 bytes after the discriminator.
     /// Returns i64::MAX as sentinel if the account is too small or unreadable.
     fn read_bin_array_index(acc: &AccountInfo) -> i64 {
@@ -936,54 +1002,6 @@ impl MeteoraDlmm {
             }
         }
         i64::MAX
-    }
-
-    /// Build SwapCache for both directions + fee_rate. Separated from new() to reduce stack frame.
-    #[inline(never)]
-    fn build_swap_caches(
-        lb_pair: &mut LbPair,
-        accounts: &[AccountInfo],
-        dyn_start: usize,
-    ) -> anyhow::Result<(Box<SwapCache>, Box<SwapCache>, f64)> {
-        // Compute initial_vol_acc: update_volatility_accumulator result after update_references
-        let initial_vol_acc = {
-            let delta_id = (i64::from(lb_pair.v_parameters.index_reference)
-                - i64::from(lb_pair.active_id))
-                .unsigned_abs();
-            let va = u64::from(lb_pair.v_parameters.volatility_reference)
-                .saturating_add(delta_id.saturating_mul(BASIS_POINT_MAX as u64));
-            std::cmp::min(va, lb_pair.parameters.max_volatility_accumulator.into()) as u32
-        };
-        // Set for accurate fee_rate computation
-        lb_pair.v_parameters.volatility_accumulator = initial_vol_acc;
-        let fee_rate = compute_fee_rate(lb_pair)?;
-
-        let base_fee = lb_pair.get_base_fee().unwrap_or(0);
-        let price_base = {
-            let bps = u128::from(lb_pair.bin_step)
-                .checked_shl(SCALE_OFFSET.into())
-                .unwrap()
-                .checked_div(BASIS_POINT_MAX as u128)
-                .unwrap();
-            ONE.checked_add(bps).unwrap()
-        };
-        let has_variable_fee = lb_pair.parameters.variable_fee_control > 0;
-
-        let buy = Box::new(SwapCache {
-            base_fee,
-            price_base,
-            bin_array_index: Self::read_bin_array_index(&accounts[dyn_start + D_BIN_BUY]),
-            initial_vol_acc,
-            has_variable_fee,
-        });
-        let sell = Box::new(SwapCache {
-            base_fee,
-            price_base,
-            bin_array_index: Self::read_bin_array_index(&accounts[dyn_start + D_BIN_SELL]),
-            initial_vol_acc,
-            has_variable_fee,
-        });
-        Ok((buy, sell, fee_rate))
     }
 
     /// Build SwapCache from raw fields (no full LbPair needed). Used by prepare_for_execution.
@@ -1075,12 +1093,18 @@ impl MeteoraDlmm {
     /// Get slope (price_f64 * fee_factor) and capacity (max_amount_in) for a bin
     /// at `bin_offset` from the active bin in the swap direction.
     /// offset=0 is the active bin, 1 is the next bin, etc.
+    /// `prev_price_q64`: price from the previous bin (step it once to get this bin's price).
+    /// Pass `None` for the first call (offset=0) to use the cached active-bin price directly.
+    /// Returns `(slope, net_capacity, max_out, fee_factor, price_q64)` — pass `price_q64` as
+    /// `prev_price_q64` on the next iteration to avoid O(N²) re-stepping from the active bin.
+    /// `max_out` is the exact integer output when the bin is fully consumed.
     fn get_bin_segment_impl<'a>(
         &self,
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
+        prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
         let swap_for_y = self.base_token_pk == input_mint;
         let (bin_array, cache) = if swap_for_y {
             let cache = match self.buy_swap_cache.as_ref() {
@@ -1129,28 +1153,29 @@ impl MeteoraDlmm {
         let bin: dlmm_lib::dlmm::types::Bin =
             bytemuck::pod_read_unaligned(&data[bin_data_offset..bin_data_offset + BIN_SIZE]);
 
-        // Check if this bin has liquidity in the output direction
-        if (swap_for_y && bin.amount_y == 0) || (!swap_for_y && bin.amount_x == 0) {
-            return Ok(Some((0.0, 0, 1.0)));
-        }
-
-        // Compute price for this bin: start from active price and step incrementally
+        // Compute price for this bin: use stored bin price when available (matches
+        // quote_exact_in behavior), otherwise step from the previous bin's price.
         let price_q64 = if bin_offset == 0 {
             self.lb_price
         } else {
-            let mut p = self.lb_price;
-            for _ in 0..bin_offset {
-                p = if swap_for_y {
-                    shl_div(p, cache.price_base, SCALE_OFFSET, Rounding::Down)
-                        .unwrap_or(0)
-                } else {
-                    mul_shr(p, cache.price_base, SCALE_OFFSET, Rounding::Down)
-                        .unwrap_or(0)
-                };
-                if p == 0 { return Ok(None); }
-            }
-            p
+            let base = prev_price_q64.unwrap_or(self.lb_price);
+            let stepped = if swap_for_y {
+                shl_div(base, cache.price_base, SCALE_OFFSET, Rounding::Down).unwrap_or(0)
+            } else {
+                mul_shr(base, cache.price_base, SCALE_OFFSET, Rounding::Down).unwrap_or(0)
+            };
+            if stepped == 0 { return Ok(None); }
+            // Prefer the on-chain stored price (identical to what quote_exact_in uses).
+            if bin.price != 0 { bin.price } else { stepped }
         };
+
+        // Check if this bin has liquidity in the output direction
+        if (swap_for_y && bin.amount_y == 0) || (!swap_for_y && bin.amount_x == 0) {
+            return Ok(Some((0.0, 0u64, 0u64, 1.0, price_q64)));
+        }
+
+        // Exact output when this bin is fully consumed (no rounding, no fee arithmetic)
+        let max_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
 
         // Compute capacity: max_amount_in for this bin (before fees)
         let capacity = bin.get_max_amount_in(price_q64, swap_for_y)
@@ -1167,7 +1192,7 @@ impl MeteoraDlmm {
             (1.0 / price_f64) * fee_factor
         };
 
-        Ok(Some((slope, capacity, fee_factor)))
+        Ok(Some((slope, capacity, max_out, fee_factor, price_q64)))
     }
 
     // Max input amount in the current active bin only (no price movement)
@@ -1361,10 +1386,10 @@ mod tests {
         let dyn_start: usize = 3;
         let dyn_end: usize = accounts.len();
 
-        let meteora = MeteoraDlmm::new(&accounts, static_base, dyn_start, dyn_end)
-            .expect("MeteoraDlmm::new failed");
-
         let clock = get_clock_from_rpc(&rpc_client).await;
+
+        let meteora = MeteoraDlmm::new(&accounts, static_base, dyn_start, dyn_end, &clock)
+            .expect("MeteoraDlmm::new failed");
 
         eprintln!("  price: {}", meteora.price);
         eprintln!("  fee_numerator: {}", meteora.fee_numerator);

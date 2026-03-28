@@ -121,7 +121,15 @@ impl ProgramMeta for RaydiumCPMM {
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
-        Ok((self.base_vault_amount, self.quote_vault_amount))
+        let (base_fees, quote_fees) = if self.base_is_token_0 {
+            (self.fees_token_0, self.fees_token_1)
+        } else {
+            (self.fees_token_1, self.fees_token_0)
+        };
+        Ok((
+            self.base_vault_amount.saturating_sub(base_fees),
+            self.quote_vault_amount.saturating_sub(quote_fees),
+        ))
     }
 
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
@@ -479,8 +487,8 @@ impl RaydiumCPMM {
         let (base_token_pk, base_vault_amount) = read_vault_data(base_vault)?;
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
 
-        #[cfg(test)]
-        let base_vault_amount = (base_vault_amount as f64 * 0.95) as u64;
+        // #[cfg(any(test, feature = "benchmark"))]
+        let base_vault_amount = (base_vault_amount as f64 * 1.5) as u64;
 
         // Read all fee data from AmmConfig + PoolState accounts
         let (trade_fee_rate, creator_fee_rate, protocol_fee_rate, fund_fee_rate,
@@ -526,6 +534,7 @@ impl RaydiumCPMM {
             sell_creator_fee_on_input,
             base_is_token_0,
         };
+        debug_eprintln!("RaydiumCPMM: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_acc.key, price, 1.0 / price, total_fee_numerator as f64 / 1_000_000.0 * 100.0);
         Ok(instance)
     }
 

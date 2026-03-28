@@ -269,6 +269,11 @@ pub fn quote_exact_in<'a>(
     let transfer_fee_excluded_amount_in = amount_in.checked_sub(fee).context("MathOverflow")?;
     let mut amount_left = transfer_fee_excluded_amount_in;
 
+    debug_eprintln!(
+        "[quote_exact_in] amount_in={} swap_for_y={} active_id={} bin_step={} transfer_fee={} amount_after_fee={}",
+        amount_in, swap_for_y, lb_pair.active_id, lb_pair.bin_step, fee, amount_left
+    );
+
     const BIN_ARRAY_HEADER_SIZE: usize = 56;
     const BIN_SIZE: usize = 144;
 
@@ -341,14 +346,6 @@ pub fn quote_exact_in<'a>(
             let mut active_bin: Bin =
                 bytemuck::pod_read_unaligned(&bin_array_data[bin_offset..bin_offset + BIN_SIZE]);
 
-            // debug_eprintln!(
-            //     "[DLMM] Bin {}: amount_x={} amount_y={} empty={}",
-            //     slim.active_id,
-            //     active_bin.amount_x,
-            //     active_bin.amount_y,
-            //     active_bin.is_empty(!swap_for_y),
-            // );
-
             // Incremental price computation
             let price = if active_bin.price != 0 {
                 let p = active_bin.price;
@@ -371,6 +368,16 @@ pub fn quote_exact_in<'a>(
                 prev_price = Some(p);
                 p
             };
+
+            debug_eprintln!(
+                "[quote_exact_in] Bin {}: amount_x={} amount_y={} price={} empty={} amount_left={}",
+                slim.active_id,
+                active_bin.amount_x,
+                active_bin.amount_y,
+                price,
+                active_bin.is_empty(!swap_for_y),
+                amount_left,
+            );
 
             if !active_bin.is_empty(!swap_for_y) {
                 let max_amount_out = active_bin.get_max_amount_out(swap_for_y);
@@ -402,14 +409,14 @@ pub fn quote_exact_in<'a>(
                     (amount_left, std::cmp::min(amt_out, max_amount_out), fee_amt)
                 };
 
-                // debug_eprintln!(
-                //     "[DLMM] Bin {}: in={} out={} fee={} | remaining={}",
-                //     slim.active_id,
-                //     amount_in_with_fees,
-                //     amount_out,
-                //     bin_fee,
-                //     amount_left.saturating_sub(amount_in_with_fees),
-                // );
+                debug_eprintln!(
+                    "[quote_exact_in] Bin {}: in={} out={} fee={} | remaining={}",
+                    slim.active_id,
+                    amount_in_with_fees,
+                    amount_out,
+                    bin_fee,
+                    amount_left.saturating_sub(amount_in_with_fees),
+                );
 
                 amount_left = amount_left.checked_sub(amount_in_with_fees).context("MathOverflow")?;
                 total_amount_out = total_amount_out.checked_add(amount_out).context("MathOverflow")?;
@@ -442,6 +449,10 @@ pub fn quote_exact_in<'a>(
     let fee = apply_transfer_fee_cached(out_fee, total_amount_out);
     let transfer_fee_excluded_amount_out =
         total_amount_out.checked_sub(fee).context("MathOverflow")?;
+    debug_eprintln!(
+        "[quote_exact_in] RESULT: amount_in={} total_out={} out_transfer_fee={} final_out={} total_fee={}",
+        amount_in, total_amount_out, fee, transfer_fee_excluded_amount_out, total_fee
+    );
     Ok(SwapExactInQuote {
         amount_out: transfer_fee_excluded_amount_out,
         fee: total_fee,

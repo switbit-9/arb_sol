@@ -17,6 +17,7 @@ use anchor_lang::solana_program::{
 use std::ptr::NonNull;
 
 // ── Layout that matches StableVec<T> exactly: {ptr, cap, len} ────────────
+#[cfg_attr(not(target_os = "solana"), allow(dead_code))]
 #[repr(C)]
 struct FakeStableVec<T> {
     ptr: NonNull<T>,
@@ -26,6 +27,7 @@ struct FakeStableVec<T> {
 
 // ── Layout that matches StableInstruction exactly ────────────────────────
 // StableInstruction = { accounts: StableVec<AccountMeta>, data: StableVec<u8>, program_id: Pubkey }
+#[cfg_attr(not(target_os = "solana"), allow(dead_code))]
 #[repr(C)]
 struct RawStableInstruction {
     accounts: FakeStableVec<AccountMeta>,

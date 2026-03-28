@@ -1,6 +1,3 @@
-use anchor_lang::prelude::declare_program;
-use anyhow::*;
-
 macro_rules! debug_log_path {
     () => { concat!(env!("CARGO_MANIFEST_DIR"), "/debug_log_5.txt") };
 }
@@ -22,34 +19,7 @@ macro_rules! debug_eprintln {
     }};
 }
 
-declare_program!(dlmm);
-
-pub use self::dlmm::accounts::*;
-pub use self::dlmm::types::*;
-
-pub mod constants;
-pub use constants::*;
-
-pub mod conversions;
-pub use conversions::*;
-
-pub mod extensions;
-pub use extensions::*;
-
-pub mod pda;
-pub use pda::*;
-
-pub mod quote;
-pub use quote::*;
-
-pub mod seeds;
-pub use seeds::*;
-
-pub mod math;
-pub use math::*;
-
-pub mod typedefs;
-pub use typedefs::*;
-
-pub mod token;
-pub use token::*;
+#[cfg(test)]
+pub fn clear_debug_log() {
+    let _ = std::fs::write(debug_log_path!(), "");
+}

@@ -1,0 +1,36 @@
+max_amount_in: 3000000000
+PumpAmm
+PumpAMM: pool_id EgpJVVi6pBFhbmso2vu93EA7HmW74Tjs3E1cjPtMsUUc , price 0.0015560574667649132, inverse_price 642.6497872723351, fee_rate 0.0115
+MeteoraDlmm
+MeteoraDlmm: pool_id ACttPZhG92ps2c99y3u6KARN34i3SsYY3FfbhAqR5Zsp , price 0.0015373957193260074, inverse_price 650.4506207669154, fee_numerator 20168863
+MeteoraDlmm
+MeteoraDlmm: pool_id Azda7CfWNX981bhwsUCoKuGdBRB9AC6DcjSLpAdoKdWT , price 0.0015071029500303963, inverse_price 663.5246782443305, fee_numerator 11221395
+iteration bi=2 si=0: MeteoraDlmm -> PumpAmm, buy_price=0.001507 -> sell_price=0.001556, profit=0.92% buy_fee=1.1221% sell_fee=1.1500%
+[check_dlmm_to_amm] dlmm: active_id=-653 bins=10 swap_for_y=false | amm: base=146921378791558 quote=228618108496 sells_base=true | max_in=3000000000
+[check_dlmm_to_amm] bin[0] rate=4246771771459502080/6472957000000000 capped_max_in=85717 virt_in=146921378791558 virt_out=228618108496 cp_fi=1000000 cp_fo=988500
+[check_dlmm_to_amm] bin[0] opt_in=85717 opt_profit=784
+[check_dlmm_to_amm] bin[1] rate=4249049499990753280/6537687000000000 capped_max_in=12155908 virt_in=146921435028069 virt_out=228618020989 cp_fi=1000000 cp_fo=988500
+[check_dlmm_to_amm] bin[1] opt_in=0 opt_profit=0
+[check_dlmm_to_amm] RESULT: total_in=85717 total_out=86500 profit=783
+==============================================
+Analytical 2hop: 3 pools, start_token=So11111111111111111111111111111111111111112, middle_mint=84cAEWqiDsV5xXh6CB69Hi3HcnumBbdjH4THfyorpump, max_amount_in=3000000000
+
+
+
+
+  multibin_walk: pos=Pool1 cp=FO cp_reserve_in=146921378791558 cp_reserve_out=228618108496 cp_fee_factor=0.988500 max_input=3000000000
+  multibin bin[0]: slope=656.079006 cap=84755 fee=0.988779 gross_cap=85717 cumul_in=0 cumul_out=0
+  multibin bin[0]: unclamped_optimal=1022890838 optimal_input=1022890838 dlmm_line_intercept=0
+  multibin bin[0]: optimal_falls_in_bin=false (cumul_in=0 cumul_in+cap=85717)
+  multibin bin[0]: bin_boundary_input=85717 bin_boundary_profit=785 new_cumul_in=85717 new_cumul_out=56237034
+  multibin bin[0]: cp_marginal_rate=0.001538 composed=1.009156
+  multibin bin[1]: slope=649.583174 cap=12025948 fee=0.988779 gross_cap=12162427 cumul_in=85717 cumul_out=56237034
+  compute_optimal (multibin): amount=85716, profit=784.0000, buy_model=Linear { price: 663.5246782443305, fee: 0.988778605, max_in: 84755, bin_step_frac: 0.01, marginal_price: 656.079005737503 }, sell_model=CpFeeOnOutput { reserve_in: 146921378791558.0, reserve_out: 228618108496.0, fee: 0.9885, marginal_price: 0.0015381628058971167 }
+Analytical 2hop: optimal_amount=0.0001 SOL, estimated_profit=0.0000 SOL for DLMM+CP_FO (pool Azda7CfWNX981bhwsUCoKuGdBRB9AC6DcjSLpAdoKdWT -> pool EgpJVVi6pBFhbmso2vu93EA7HmW74Tjs3E1cjPtMsUUc), price_product=1.009156
+Analytical 2hop: no profitable path found
+Edge 1: [MeteoraDLMM] So111111..-> 84cAEWqi..  |  in=85717 (0.000085717) -> out=56287753 (56.287753)  |  swap_base_out max_in=85717 (0.000085717)  |  diff=0
+Edge 2: [PumpAmm] 84cAEWqi..-> So111111..  |  in=56287753 (56.287753) -> out=86579 (0.000086579)  |  swap_base_out max_in=56287789 (56.287789)  |  diff=-36
+---
+PROFIT: 862 (0.000000862) (1.0056%)
+Final: in=85717 (0.000085717) -> out=86579 (0.000086579)
+No Profit (sim=862, min=5500)

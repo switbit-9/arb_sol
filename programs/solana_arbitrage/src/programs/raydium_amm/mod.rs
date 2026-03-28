@@ -53,6 +53,8 @@ pub struct RaydiumAmm {
     pub quote_vault_amount: u64, // effective pc reserve (vault - need_take_pnl)
     pub price: f64,
     pub fee_rate: f64,
+    /// Fee in millionths (e.g. 2500 = 0.25%) for the integer checker
+    pub fee_millionths: u64,
     /// Pre-computed fee factor: 1 - fee_rate
     pub fee_factor: (f64, f64),
     pub static_base: usize,
@@ -429,12 +431,14 @@ impl RaydiumAmm {
         let coin_vault = &accounts[dyn_start + D_COIN_VAULT];
         let pc_vault = &accounts[dyn_start + D_PC_VAULT];
 
-        // Read need_take_pnl_coin and need_take_pnl_pc directly from pool data
-        let (need_take_pnl_coin, need_take_pnl_pc) = {
+        // Read need_take_pnl and swap fees directly from pool data
+        let (need_take_pnl_coin, need_take_pnl_pc, swap_fee_numerator, swap_fee_denominator) = {
             let pool_data = pool_acc.try_borrow_data()?;
             let need_take_pnl_coin = u64::from_le_bytes(pool_data[192..200].try_into().unwrap());
             let need_take_pnl_pc = u64::from_le_bytes(pool_data[200..208].try_into().unwrap());
-            (need_take_pnl_coin, need_take_pnl_pc)
+            let swap_fee_num = u64::from_le_bytes(pool_data[176..184].try_into().unwrap());
+            let swap_fee_den = u64::from_le_bytes(pool_data[184..192].try_into().unwrap());
+            (need_take_pnl_coin, need_take_pnl_pc, swap_fee_num, swap_fee_den)
         };
 
         // Read vault amounts from actual vault token accounts
@@ -460,14 +464,18 @@ impl RaydiumAmm {
             .saturating_sub(need_take_pnl_pc);
 
         #[cfg(test)]
-        let base_vault_amount = (base_vault_amount as f64 * 0.98) as u64;
+        let base_vault_amount = (base_vault_amount as f64 * 1.0) as u64;
 
         let price = quote_vault_amount as f64 / base_vault_amount as f64;
 
-        // Placeholder: fee rate will be read from on-chain account data
-        let fee_rate = 0.0;
+        // Compute fee rate from on-chain swap_fee_numerator / swap_fee_denominator
+        let fee_rate = if swap_fee_denominator > 0 {
+            swap_fee_numerator as f64 / swap_fee_denominator as f64
+        } else {
+            0.0
+        };
 
-        debug_eprintln!("RaydiumAmm: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_acc.key, price, 1.0 / price, fee_rate);
+        debug_eprintln!("RaydiumAmm: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_acc.key, price, 1.0 / price, fee_rate * 100.0);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = RaydiumAmm {
@@ -478,6 +486,11 @@ impl RaydiumAmm {
             quote_vault_amount,
             price,
             fee_rate,
+            fee_millionths: if swap_fee_denominator > 0 {
+                (swap_fee_numerator as u128 * 1_000_000 / swap_fee_denominator as u128) as u64
+            } else {
+                0
+            },
             fee_factor: { let f = 1.0 - fee_rate; (f, f) },
             static_base,
             dyn_start,

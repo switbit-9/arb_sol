@@ -1,7 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::start_bot;
+    use crate::utils::debug::clear_debug_log;
+
     use crate::InstructionData;
+    use crate::test_fixtures::{PUBKEYS_LIST, make_instruction_data};
     use crate::utils::test_utils::{
         create_mock_account_info, try_fetch_account_info_from_rpc, write_results_to_file,
     };
@@ -45,24 +48,25 @@ mod tests {
     ///
     /// All pubkeys are fetched from RPC; accounts not found on-chain get a mock fallback.
     async fn run_from_pubkeys(
-        pubkey_list: &[&str],
+        pubkey_list: &[(&str, bool)],
         data: InstructionData,
-    ) -> Option<crate::arbitrage::algo_2::ArbitragePath> {
+    ) -> Option<crate::arbitrage_checker::ArbitrageResult> {
         let rpc_client = RpcClient::new(get_api_url());
         let system_id = system_program::id();
 
         let mut accounts: Vec<AccountInfo<'static>> = Vec::with_capacity(pubkey_list.len());
 
-        for (i, pubkey_str) in pubkey_list.iter().enumerate() {
+        for (i, (pubkey_str, is_writable)) in pubkey_list.iter().enumerate() {
             let key = Pubkey::from_str(pubkey_str.trim())
                 .unwrap_or_else(|_| panic!("Invalid pubkey at index {}: {}", i, pubkey_str));
-            let account = match try_fetch_account_info_from_rpc(&rpc_client, key).await {
+            let mut account = match try_fetch_account_info_from_rpc(&rpc_client, key).await {
                 Some(info) => info,
                 None => {
                     eprintln!("  [{}] mock fallback: {}", i, key);
                     create_mock_account_info(key, system_id, None)
                 }
             };
+            account.is_writable = *is_writable;
             accounts.push(account);
         }
 
@@ -80,10 +84,10 @@ mod tests {
         match result {
             Ok(Some(path)) => {
                 eprintln!(
-                    "Arbitrage found! profit={} start_amount={} edges={}",
+                    "Arbitrage found! profit={} amount_in={} hop_count={}",
                     path.profit,
-                    path.start_amount,
-                    path.edges.len()
+                    path.amount_in,
+                    path.hop_count
                 );
                 Some(path)
             }
@@ -98,83 +102,9 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    //  PUBKEY LIST — full remaining_accounts: first 7 header + pool accounts
-    //  You provide everything, start_bot handles the rest.
-    // =========================================================================
-
-    const PUBKEYS_LIST: &[&str] = &[
-"FYnaLRpfVbAi5CnupX1JuxqokiR773WiZPiCz3dzp7BP",  // payer [0]
-"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  // token_program [1]
-"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",  // token_program_2022 [2]
-"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",  // memo [3]
-"So11111111111111111111111111111111111111112",  // wsol_mint [4]
-"Ft6ingqkyR9JkdddhFUhTtKozr2ZbZssA9nu7sPLNtsk",  // user_wsol_ata [5]
-"2TpMjYXnrgxoeVCq2i6EAR8vNWqe5MNvHCz3bENNpump",  // mint [6]
-"9BvUUpvAW5PjWWuKEmyuoisHYjA1pjUv3LxTwqpy6YPY",  // user_token_ata [7]
-"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  // pump_amm program_id [8]
-"62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",  // pump_amm protocol_fee_recipient [9]
-"94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",  // pump_amm protocol_fee_token_acc [10]
-"GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",  // pump_amm event_authority [11]
-"5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",  // pump_amm fee_config [12]
-"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",  // pump_amm fee_program [13]
-"ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",  // pump_amm global [14]
-"11111111111111111111111111111111",  // pump_amm system_program [15]
-"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  // pump_amm assoc_token_prog [16]
-"C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",  // pump_amm global_vol_acc [17]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm program_id [18]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm host_fee_in [19]
-"D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",  // meteora_dlmm event_authority [20]
-"HJAqvquMLHxcx7BYwDixukJM4zYBaTDG69uDWbo18zv",  // pump_amm [HJAqvquM] pool_id [21]
-"3J8k6Aw4CQV5BfFqmDeSEkmrmn6czQP17PX5avHSUWq6",  // pump_amm [HJAqvquM] base_vault [22]
-"DWx3Z5qQYLp2eVCFJb8AzW4LYw35z7qArWS8WF5uXZ1a",  // pump_amm [HJAqvquM] quote_vault [23]
-"WDKV514AGcLebNdbwrTFvAB1tzHJCUVnkieBiALz15i",  // pump_amm [HJAqvquM] user_volume_acc [24]
-"4shRJJF5itY9W29tVSJWVQxxSBmu6ny1BR3X1z5XyqzS",  // pump_amm [HJAqvquM] pool_v2 [25]
-"C8uZReppTGXRTnTuWBPrSgjk33fskeyCCTSxKRKSbPN2",  // pump_amm [HJAqvquM] user_vol_wsol_ata [26]
-"EfXELLTEt6H8Kgsf5LPB2A55Pue8B4GNxViWr9Aiz9AT",  // pump_amm [HJAqvquM] vault_ata [27]
-"CWmKWBryCUW5mBQcrncCEs9CamP9qWa8S6q6i6gMFTb1",  // pump_amm [HJAqvquM] vault_authority [28]
-"8dem2dfPchbvP5HauNYWBY7sUgEg2ayUZwtL2nkQGJDB",  // meteora_dlmm [8dem2dfP] pool_id [29]
-"7NZMKCnCdfuYfrdvi5RKSUbe1JSv5RPHUuE1vDLPJWXF",  // meteora_dlmm [8dem2dfP] base_vault [30]
-"EE3iaQ6gU6i2ZmteqQkxM7ticyNdHoFrwKXgeShggovP",  // meteora_dlmm [8dem2dfP] quote_vault [31]
-"J5JAe9KTZ7JPZQpgwZQegd8TqecgW9BB1vmgwyMmeBan",  // meteora_dlmm [8dem2dfP] oracle [32]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8dem2dfP] bitmap_ext [33]
-"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_0 [34]
-"FsTcjmBZJhTzN92gFdUgTjcR7ri6GcnDvGP7GArhUsg4",  // meteora_dlmm [8dem2dfP] bin_array_buy_1 [35]
-"7ik5kwcwjD9W22THNqU5spBA9pELjhzfPg2eGvKtNEGn",  // meteora_dlmm [7ik5kwcw] pool_id [36]
-"7JQ4WYhJhxBAhCghN3miadj5CL876khFFK7Bd5Kvf2mT",  // meteora_dlmm [7ik5kwcw] base_vault [37]
-"GzWDHkTcovg7r6GxS1qcyJD5kVWHccx3Ms2MkvXTQssP",  // meteora_dlmm [7ik5kwcw] quote_vault [38]
-"ZC1SdfhtapP6oavipqSSBjisawVQmb9R1HxrHxw7QuE",  // meteora_dlmm [7ik5kwcw] oracle [39]
-"DAet93xfSzooiqSXN3LWhD7jTj5CNyMvNmuLSEiyPyYn",  // meteora_dlmm [7ik5kwcw] bitmap_ext [40]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_0 [41]
-"3dt6sLTeJANVt3XKXB8pkRW5z6g5TZ7ciUWMoMhQdeDc",  // meteora_dlmm [7ik5kwcw] bin_array_buy_1 [42]
-"8EtW6HneUzxefKpVMJgQBtFerdYVzbrzKTzC5PzpQR29",  // meteora_dlmm [8EtW6Hne] pool_id [43]
-"brEp1B9kyPLLrr8cVfJVktzMamnQTRtTpenE91N5P7K",  // meteora_dlmm [8EtW6Hne] base_vault [44]
-"EFATbMKovt15TDKpBPGLL37HtduBMLWdCgAQVRaLhjXK",  // meteora_dlmm [8EtW6Hne] quote_vault [45]
-"7U4SGofGoknUxbF8pqmi2Y6Uo1r6Sc1mMPycC781qKcR",  // meteora_dlmm [8EtW6Hne] oracle [46]
-"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  // meteora_dlmm [8EtW6Hne] bitmap_ext [47]
-"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_0 [48]
-"DYVgreF767npyq4AVMXYq945nU87NdbpRqjAmDZELwTp",  // meteora_dlmm [8EtW6Hne] bin_array_buy_1 [49]
-];
-
-    fn make_instruction_data(test_mode: bool) -> InstructionData {
-        InstructionData                                                              {
-        mints: 2,
-        shared_statics_len: 13,
-        pool_types: [9, 3, 3, 3, 0, 0, 0, 0],
-        type_static_offsets: [0, 10, 10, 10, 0, 0, 0, 0],
-        mode: 0,
-        test: true,
-        group_sizes: [0, 0, 0, 0],
-        pool_fees: vec![5000],
-    }
-    }
-
-    // =========================================================================
-    //  TESTS
-    // =========================================================================
-
     #[tokio::test]
     async fn test_from_pubkeys_loop() {
+        clear_debug_log();
         loop {
             let result = run_from_pubkeys(
                 PUBKEYS_LIST,
@@ -184,8 +114,7 @@ mod tests {
 
             if let Some(path) = result {
                 if path.profit > 0 {
-                    write_results_to_file(&[Some(path)]);
-                    eprintln!("Profitable path written to file");
+                    eprintln!("Profitable result found (profit={})", path.profit);
                 }
             }
 
@@ -195,6 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_from_pubkeys_simple() {
+        clear_debug_log();
         let result = run_from_pubkeys(
             PUBKEYS_LIST,
             make_instruction_data(true),
@@ -203,8 +133,7 @@ mod tests {
 
         if let Some(path) = result {
             if path.profit > 0 {
-                write_results_to_file(&[Some(path)]);
-                eprintln!("Profitable path written to file");
+                eprintln!("Profitable result found (profit={})", path.profit);
             }
         }
 

@@ -213,8 +213,9 @@ impl ProgramMeta for ProgramInstance {
         accounts: &[AccountInfo<'a>],
         input_mint: Pubkey,
         bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
-        dispatch!(self, get_bin_segment(accounts, input_mint, bin_offset))
+        prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
+        dispatch!(self, get_bin_segment(accounts, input_mint, bin_offset, prev_price_q64))
     }
 
     fn get_bin_step_frac(&self) -> f64 {
@@ -377,13 +378,16 @@ pub trait ProgramMeta {
     /// Get the slope (price * fee_factor), capacity (max_amount_in, pre-fee), and fee_factor
     /// for a DLMM bin at `bin_offset` from the active bin in the swap direction.
     /// offset=0 is active bin, offset=1 is next bin, etc.
-    /// Returns Ok(None) for non-DLMM pools or if bin data is not available.
+    /// `prev_price_q64`: price_q64 returned by the previous bin call; pass `None` for offset=0.
+    /// Returns `(slope, capacity, fee_factor, price_q64)` where `price_q64` should be forwarded
+    /// to the next call. Non-DLMM pools return `Ok(None)`; price_q64 is 0 for non-Meteora pools.
     fn get_bin_segment<'a>(
         &self,
         _accounts: &[AccountInfo<'a>],
         _input_mint: Pubkey,
         _bin_offset: i32,
-    ) -> Result<Option<(f64, u64, f64)>> {
+        _prev_price_q64: Option<u128>,
+    ) -> Result<Option<(f64, u64, u64, f64, u128)>> {
         Ok(None)
     }
 

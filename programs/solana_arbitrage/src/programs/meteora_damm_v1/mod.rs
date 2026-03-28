@@ -537,7 +537,7 @@ impl MeteoraDammV1 {
             0.0
         };
 
-        debug_eprintln!("MeteoraDammV1: pool_id {} , price {}, inverse_price {}, fee {}/{}", *pool_account.key, price, 1.0 / price, trade_fee_numerator, trade_fee_denominator);
+        debug_eprintln!("MeteoraDammV1: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_account.key, price, 1.0 / price, if trade_fee_denominator > 0 { trade_fee_numerator as f64 / trade_fee_denominator as f64 * 100.0 } else { 0.0 });
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV1 {

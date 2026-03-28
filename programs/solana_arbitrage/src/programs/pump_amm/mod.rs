@@ -669,35 +669,23 @@ impl PumpAmm {
         let quote_vault = &accounts[dyn_start + D_QUOTE_VAULT];
 
         let pool_acc = &accounts[dyn_start + D_POOL];
-        // Read mint pubkeys from pool state account data
-        // Pool layout: 8 disc + 1 bump + 2 index + 32 creator + 32 base_mint + 32 quote_mint
-        // let pool_data = pool_acc.try_borrow_data()
-        //     .map_err(|_| ProgramError::InvalidAccountData)?;
-        // let base_token_pk = Pubkey::try_from(&pool_data[43..75])
-        //     .map_err(|_| ProgramError::InvalidAccountData)?;
-        // let quote_token_pk = Pubkey::try_from(&pool_data[75..107])
-        //     .map_err(|_| ProgramError::InvalidAccountData)?;
-        // drop(pool_data);
         
         let (base_token_pk, base_vault_amount) = read_vault_data(base_vault)?;
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
-        // TODO: maket to run in test
-        #[cfg(test)]
+
+        // #[cfg(test)]
         let base_vault_amount: u64 = (base_vault_amount as f64 * 1.05) as u64;
-        // let base_vault_amount = 0;
-        // let quote_vault_amount = 0;
+
 
         let price = get_price_f64(base_vault_amount, quote_vault_amount);
         
-        // fee from client-side pool_fee (millionths, e.g. 12500 = 1.25%)
-        // 0 = calculate from vault amounts on-chain
         let fee_numerator: u64 = if pool_fee > 0 {
             pool_fee as u64
         } else {
             get_fees_int(base_vault_amount, quote_vault_amount)
         };
         
-        debug_eprintln!("PumpAMM: pool_id {} , price {}, inverse_price {}, fee_rate {}",  *pool_acc.key, price, 1.0 / price, fee_numerator as f64 / FEE_DENOM as f64);
+        debug_eprintln!("PumpAMM: pool_id {} , price {}, inverse_price {}, fee_rate {}%",  *pool_acc.key, price, 1.0 / price, fee_numerator as f64 / FEE_DENOM as f64 * 100.0);
 
         // Defer max amounts, transfer fees, and is_merhem to prepare_for_execution()
         let instance = PumpAmm {

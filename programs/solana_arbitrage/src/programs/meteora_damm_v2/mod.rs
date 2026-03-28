@@ -73,7 +73,7 @@ pub struct MeteoraDammV2 {
     // pub pool_authority: AccountInfo<'info>,
     // pub event_authority: AccountInfo<'info>,
     // pub referral_token_account: AccountInfo<'info>,
-    pub pool: Option<Pool>,
+    pub pool: Option<Box<Pool>>,
     pub sqrt_price: u128,
     pub liquidity: u128,
     pub collect_fee_mode: u8,
@@ -178,7 +178,7 @@ impl ProgramMeta for MeteoraDammV2 {
         if self.pool.is_none() {
             let pool_id = &accounts[self.dyn_start + D_POOL];
             let pool_data = pool_id.try_borrow_data()?;
-            self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
+            self.pool = Some(Box::new(bytemuck::pod_read_unaligned(&pool_data[8..])));
         }
         let pool = self.pool.as_ref().unwrap();
 
@@ -212,7 +212,7 @@ impl ProgramMeta for MeteoraDammV2 {
         if self.pool.is_none() {
             let pool_id = &accounts[self.dyn_start + D_POOL];
             let pool_data = pool_id.try_borrow_data()?;
-            self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
+            self.pool = Some(Box::new(bytemuck::pod_read_unaligned(&pool_data[8..])));
         }
         
         let trade_direction = if input_mint == self.base_token_pk {
@@ -261,7 +261,7 @@ impl ProgramMeta for MeteoraDammV2 {
         if self.pool.is_none() {
             let pool_id = &accounts[self.dyn_start + D_POOL];
             let pool_data = pool_id.try_borrow_data()?;
-            self.pool = Some(bytemuck::pod_read_unaligned(&pool_data[8..]));
+            self.pool = Some(Box::new(bytemuck::pod_read_unaligned(&pool_data[8..])));
         }
         let trade_direction = if output_mint == self.base_token_pk {
             TradeDirection::BtoA
@@ -559,7 +559,7 @@ impl MeteoraDammV2 {
         // Read base/quote token pubkeys from pool state (no longer passed as accounts)
 
         #[cfg(test)]
-        let sqrt_price: u128 = (sqrt_price as f64 * 1.2) as u128;
+        let sqrt_price: u128 = (sqrt_price as f64 * 1.0) as u128;
 
         let (price, inverse_price) = get_prices(sqrt_price)?;
         let base_vault = accounts[dyn_start + D_BASE_VAULT].clone();
@@ -586,7 +586,7 @@ impl MeteoraDammV2 {
         let fee_rate_a_to_b = fee_rate;
         let fee_rate_b_to_a = fee_rate;
 
-        debug_eprintln!("MeteoraDammV2: pool_id {} , price {}, inverse_price {}, fee_rate {}", *pool_id.key, price, inverse_price, fee_rate);
+        debug_eprintln!("MeteoraDammV2: pool_id {} , price {}, inverse_price {}, fee_rate {}%", *pool_id.key, price, inverse_price, fee_rate * 100.0);
 
         // Defer max amounts and transfer fees to prepare_for_execution()
         let instance = MeteoraDammV2 {

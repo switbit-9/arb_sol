@@ -69,21 +69,24 @@ impl Tick {
 /// TickArray account discriminator
 pub const TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [69, 97, 189, 190, 110, 7, 66, 187];
 
-/// Tick array header (before the actual ticks)
+/// Tick array header (before the actual ticks).
+///
+/// On-chain Orca TickArray layout (after 8-byte discriminator):
+///   start_tick_index (4 bytes) | ticks (88 * 113 bytes) | whirlpool (32 bytes)
+///
+/// Only start_tick_index comes before the tick data — whirlpool is at the END.
 #[derive(Clone, Copy, Debug)]
 #[repr(C, packed)]
 pub struct TickArrayHeader {
     /// Start tick index for this array
     pub start_tick_index: i32,
-    /// Whirlpool this tick array belongs to
-    pub whirlpool: [u8; 32],
 }
 
 unsafe impl Pod for TickArrayHeader {}
 unsafe impl Zeroable for TickArrayHeader {}
 
 impl TickArrayHeader {
-    pub const LEN: usize = 4 + 32; // 36 bytes
+    pub const LEN: usize = 4; // only start_tick_index before tick data
 }
 
 /// Simplified tick array for reading on-chain
@@ -99,7 +102,7 @@ impl<'a> TickArraySimple<'a> {
     /// Parse tick array header and get reference to tick data
     /// Does NOT load all ticks into memory - lazy loading
     pub fn try_from_bytes(data: &'a [u8]) -> Option<Self> {
-        // Account: 8 (discriminator) + 4 (start_tick_index) + 32 (whirlpool) + ticks
+        // Account: 8 (discriminator) + 4 (start_tick_index) + ticks + 32 (whirlpool at end)
         if data.len() < 8 + TickArrayHeader::LEN + Tick::LEN {
             return None;
         }
@@ -224,6 +227,177 @@ impl<'a> TickArraySimple<'a> {
 
         None
     }
+}
+
+// ── DynamicTickArray support ──
+//
+// Orca Whirlpool v2 uses DynamicTickArrays with variable-size ticks.
+// Layout (after 8-byte discriminator):
+//   start_tick_index: i32    (4 bytes)
+//   whirlpool: Pubkey        (32 bytes)
+//   tick_bitmap: u128        (16 bytes) — bit i = tick i is initialized
+//   ticks: [DynamicTick; 88] (variable)
+//
+// DynamicTick encoding:
+//   0x00 = Uninitialized (1 byte)
+//   0x01 = Initialized   (1 + 112 bytes = 113 bytes of DynamicTickData)
+
+pub const DYNAMIC_TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [17, 216, 246, 142, 225, 199, 218, 56];
+
+const DYNAMIC_HEADER_LEN: usize = 4 + 32 + 16; // start_tick_index + whirlpool + tick_bitmap
+
+/// Parse a DynamicTickArray and extract initialized ticks into a TickArraySimple-compatible format.
+/// Returns (start_tick_index, Vec of (slot_index, Tick)) for initialized ticks only.
+pub fn parse_dynamic_tick_array(data: &[u8]) -> Option<(i32, [(usize, Tick); TICK_ARRAY_SIZE_USIZE])> {
+    let min_len = 8 + DYNAMIC_HEADER_LEN + TICK_ARRAY_SIZE_USIZE; // 88 uninitialized = 88 bytes
+    if data.len() < min_len {
+        return None;
+    }
+    if &data[0..8] != &DYNAMIC_TICK_ARRAY_DISCRIMINATOR {
+        return None;
+    }
+
+    let start_tick_index = i32::from_le_bytes(data[8..12].try_into().ok()?);
+    // tick_bitmap at offset 44..60
+    let tick_bitmap = u128::from_le_bytes(data[44..60].try_into().ok()?);
+
+    let mut result = [(0usize, Tick::default()); TICK_ARRAY_SIZE_USIZE];
+    let mut result_count = 0usize;
+    let mut cursor = 8 + DYNAMIC_HEADER_LEN; // offset 60
+
+    for i in 0..TICK_ARRAY_SIZE_USIZE {
+        if cursor >= data.len() { break; }
+        let tag = data[cursor];
+        if tag == 0 {
+            // Uninitialized — 1 byte
+            cursor += 1;
+        } else {
+            // Initialized — 1 byte tag + 112 bytes DynamicTickData
+            if cursor + 113 > data.len() { break; }
+            let td = &data[cursor + 1..cursor + 113];
+            let tick = Tick {
+                initialized: true,
+                liquidity_net: i128::from_le_bytes(td[0..16].try_into().ok()?),
+                liquidity_gross: u128::from_le_bytes(td[16..32].try_into().ok()?),
+                fee_growth_outside_a: u128::from_le_bytes(td[32..48].try_into().ok()?),
+                fee_growth_outside_b: u128::from_le_bytes(td[48..64].try_into().ok()?),
+                reward_growths_outside: [
+                    u128::from_le_bytes(td[64..80].try_into().ok()?),
+                    u128::from_le_bytes(td[80..96].try_into().ok()?),
+                    u128::from_le_bytes(td[96..112].try_into().ok()?),
+                ],
+            };
+            if result_count < TICK_ARRAY_SIZE_USIZE {
+                result[result_count] = (i, tick);
+                result_count += 1;
+            }
+            cursor += 113;
+        }
+    }
+
+    // Sentinel: mark end with slot_index=TICK_ARRAY_SIZE_USIZE
+    // Caller uses result_count to know how many entries are valid
+    // We encode count in the first unused slot
+    if result_count < TICK_ARRAY_SIZE_USIZE {
+        result[result_count].0 = TICK_ARRAY_SIZE_USIZE; // sentinel
+    }
+
+    let _ = tick_bitmap; // bitmap is redundant with tag-based parsing
+    Some((start_tick_index, result))
+}
+
+/// Check if a DynamicTickArray contains a given tick and find the next initialized tick.
+/// Returns the same (tick_index, Tick) format as TickArraySimple::get_next_initialized_tick.
+pub fn dynamic_find_next_initialized_tick(
+    data: &[u8],
+    current_tick: i32,
+    tick_spacing: u16,
+    a_to_b: bool,
+) -> Option<(i32, Option<Tick>)> {
+    let min_len = 8 + DYNAMIC_HEADER_LEN;
+    if data.len() < min_len { return None; }
+    if &data[0..8] != &DYNAMIC_TICK_ARRAY_DISCRIMINATOR { return None; }
+
+    let start_tick_index = i32::from_le_bytes(data[8..12].try_into().ok()?);
+    let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
+
+    // Check if this array contains the current tick
+    if current_tick < start_tick_index || current_tick >= start_tick_index + ticks_in_array {
+        return None;
+    }
+
+    let offset = (current_tick - start_tick_index) / tick_spacing as i32;
+    let tick_bitmap = u128::from_le_bytes(data[44..60].try_into().ok()?);
+
+    // Walk through tick data to build offset→cursor map
+    // We need to find the tick data position for the target slot
+    let mut cursor = 8 + DYNAMIC_HEADER_LEN; // offset 60
+    let mut slot_cursors = [0u32; TICK_ARRAY_SIZE_USIZE];
+    for i in 0..TICK_ARRAY_SIZE_USIZE {
+        if cursor >= data.len() { break; }
+        slot_cursors[i] = cursor as u32;
+        if data[cursor] == 0 {
+            cursor += 1; // uninitialized
+        } else {
+            cursor += 113; // initialized
+        }
+    }
+
+    if a_to_b {
+        // Search left (decreasing), inclusive of current offset
+        for i in (0..=offset as usize).rev() {
+            if i >= TICK_ARRAY_SIZE_USIZE { continue; }
+            let c = slot_cursors[i] as usize;
+            if c < data.len() && data[c] != 0 && c + 113 <= data.len() {
+                let td = &data[c + 1..c + 113];
+                let tick = Tick {
+                    initialized: true,
+                    liquidity_net: i128::from_le_bytes(td[0..16].try_into().ok()?),
+                    liquidity_gross: u128::from_le_bytes(td[16..32].try_into().ok()?),
+                    fee_growth_outside_a: u128::from_le_bytes(td[32..48].try_into().ok()?),
+                    fee_growth_outside_b: u128::from_le_bytes(td[48..64].try_into().ok()?),
+                    reward_growths_outside: [
+                        u128::from_le_bytes(td[64..80].try_into().ok()?),
+                        u128::from_le_bytes(td[80..96].try_into().ok()?),
+                        u128::from_le_bytes(td[96..112].try_into().ok()?),
+                    ],
+                };
+                let found_tick = start_tick_index + (i as i32) * tick_spacing as i32;
+                return Some((found_tick, Some(tick)));
+            }
+        }
+    } else {
+        // Search right (increasing), exclusive of current offset
+        let start = (offset as usize) + 1;
+        for i in start..TICK_ARRAY_SIZE_USIZE {
+            let c = slot_cursors[i] as usize;
+            if c < data.len() && data[c] != 0 && c + 113 <= data.len() {
+                let td = &data[c + 1..c + 113];
+                let tick = Tick {
+                    initialized: true,
+                    liquidity_net: i128::from_le_bytes(td[0..16].try_into().ok()?),
+                    liquidity_gross: u128::from_le_bytes(td[16..32].try_into().ok()?),
+                    fee_growth_outside_a: u128::from_le_bytes(td[32..48].try_into().ok()?),
+                    fee_growth_outside_b: u128::from_le_bytes(td[48..64].try_into().ok()?),
+                    reward_growths_outside: [
+                        u128::from_le_bytes(td[64..80].try_into().ok()?),
+                        u128::from_le_bytes(td[80..96].try_into().ok()?),
+                        u128::from_le_bytes(td[96..112].try_into().ok()?),
+                    ],
+                };
+                let found_tick = start_tick_index + (i as i32) * tick_spacing as i32;
+                return Some((found_tick, Some(tick)));
+            }
+        }
+    }
+
+    // No initialized tick found — return boundary
+    let boundary = if a_to_b {
+        start_tick_index
+    } else {
+        start_tick_index + ticks_in_array
+    };
+    Some((boundary, None))
 }
 
 /// Get the start index of the tick array containing the given tick

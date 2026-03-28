@@ -1,0 +1,49 @@
+max_amount_in: 3000000000
+OrcaWhirlpool
+OrcaWhirlpool: pool_id Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2 , price 0.027569857153574427, inverse_price 36.271497325126695, fee_rate 500
+OrcaWhirlpool
+OrcaWhirlpool: pool_id 6KX9iiLFBcwfjq3uMqeeMukaMZt5rQYTsbZZTnxbzsz6 , price 0.027533830449694718, inverse_price 36.31895684935793, fee_rate 1600
+RaydiumCPMM
+RaydiumAmm
+RaydiumAmm: pool_id uCk125EJf7iCjz43aSdzuyMAT5eii6c5zKVxEnGnosa , price 40.392287375823294, inverse_price 0.02475720155919042, fee_rate 0
+RaydiumAmm
+RaydiumAmm: pool_id HPUFRpydYrA5FCBm7W1oL6JdbRg26qt6H5wo4yAud4vq , price 0.030562210638716857, inverse_price 32.72014619037992, fee_rate 0
+iteration bi=0 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.027570 -> sell_price=0.018334, profit=49.92% buy_fee=0.0500% sell_fee=0.2500%
+iteration bi=0 si=3: OrcaWhirlpool -> RaydiumAmm, buy_price=0.027570 -> sell_price=0.024757, profit=11.31% buy_fee=0.0500% sell_fee=0.0000%
+[check_wp_to_amm] wp: sqrt_p=3062929357313105562 liq=4044590190899 tick=-35913 fee=500 a_to_b=true | amm: base=367044878 quote=14825782192 sells_base=true | max_in=3000000000
+[check_wp_to_amm] RESULT: total_in=0 total_out=0 profit=0
+iteration bi=1 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.027534 -> sell_price=0.018334, profit=49.56% buy_fee=0.1600% sell_fee=0.2500%
+iteration bi=1 si=3: OrcaWhirlpool -> RaydiumAmm, buy_price=0.027534 -> sell_price=0.024757, profit=11.04% buy_fee=0.1600% sell_fee=0.0000%
+[check_wp_to_amm] wp: sqrt_p=3060927473139787684 liq=8226815710 tick=-35926 fee=1600 a_to_b=true | amm: base=367044878 quote=14825782192 sells_base=true | max_in=3000000000
+[check_wp_to_amm] RESULT: total_in=0 total_out=0 profit=0
+iteration bi=3 si=2: RaydiumAmm -> RaydiumCPMM, buy_price=0.024757 -> sell_price=0.018334, profit=34.70% buy_fee=0.0000% sell_fee=0.2500%
+iteration bi=4 si=0: RaydiumAmm -> OrcaWhirlpool, buy_price=0.030562 -> sell_price=0.027570, profit=10.80% buy_fee=0.0000% sell_fee=0.0500%
+[check_amm_to_wp] amm: base=14942344793 quote=456671089 buys_base=true | wp: sqrt_p=3062929357313105562 liq=4044590190899 tick=-35913 fee=500 a_to_b=false | max_in=3000000000
+[check_amm_to_wp] RESULT: total_in=0 total_out=0 profit=0
+iteration bi=4 si=1: RaydiumAmm -> OrcaWhirlpool, buy_price=0.030562 -> sell_price=0.027534, profit=10.82% buy_fee=0.0000% sell_fee=0.1600%
+[check_amm_to_wp] amm: base=14942344793 quote=456671089 buys_base=true | wp: sqrt_p=3060927473139787684 liq=8226815710 tick=-35926 fee=1600 a_to_b=false | max_in=3000000000
+[check_amm_to_wp] RESULT: total_in=0 total_out=0 profit=0
+iteration bi=4 si=2: RaydiumAmm -> RaydiumCPMM, buy_price=0.030562 -> sell_price=0.018334, profit=66.28% buy_fee=0.0000% sell_fee=0.2500%
+iteration bi=4 si=3: RaydiumAmm -> RaydiumAmm, buy_price=0.030562 -> sell_price=0.024757, profit=23.45% buy_fee=0.0000% sell_fee=0.0000%
+[check_amm_amm] pool_a: base=14942344793 quote=456671089 buy_fi=0 buy_fo=0 sell_fi=0 sell_fo=0 | pool_b: base=367044878 quote=14825782192 buy_fi=0 buy_fo=0 sell_fi=0 sell_fo=0 | max_in=3000000000
+[check_amm_amm] buy A, sell B: amt=387086598 profit=13685209920
+==============================================
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  CHECKER vs GOLDEN comparison                                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Golden:       amount=     2999999872     profit=    0.942409320 SOL
+║  Checker:      amount=      387086598     profit=   13.685209920 SOL
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Checker vs Golden:  amount_diff=87.0971%   profit_gap=1352.1514%
+║  Same path (golden vs checker): NO
+║  Result: CHECK
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  GOLDEN PATH:
+║    buy:  [OrcaWhirlpool] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool 6KX9iiLFBcwfjq3uMqeeMukaMZt5rQYTsbZZTnxbzsz6)
+║    sell: [RaydiumCPMM] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs)
+║  CHECKER PATH:
+║    buy:  [RaydiumAmm] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool HPUFRpydYrA5FCBm7W1oL6JdbRg26qt6H5wo4yAud4vq)
+║    sell: [RaydiumAmm] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool uCk125EJf7iCjz43aSdzuyMAT5eii6c5zKVxEnGnosa)
+╚══════════════════════════════════════════════════════════════════════════════╝
+

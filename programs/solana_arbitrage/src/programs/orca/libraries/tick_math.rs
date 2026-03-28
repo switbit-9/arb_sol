@@ -1,4 +1,4 @@
-use super::big_num::U128;
+use super::big_num::mul_u256;
 use anchor_lang::prelude::*;
 
 /// The minimum tick
@@ -12,106 +12,165 @@ pub const MIN_SQRT_PRICE_X64: u128 = 4295048016;
 
 /// The maximum value that can be returned from get_sqrt_price_at_tick
 /// Equivalent to get_sqrt_price_at_tick(MAX_TICK)
-pub const MAX_SQRT_PRICE_X64: u128 = 79226673521066979257578248091;
+pub const MAX_SQRT_PRICE_X64: u128 = 79226673515401279992447579055;
 
-// Number 64, encoded as a U128
-const NUM_64: U128 = U128([64, 0]);
+/// Multiply two u128 values, shift right by 96 bits, return as u128.
+/// Used for positive-tick sqrt_price computation with Q96 constants.
+#[inline]
+fn mul_shift_96(n0: u128, n1: u128) -> u128 {
+    mul_u256(n0, n1).shift_right(96).try_into_u128().unwrap()
+}
 
 /// Calculates 1.0001^(tick/2) as a U64.64 number representing
 /// the square root of the ratio of the two assets (token_1/token_0)
 pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128> {
-    let abs_tick = tick.abs() as u32;
-    if abs_tick > MAX_TICK as u32 {
+    if tick.unsigned_abs() > MAX_TICK as u32 {
         return Err(error!(crate::programs::SolarBError::AccountMismatch));
     }
 
-    // i = 0
-    let mut ratio = if abs_tick & 0x1 != 0 {
-        U128([0xfffcb933bd6fb800, 0])
+    if tick >= 0 {
+        Ok(get_sqrt_price_positive_tick(tick))
     } else {
-        // 2^64
-        U128([0, 1])
-    };
-    // i = 1
-    if abs_tick & 0x2 != 0 {
-        ratio = (ratio * U128([0xfff97272373d4000, 0])) >> NUM_64
-    };
-    // i = 2
-    if abs_tick & 0x4 != 0 {
-        ratio = (ratio * U128([0xfff2e50f5f657000, 0])) >> NUM_64
-    };
-    // i = 3
-    if abs_tick & 0x8 != 0 {
-        ratio = (ratio * U128([0xffe5caca7e10f000, 0])) >> NUM_64
-    };
-    // i = 4
-    if abs_tick & 0x10 != 0 {
-        ratio = (ratio * U128([0xffcb9843d60f7000, 0])) >> NUM_64
-    };
-    // i = 5
-    if abs_tick & 0x20 != 0 {
-        ratio = (ratio * U128([0xff973b41fa98e800, 0])) >> NUM_64
-    };
-    // i = 6
-    if abs_tick & 0x40 != 0 {
-        ratio = (ratio * U128([0xff2ea16466c9b000, 0])) >> NUM_64
-    };
-    // i = 7
-    if abs_tick & 0x80 != 0 {
-        ratio = (ratio * U128([0xfe5dee046a9a3800, 0])) >> NUM_64
-    };
-    // i = 8
-    if abs_tick & 0x100 != 0 {
-        ratio = (ratio * U128([0xfcbe86c7900bb000, 0])) >> NUM_64
-    };
-    // i = 9
-    if abs_tick & 0x200 != 0 {
-        ratio = (ratio * U128([0xf987a7253ac65800, 0])) >> NUM_64
-    };
-    // i = 10
-    if abs_tick & 0x400 != 0 {
-        ratio = (ratio * U128([0xf3392b0822bb6000, 0])) >> NUM_64
-    };
-    // i = 11
-    if abs_tick & 0x800 != 0 {
-        ratio = (ratio * U128([0xe7159475a2caf000, 0])) >> NUM_64
-    };
-    // i = 12
-    if abs_tick & 0x1000 != 0 {
-        ratio = (ratio * U128([0xd097f3bdfd2f2000, 0])) >> NUM_64
-    };
-    // i = 13
-    if abs_tick & 0x2000 != 0 {
-        ratio = (ratio * U128([0xa9f746462d9f8000, 0])) >> NUM_64
-    };
-    // i = 14
-    if abs_tick & 0x4000 != 0 {
-        ratio = (ratio * U128([0x70d869a156f31c00, 0])) >> NUM_64
-    };
-    // i = 15
-    if abs_tick & 0x8000 != 0 {
-        ratio = (ratio * U128([0x31be135f97ed3200, 0])) >> NUM_64
-    };
-    // i = 16
-    if abs_tick & 0x10000 != 0 {
-        ratio = (ratio * U128([0x9aa508b5b85a500, 0])) >> NUM_64
-    };
-    // i = 17
-    if abs_tick & 0x20000 != 0 {
-        ratio = (ratio * U128([0x5d6af8dedc582c, 0])) >> NUM_64
-    };
-    // i = 18
-    if abs_tick & 0x40000 != 0 {
-        ratio = (ratio * U128([0x2216e584f5fa, 0])) >> NUM_64
+        Ok(get_sqrt_price_negative_tick(tick))
     }
-
-    // Divide to obtain 1.0001^(2^(i - 1)) * 2^32 in numerator
-    if tick > 0 {
-        ratio = U128::MAX / ratio;
-    }
-
-    Ok(ratio.as_u128())
 }
+
+fn get_sqrt_price_positive_tick(tick: i32) -> u128 {
+    let mut ratio: u128 = if tick & 1 != 0 {
+        79232123823359799118286999567
+    } else {
+        79228162514264337593543950336
+    };
+
+    if tick & 2 != 0 {
+        ratio = mul_shift_96(ratio, 79236085330515764027303304731);
+    }
+    if tick & 4 != 0 {
+        ratio = mul_shift_96(ratio, 79244008939048815603706035061);
+    }
+    if tick & 8 != 0 {
+        ratio = mul_shift_96(ratio, 79259858533276714757314932305);
+    }
+    if tick & 16 != 0 {
+        ratio = mul_shift_96(ratio, 79291567232598584799939703904);
+    }
+    if tick & 32 != 0 {
+        ratio = mul_shift_96(ratio, 79355022692464371645785046466);
+    }
+    if tick & 64 != 0 {
+        ratio = mul_shift_96(ratio, 79482085999252804386437311141);
+    }
+    if tick & 128 != 0 {
+        ratio = mul_shift_96(ratio, 79736823300114093921829183326);
+    }
+    if tick & 256 != 0 {
+        ratio = mul_shift_96(ratio, 80248749790819932309965073892);
+    }
+    if tick & 512 != 0 {
+        ratio = mul_shift_96(ratio, 81282483887344747381513967011);
+    }
+    if tick & 1024 != 0 {
+        ratio = mul_shift_96(ratio, 83390072131320151908154831281);
+    }
+    if tick & 2048 != 0 {
+        ratio = mul_shift_96(ratio, 87770609709833776024991924138);
+    }
+    if tick & 4096 != 0 {
+        ratio = mul_shift_96(ratio, 97234110755111693312479820773);
+    }
+    if tick & 8192 != 0 {
+        ratio = mul_shift_96(ratio, 119332217159966728226237229890);
+    }
+    if tick & 16384 != 0 {
+        ratio = mul_shift_96(ratio, 179736315981702064433883588727);
+    }
+    if tick & 32768 != 0 {
+        ratio = mul_shift_96(ratio, 407748233172238350107850275304);
+    }
+    if tick & 65536 != 0 {
+        ratio = mul_shift_96(ratio, 2098478828474011932436660412517);
+    }
+    if tick & 131072 != 0 {
+        ratio = mul_shift_96(ratio, 55581415166113811149459800483533);
+    }
+    if tick & 262144 != 0 {
+        ratio = mul_shift_96(ratio, 38992368544603139932233054999993551);
+    }
+
+    ratio >> 32
+}
+
+fn get_sqrt_price_negative_tick(tick: i32) -> u128 {
+    let abs_tick = tick.abs();
+
+    let mut ratio: u128 = if abs_tick & 1 != 0 {
+        18445821805675392311
+    } else {
+        18446744073709551616
+    };
+
+    if abs_tick & 2 != 0 {
+        ratio = (ratio * 18444899583751176498) >> 64
+    }
+    if abs_tick & 4 != 0 {
+        ratio = (ratio * 18443055278223354162) >> 64
+    }
+    if abs_tick & 8 != 0 {
+        ratio = (ratio * 18439367220385604838) >> 64
+    }
+    if abs_tick & 16 != 0 {
+        ratio = (ratio * 18431993317065449817) >> 64
+    }
+    if abs_tick & 32 != 0 {
+        ratio = (ratio * 18417254355718160513) >> 64
+    }
+    if abs_tick & 64 != 0 {
+        ratio = (ratio * 18387811781193591352) >> 64
+    }
+    if abs_tick & 128 != 0 {
+        ratio = (ratio * 18329067761203520168) >> 64
+    }
+    if abs_tick & 256 != 0 {
+        ratio = (ratio * 18212142134806087854) >> 64
+    }
+    if abs_tick & 512 != 0 {
+        ratio = (ratio * 17980523815641551639) >> 64
+    }
+    if abs_tick & 1024 != 0 {
+        ratio = (ratio * 17526086738831147013) >> 64
+    }
+    if abs_tick & 2048 != 0 {
+        ratio = (ratio * 16651378430235024244) >> 64
+    }
+    if abs_tick & 4096 != 0 {
+        ratio = (ratio * 15030750278693429944) >> 64
+    }
+    if abs_tick & 8192 != 0 {
+        ratio = (ratio * 12247334978882834399) >> 64
+    }
+    if abs_tick & 16384 != 0 {
+        ratio = (ratio * 8131365268884726200) >> 64
+    }
+    if abs_tick & 32768 != 0 {
+        ratio = (ratio * 3584323654723342297) >> 64
+    }
+    if abs_tick & 65536 != 0 {
+        ratio = (ratio * 696457651847595233) >> 64
+    }
+    if abs_tick & 131072 != 0 {
+        ratio = (ratio * 26294789957452057) >> 64
+    }
+    if abs_tick & 262144 != 0 {
+        ratio = (ratio * 37481735321082) >> 64
+    }
+
+    ratio
+}
+
+const LOG_B_2_X32: i128 = 59543866431248i128;
+const BIT_PRECISION: u32 = 14;
+const LOG_B_P_ERR_MARGIN_LOWER_X64: i128 = 184467440737095516i128;
+const LOG_B_P_ERR_MARGIN_UPPER_X64: i128 = 15793534762490258745i128;
 
 /// Calculates the greatest tick value such that get_sqrt_price_at_tick(tick) <= ratio
 pub fn get_tick_at_sqrt_price(sqrt_price_x64: u128) -> Result<i32> {
@@ -134,7 +193,6 @@ pub fn get_tick_at_sqrt_price(sqrt_price_x64: u128) -> Result<i32> {
         sqrt_price_x64 << (63 - msb)
     };
 
-    const BIT_PRECISION: u32 = 16;
     while bit > 0 && precision < BIT_PRECISION {
         r *= r;
         let is_r_more_than_two = r >> 127 as u32;
@@ -146,14 +204,14 @@ pub fn get_tick_at_sqrt_price(sqrt_price_x64: u128) -> Result<i32> {
     let log2p_fraction_x32 = log2p_fraction_x64 >> 32;
     let log2p_x32 = log2p_integer_x32 + log2p_fraction_x32;
 
-    // Change of base rule: multiply with 2^32 / log2 (√1.0001)
-    let log_sqrt_10001_x64 = log2p_x32 * 59543866431248i128;
+    // Change of base rule: multiply with 2^32 / log2 (sqrt 1.0001)
+    let log_sqrt_10001_x64 = log2p_x32 * LOG_B_2_X32;
 
     // tick - 0.01
-    let tick_low = ((log_sqrt_10001_x64 - 184467440737095516i128) >> 64) as i32;
+    let tick_low = ((log_sqrt_10001_x64 - LOG_B_P_ERR_MARGIN_LOWER_X64) >> 64) as i32;
 
-    // tick + (2^-14 / log2(√1.0001)) + 0.01
-    let tick_high = ((log_sqrt_10001_x64 + 15793534762490258745i128) >> 64) as i32;
+    // tick + (2^-14 / log2(sqrt 1.0001)) + 0.01
+    let tick_high = ((log_sqrt_10001_x64 + LOG_B_P_ERR_MARGIN_UPPER_X64) >> 64) as i32;
 
     Ok(if tick_low == tick_high {
         tick_low

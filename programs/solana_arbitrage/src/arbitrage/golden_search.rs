@@ -4,9 +4,9 @@ use crate::utils::token::{get_transfer_fees, MintFee};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
-/// Maximum golden-section iterations. 50 iterations on a 1 SOL range narrows
+/// Maximum golden-section iterations. 100 iterations on a 1 SOL range narrows
 /// well below 1 lamport — fully exhaustive.
-const MAX_ITERATIONS: usize = 50;
+const MAX_ITERATIONS: usize = 100;
 
 /// Minimum input amount to evaluate (avoids division-by-zero edge cases).
 const MIN_AMOUNT: u64 = 1_000;
@@ -155,7 +155,7 @@ fn golden_section_on_pair<'info>(
         if b <= a + 1 { break; }
         if fc > fd {
             b = d; d = c; fd = fc;
-            c = b.saturating_sub(golden_div(b - a));
+            c = b.saturating_sub(golden_div(b.saturating_sub(a)));
             fc = eval!(c);
         } else {
             a = c; c = d; fc = fd;
@@ -209,7 +209,7 @@ pub fn golden_search_3hop_path<'info>(
         if b <= a + 1 { break; }
         if fc > fd {
             b = d; d = c; fd = fc;
-            c = b.saturating_sub(golden_div(b - a));
+            c = b.saturating_sub(golden_div(b.saturating_sub(a)));
             fc = eval!(c);
         } else {
             a = c; c = d; fc = fd;
