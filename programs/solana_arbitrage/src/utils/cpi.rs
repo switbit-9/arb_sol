@@ -8,7 +8,7 @@
 //! struct matching `StableInstruction`'s layout, where the inner "vecs" just
 //! point at the caller's stack slices.  Total heap allocations: **zero**.
 
-use anchor_lang::solana_program::{
+use solana_program::{
     account_info::AccountInfo,
     instruction::AccountMeta,
     program_error::ProgramError,
@@ -112,7 +112,7 @@ pub fn invoke_cpi_signed<'a>(
     #[cfg(not(target_os = "solana"))]
     {
         // Off-chain (test) fallback — delegate to the standard path.
-        use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed_unchecked};
+        use solana_program::{instruction::Instruction, program::invoke_signed_unchecked};
         let ix = Instruction {
             program_id: *program_id,
             accounts: metas.to_vec(),

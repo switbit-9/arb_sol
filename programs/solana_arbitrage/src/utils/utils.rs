@@ -1,6 +1,7 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::TokenAccount;
+use crate::compat::*;
 use crate::programs::SolarBError;
+use solana_program::program_pack::Pack;
+use spl_token_2022::state::Account as TokenAccount2022;
 
 // SPL Token account layout: mint (32) + owner (32) + amount (8)
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
@@ -11,12 +12,12 @@ const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 pub fn read_token_amount(account: &AccountInfo) -> Result<u64> {
     let data = account.try_borrow_data()?;
     if data.len() < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8 {
-        return Err(error!(SolarBError::InvalidAccountData));
+        return Err(solar_error!(SolarBError::InvalidAccountData));
     }
     Ok(u64::from_le_bytes(
         data[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
             .try_into()
-            .map_err(|_| error!(SolarBError::InvalidAccountData))?,
+            .map_err(|_| solar_error!(SolarBError::InvalidAccountData))?,
     ))
 }
 
@@ -26,24 +27,24 @@ pub fn read_token_amount(account: &AccountInfo) -> Result<u64> {
 pub fn read_vault_data(account: &AccountInfo) -> Result<(Pubkey, u64)> {
     let data = account.try_borrow_data()?;
     if data.len() < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8 {
-        return Err(error!(SolarBError::InvalidAccountData));
+        return Err(solar_error!(SolarBError::InvalidAccountData));
     }
     let mint = Pubkey::new_from_array(
         data[0..32]
             .try_into()
-            .map_err(|_| error!(SolarBError::InvalidAccountData))?,
+            .map_err(|_| solar_error!(SolarBError::InvalidAccountData))?,
     );
     let amount = u64::from_le_bytes(
         data[TOKEN_ACCOUNT_AMOUNT_OFFSET..TOKEN_ACCOUNT_AMOUNT_OFFSET + 8]
             .try_into()
-            .map_err(|_| error!(SolarBError::InvalidAccountData))?,
+            .map_err(|_| solar_error!(SolarBError::InvalidAccountData))?,
     );
     Ok((mint, amount))
 }
 
-pub fn parse_token_account<'info>(account: &AccountInfo<'info>) -> Result<TokenAccount> {
-    let mut data = &account.try_borrow_data()?[..];
-    let token_account = TokenAccount::try_deserialize(&mut data)?;
+pub fn parse_token_account<'info>(account: &AccountInfo<'info>) -> Result<TokenAccount2022> {
+    let data = account.try_borrow_data()?;
+    let token_account = TokenAccount2022::unpack(&data)?;
     Ok(token_account)
 }
 

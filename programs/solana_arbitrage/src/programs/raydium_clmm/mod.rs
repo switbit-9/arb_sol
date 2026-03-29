@@ -10,12 +10,7 @@ use self::states::{
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::cpi::invoke_cpi;
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    account_info::AccountInfo,
-    instruction::AccountMeta,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 
     /// Raydium CLMM Program ID
 pub const PROGRAM_ID: Pubkey =
@@ -225,7 +220,7 @@ impl ProgramMeta for RaydiumCLMM {
     /// These are returned as (token_0_reserve, token_1_reserve).
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         if self.liquidity == 0 || self.sqrt_price_x64 == 0 {
-            return Err(error!(crate::programs::SolarBError::InsufficientFunds));
+            return Err(solar_error!(crate::programs::SolarBError::InsufficientFunds));
         }
         let sqrt_p = self.sqrt_price_x64 as f64 / (1u128 << 64) as f64;
         let l = self.liquidity as f64;
@@ -639,7 +634,7 @@ impl ProgramMeta for RaydiumCLMM {
         let tick_lower = self.get_lower_tick_boundary(self.tick_current);
         let tick_boundary = if zero_for_one { tick_lower } else { tick_lower + tick_spacing };
         let sqrt_price_boundary = tick_math::get_sqrt_price_at_tick(tick_boundary)
-            .map_err(|_| error!(crate::programs::SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(crate::programs::SolarBError::InsufficientAccounts))?;
         let net_cap = liquidity_math::get_amount_in_for_liquidity(
             self.sqrt_price_x64, sqrt_price_boundary, self.liquidity, zero_for_one,
         )
@@ -1512,7 +1507,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -1611,17 +1606,17 @@ mod tests {
         let observation_info = account_to_account_info(pool.observation_key, observation_raw);
 
         let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let bitmap_ext_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
 
         let make_tick_info = |key: Pubkey, acc: Option<solana_sdk::account::Account>| -> AccountInfo<'static> {
             match acc {
                 Some(a) => account_to_account_info(key, a),
                 None => create_mock_account_info_with_data(
-                    key, anchor_lang::solana_program::system_program::id(),
+                    key, solana_program::system_program::id(),
                     Some(vec![0u8; min_ta_len]),
                 ),
             }

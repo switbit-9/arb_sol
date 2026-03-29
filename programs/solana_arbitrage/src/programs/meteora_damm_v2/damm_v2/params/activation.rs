@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 
 use super::super::{
     activation_handler::{ActivationHandler, ActivationType},
@@ -34,14 +34,14 @@ impl ActivationParams {
             // Must specify activation point to prevent "unable" create alpha vault
             match self.activation_point {
                 Some(activation_point) => {
-                    require!(
+                    solar_require!(
                         activation_point > current_point,
                         PoolError::InvalidActivationPoint
                     );
 
                     // Must be within the range
                     let activation_duration = activation_point.safe_sub(current_point)?;
-                    require!(
+                    solar_require!(
                         activation_duration >= min_activation_duration
                             && activation_duration <= max_activation_duration,
                         PoolError::InvalidActivationPoint
@@ -57,7 +57,7 @@ impl ActivationParams {
                     let last_join_point = activation_handler.get_last_join_point()?;
 
                     let pre_last_join_point = last_join_point.safe_sub(last_join_buffer)?;
-                    require!(
+                    solar_require!(
                         pre_last_join_point >= current_point,
                         PoolError::InvalidActivationPoint
                     );
@@ -69,7 +69,7 @@ impl ActivationParams {
         } else if let Some(activation_point) = self.activation_point {
             // If no alpha vault, it's fine as long as the specified activation point is in the future, or now.
             // Prevent creation of forever untradable pool
-            require!(
+            solar_require!(
                 activation_point >= current_point
                     && current_point.safe_add(max_activation_duration)? >= activation_point,
                 PoolError::InvalidActivationPoint

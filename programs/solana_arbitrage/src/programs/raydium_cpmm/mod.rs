@@ -16,13 +16,7 @@ use crate::{
     programs::{PoolKind, ProgramMeta},
     utils::cpi::invoke_cpi,
 };
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    account_info::AccountInfo,
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use bytemuck;
 
 // pub const PROGRAM_ID: Pubkey =
@@ -442,7 +436,7 @@ impl RaydiumCPMM {
         amm_config_acc: &AccountInfo<'a>,
         pool_acc: &AccountInfo<'a>,
         base_vault_key: &Pubkey,
-    ) -> Result<(u64, u64, u64, u64, u64, u64, bool, u8, bool)> {
+    ) -> Result<(u64, u64, u64, u64, u64, u64, u8, u8, bool)> {
         // Read fee rates directly from AmmConfig bytes
         // Layout after 8-byte discriminator: bump(1) + disable_create_pool(1) + index(2) = 4 bytes
         // then trade_fee_rate(8), protocol_fee_rate(8), fund_fee_rate(8), create_pool_fee(8),
@@ -500,7 +494,7 @@ impl RaydiumCPMM {
              fees_token_0, fees_token_1, enable_creator_fee, creator_fee_on,
              base_is_token_0) = Self::read_fees(amm_config_acc, pool_acc, base_vault.key)?;
 
-        let adjusted_creator_fee_rate = if enable_creator_fee { creator_fee_rate } else { 0 };
+        let adjusted_creator_fee_rate = if enable_creator_fee != 0 { creator_fee_rate } else { 0 };
         let total_fee_numerator = trade_fee_rate + adjusted_creator_fee_rate;
 
         let price = get_price_f64(base_vault_amount, quote_vault_amount, fees_token_0, fees_token_1)?;
@@ -630,7 +624,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -676,13 +670,13 @@ mod tests {
         let amm_config_info = account_to_account_info(pool.amm_config, amm_config_raw);
 
         let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let vault_authority_info = create_mock_account_info_with_data(
-            Pubkey::new_unique(), anchor_lang::solana_program::system_program::id(), None,
+            Pubkey::new_unique(), solana_program::system_program::id(), None,
         );
         let observation_info = create_mock_account_info_with_data(
-            pool.observation_key, anchor_lang::solana_program::system_program::id(), None,
+            pool.observation_key, solana_program::system_program::id(), None,
         );
 
         // Layout:

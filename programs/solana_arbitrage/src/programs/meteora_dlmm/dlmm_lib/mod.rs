@@ -1,12 +1,9 @@
-use anchor_lang::prelude::declare_program;
 use anyhow::*;
 
 // debug_eprintln! and debug_log_path! are available crate-wide via #[macro_use] utils::debug
 
-declare_program!(dlmm);
-
-pub use self::dlmm::accounts::*;
-pub use self::dlmm::types::*;
+pub mod dlmm_types;
+pub use dlmm_types::*;
 
 pub mod constants;
 pub use constants::*;

@@ -102,7 +102,7 @@ impl DlmmPool {
     /// Read a single bin at the given position from account data.
     /// `position` is an absolute index (0..69) within the 70-slot bin array.
     #[inline]
-    pub fn read_bin(&self, accounts: &[anchor_lang::prelude::AccountInfo], position: usize, swap_for_y: bool) -> Option<DlmmBin> {
+    pub fn read_bin(&self, accounts: &[crate::compat::AccountInfo], position: usize, swap_for_y: bool) -> Option<DlmmBin> {
         let (acc_idx, lower_bin_id) = if swap_for_y {
             (self.sfy_acc_idx, self.sfy_lower_bin_id)
         } else {
@@ -391,7 +391,7 @@ impl DlmmPool {
     /// Simulate swap_exact_in: given `amount_in` of input token, return output amount.
     /// Reads bins on demand from account data via `read_bin`.
     /// Returns (amount_out, total_fee)
-    pub fn quote_exact_in(&self, accounts: &[anchor_lang::prelude::AccountInfo], amount_in: u64, swap_for_y: bool) -> Option<(u64, u64)> {
+    pub fn quote_exact_in(&self, accounts: &[crate::compat::AccountInfo], amount_in: u64, swap_for_y: bool) -> Option<(u64, u64)> {
         if amount_in == 0 {
             return Some((0, 0));
         }
@@ -487,7 +487,7 @@ impl DlmmPool {
     /// Simulate swap_exact_out: given desired `amount_out`, return required input amount.
     /// Reads bins on demand from account data via `read_bin`.
     /// Returns (amount_in_with_fees, total_fee)
-    pub fn quote_exact_out(&self, accounts: &[anchor_lang::prelude::AccountInfo], amount_out: u64, swap_for_y: bool) -> Option<(u64, u64)> {
+    pub fn quote_exact_out(&self, accounts: &[crate::compat::AccountInfo], amount_out: u64, swap_for_y: bool) -> Option<(u64, u64)> {
         if amount_out == 0 {
             return Some((0, 0));
         }
@@ -787,13 +787,13 @@ mod tests {
             price: ONE,
         }];
         let (mut d1, mut d2) = make_test_accounts(&bins, 0);
-        let key1 = anchor_lang::prelude::Pubkey::default();
-        let key2 = anchor_lang::prelude::Pubkey::default();
-        let owner = anchor_lang::prelude::Pubkey::default();
+        let key1 = solana_program::pubkey::Pubkey::default();
+        let key2 = solana_program::pubkey::Pubkey::default();
+        let owner = solana_program::pubkey::Pubkey::default();
         let mut l1 = 0u64;
         let mut l2 = 0u64;
-        let acc1 = anchor_lang::prelude::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
-        let acc2 = anchor_lang::prelude::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let acc1 = solana_program::account_info::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = solana_program::account_info::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
         let accounts = [acc1, acc2];
 
         let pool = super::make_test_dlmm_pool(0, 100, 10, 0, 0, 0, 0, 0, 0, &bins, 0);
@@ -953,13 +953,13 @@ mod tests {
         // bin_array_index = 100 / 70 = 1, lower_bin_id = 70
         let bin_array_index = 1i64;
         let (mut d1, mut d2) = make_test_accounts(&bins, bin_array_index);
-        let key1 = anchor_lang::prelude::Pubkey::default();
-        let key2 = anchor_lang::prelude::Pubkey::default();
-        let owner = anchor_lang::prelude::Pubkey::default();
+        let key1 = solana_program::pubkey::Pubkey::default();
+        let key2 = solana_program::pubkey::Pubkey::default();
+        let owner = solana_program::pubkey::Pubkey::default();
         let mut l1 = 0u64;
         let mut l2 = 0u64;
-        let acc1 = anchor_lang::prelude::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
-        let acc2 = anchor_lang::prelude::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
+        let acc1 = solana_program::account_info::AccountInfo::new(&key1, false, false, &mut l1, &mut d1, &owner, false, 0);
+        let acc2 = solana_program::account_info::AccountInfo::new(&key2, false, false, &mut l2, &mut d2, &owner, false, 0);
         let accounts = [acc1, acc2];
 
         let pool = super::make_test_dlmm_pool(

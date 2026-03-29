@@ -1,13 +1,10 @@
+use crate::compat::*;
 use crate::programs::SolarBError;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::{
+use spl_token_2022::extension::transfer_fee::{
     TransferFee, TransferFeeConfig, MAX_FEE_BASIS_POINTS,
 };
-use anchor_spl::token_interface::spl_token_2022::extension::BaseStateWithExtensions;
-
-use anchor_spl::token::Token;
-use anchor_spl::token_2022::spl_token_2022::{
+use spl_token_2022::extension::BaseStateWithExtensions;
+use spl_token_2022::{
     self,
     extension::{self, StateWithExtensions},
 };
@@ -96,7 +93,7 @@ pub fn calculate_transfer_fee_included_amount(
             .unwrap();
         if transfer_fee != transfer_fee_verification {
             // We believe this should never happen
-            return Err(error!(SolarBError::TransferFeeCalculationError));
+            return Err(solar_error!(SolarBError::TransferFeeCalculationError));
         }
 
         return Ok(TransferFeeIncludedAmount {
@@ -112,7 +109,7 @@ pub fn calculate_transfer_fee_included_amount(
 }
 
 pub fn get_epoch_transfer_fee(token_mint: &AccountInfo) -> Result<Option<TransferFee>> {
-    if *token_mint.owner == Token::id() {
+    if *token_mint.owner == SPL_TOKEN_ID {
         return Ok(None);
     }
 
@@ -132,7 +129,7 @@ pub fn get_epoch_transfer_fee(token_mint: &AccountInfo) -> Result<Option<Transfe
 /// Extract transfer fee parameters from a mint account, returning a MintFee.
 /// Returns MintFee::ZERO for standard SPL Token mints or mints without transfer fee extension.
 pub fn extract_mint_fee(token_mint: &AccountInfo, epoch: u64) -> Result<MintFee> {
-    if *token_mint.owner == Token::id() {
+    if *token_mint.owner == SPL_TOKEN_ID {
         return Ok(MintFee::ZERO);
     }
 
@@ -177,14 +174,14 @@ pub fn get_transfer_fees(
 
 /// Calculate the fee for output amount
 pub fn get_transfer_inverse_fee(mint_info: &AccountInfo, post_fee_amount: u64) -> Result<u64> {
-    if *mint_info.owner == Token::id() {
+    if *mint_info.owner == SPL_TOKEN_ID {
         return Ok(0);
     }
     if post_fee_amount == 0 {
         return Ok(0);
     }
     let mint_data = mint_info.try_borrow_data()?;
-    let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(
+    let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(
         &mint_data,
     )?;
 
@@ -202,7 +199,7 @@ pub fn get_transfer_inverse_fee(mint_info: &AccountInfo, post_fee_amount: u64) -
                 .calculate_epoch_fee(epoch, post_fee_amount.checked_add(transfer_fee).unwrap())
                 .unwrap();
             if transfer_fee != transfer_fee_for_check {
-                return Err(error!(SolarBError::TransferFeeCalculationError));
+                return Err(solar_error!(SolarBError::TransferFeeCalculationError));
             }
             transfer_fee
         }
@@ -214,11 +211,11 @@ pub fn get_transfer_inverse_fee(mint_info: &AccountInfo, post_fee_amount: u64) -
 
 /// Calculate the fee for input amount
 pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64) -> Result<u64> {
-    if *mint_info.owner == Token::id() {
+    if *mint_info.owner == SPL_TOKEN_ID {
         return Ok(0);
     }
     let mint_data = mint_info.try_borrow_data()?;
-    let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(
+    let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(
         &mint_data,
     )?;
 
@@ -268,11 +265,11 @@ pub fn apply_transfer_inverse_fee(post_fee_amount: u64, fee: MintFee) -> u64 {
 }
 
 pub fn get_transfer_fee_config(mint_info: &AccountInfo) -> Result<Option<TransferFeeConfig>> {
-    if *mint_info.owner == Token::id() {
+    if *mint_info.owner == SPL_TOKEN_ID {
         return Ok(None);
     }
     let mint_data = mint_info.try_borrow_data()?;
-    let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(
+    let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(
         &mint_data,
     )?;
     let fee = if let Ok(transfer_fee_config) = mint.get_extension::<TransferFeeConfig>() {

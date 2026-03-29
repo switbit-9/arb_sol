@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 
 use super::super::{
     constants::{BASIS_POINT_MAX, ONE_Q64},

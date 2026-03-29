@@ -23,7 +23,7 @@ macro_rules! debug_msg {
     ($($arg:tt)*) => {{
         #[cfg(any(test, feature = "benchmark"))]
         {
-            anchor_lang::prelude::msg!($($arg)*);
+            solana_program::msg!($($arg)*);
         }
     }};
 }

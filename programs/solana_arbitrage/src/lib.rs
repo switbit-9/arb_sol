@@ -1,4 +1,7 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
+
+#[macro_use]
+pub mod compat;
 
 #[macro_use]
 pub mod utils;
@@ -8,19 +11,7 @@ pub mod arbitrage_checker;
 pub mod pool_vec;
 pub mod programs;
 
-// Tests are now inline below - external test file moved to integration tests
-// #[cfg(test)]
-// #[path = "tests/lib_test.rs"]
-// mod lib_test;
-
-// #[path = "tests/test_fixtures.rs"]
-// pub mod test_fixtures;
-
-// #[cfg(test)]
-// #[path = "tests/pubkey_test.rs"]
-// mod pubkey_test;
-
-use anchor_spl::token::spl_token::native_mint::ID as WSOL;
+use crate::compat::WSOL;
 use arbitrage_checker::ArbitrageResult;
 use pool_vec::PoolVec;
 use programs::{
@@ -58,9 +49,32 @@ fn sol_log_cu() {
 
 pub const MAX_POOLS: usize = 8;
 
-declare_id!("BJREZ2NxHAqSf4jeaogmdoyF2nhexVpeewokt5iqqCMt");
+/// Program entrypoint
+#[cfg(not(feature = "no-entrypoint"))]
+solana_program::entrypoint!(process_instruction);
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+/// Process instruction — replaces Anchor's `#[program]` + `initialize`.
+///
+/// Wire format: `[8-byte discriminator (ignored)][borsh-encoded InstructionData]`
+/// The 8-byte discriminator is kept for client backward-compatibility.
+pub fn process_instruction<'a>(
+    _program_id: &Pubkey,
+    accounts: &'a [AccountInfo<'a>],
+    instruction_data: &[u8],
+) -> Result<()> {
+    // Skip the 8-byte Anchor discriminator for backward compatibility with existing clients
+    let data_slice = if instruction_data.len() > 8 {
+        &instruction_data[8..]
+    } else {
+        instruction_data
+    };
+    let data = InstructionData::deserialize(data_slice)?;
+    let clock: Clock = Clock::get()?;
+    start_bot(accounts, data, clock)?;
+    Ok(())
+}
+
+#[derive(Clone)]
 pub struct InstructionData {
     pub mints: u8,
     /// Total number of shared static accounts (all types combined)
@@ -83,16 +97,63 @@ pub struct InstructionData {
     pub pool_fees: Vec<u32>,
 }
 
-#[derive(Accounts)]
-pub struct Initialize {}
+impl InstructionData {
+    /// Deserialize from raw bytes (matching borsh wire format).
+    /// Layout: mints(1) + shared_statics_len(1) + pool_types(8) + type_static_offsets(8)
+    ///       + mode(1) + test(1) + group_sizes(4) = 24 fixed bytes
+    ///       + pool_fees_len(4 LE) + pool_fees_len × u32 LE
+    pub fn deserialize(data: &[u8]) -> Result<Self> {
+        const FIXED: usize = 24;
+        if data.len() < FIXED + 4 {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        let mints = data[0];
+        let shared_statics_len = data[1];
+        let mut pool_types = [0u8; 8];
+        pool_types.copy_from_slice(&data[2..10]);
+        let mut type_static_offsets = [0u8; 8];
+        type_static_offsets.copy_from_slice(&data[10..18]);
+        let mode = data[18];
+        let test = data[19] != 0;
+        let mut group_sizes = [0u8; 4];
+        group_sizes.copy_from_slice(&data[20..24]);
 
-#[program]
-pub mod solar_b {
-    use super::*;
+        let fees_len = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
+        let fees_end = 28 + fees_len * 4;
+        if data.len() < fees_end {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        let mut pool_fees = Vec::with_capacity(fees_len);
+        for i in 0..fees_len {
+            let off = 28 + i * 4;
+            pool_fees.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()));
+        }
 
-    pub fn initialize(ctx: Context<Initialize>, data: InstructionData) -> Result<()> {
-        let clock: Clock = Clock::get()?;
-        start_bot(&ctx.remaining_accounts, data, clock)?;
+        Ok(Self {
+            mints,
+            shared_statics_len,
+            pool_types,
+            type_static_offsets,
+            mode,
+            test,
+            group_sizes,
+            pool_fees,
+        })
+    }
+
+    /// Serialize into bytes (matching the custom deserialize layout).
+    pub fn serialize(&self, buf: &mut Vec<u8>) -> Result<()> {
+        buf.push(self.mints);
+        buf.push(self.shared_statics_len);
+        buf.extend_from_slice(&self.pool_types);
+        buf.extend_from_slice(&self.type_static_offsets);
+        buf.push(self.mode);
+        buf.push(if self.test { 1 } else { 0 });
+        buf.extend_from_slice(&self.group_sizes);
+        buf.extend_from_slice(&(self.pool_fees.len() as u32).to_le_bytes());
+        for fee in &self.pool_fees {
+            buf.extend_from_slice(&fee.to_le_bytes());
+        }
         Ok(())
     }
 }
@@ -116,7 +177,7 @@ fn start_bot<'info>(
             .unwrap(),
     );
     if max_amount_in == 0 {
-        return Err(error!(SolarBError::InsufficientFunds));
+        return Err(solar_error!(SolarBError::InsufficientFunds));
     }
 
     #[cfg(any(test, feature = "benchmark"))]
@@ -148,7 +209,7 @@ fn start_bot<'info>(
     };
 
     if result.is_none() && !data.test {
-        return Err(error!(SolarBError::NoProfitFound));
+        return Err(solar_error!(SolarBError::NoProfitFound));
     }
 
     Ok(result)
@@ -477,7 +538,7 @@ fn start_bot_grouped<'info>(
                 .map_err(|_| SolarBError::InvalidAccountData)?,
         );
         if balance_after < max_amount_in {
-            return Err(error!(SolarBError::NoProfitFound2));
+            return Err(solar_error!(SolarBError::NoProfitFound2));
         }
 
         return Ok(Some(arb_result));
@@ -542,7 +603,7 @@ fn parse_accounts<'info>(
 
         let end_index = index + span;
         if accounts_len < end_index {
-            return Err(error!(SolarBError::InsufficientAccounts));
+            return Err(solar_error!(SolarBError::InsufficientAccounts));
         }
 
         let static_base = shared_statics_start + data.type_static_offsets[i] as usize;
@@ -580,7 +641,7 @@ fn parse_accounts<'info>(
                 debug_eprintln!("RaydiumCPMM");
                 create_raydium_cpmm(accounts, static_base, index, end_index)?
             }
-            _ => return Err(error!(SolarBError::UnknownProgram)),
+            _ => return Err(solar_error!(SolarBError::UnknownProgram)),
         };
 
         #[cfg(any(test, feature = "debug"))]
@@ -789,7 +850,7 @@ pub fn execute_arbitrage_path<'info>(
             }
         }
         if found != 3 {
-            return Err(error!(SolarBError::InvalidAccountData));
+            return Err(solar_error!(SolarBError::InvalidAccountData));
         }
 
         #[cfg(any(test, feature = "debug"))]
@@ -998,9 +1059,16 @@ fn run_simulation<'info>(
 }
 
 #[cfg(test)]
+#[path = "tests/test_fixtures.rs"]
+mod test_fixtures;
+#[cfg(test)]
+#[path = "tests/pubkey_test.rs"]
+mod pubkey_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+    use solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
 
     fn default_clock() -> Clock {
         Clock {

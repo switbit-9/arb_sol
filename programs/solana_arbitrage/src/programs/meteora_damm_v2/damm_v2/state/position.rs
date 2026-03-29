@@ -1,6 +1,5 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use ruint::aliases::U256;
-use static_assertions::const_assert_eq;
 use std::{cell::RefMut, u64};
 
 use super::super::{
@@ -12,8 +11,8 @@ use super::super::{
     PoolError,
 };
 
-#[zero_copy]
-#[derive(Default, Debug, InitSpace, PartialEq)]
+#[repr(C)]
+#[derive(Default, Debug, PartialEq)]
 pub struct UserRewardInfo {
     /// The latest update reward checkpoint
     pub reward_per_token_checkpoint: [u8; 32], // U256
@@ -22,8 +21,6 @@ pub struct UserRewardInfo {
     /// Total claimed rewards
     pub total_claimed_rewards: u64,
 }
-
-const_assert_eq!(UserRewardInfo::INIT_SPACE, 48);
 
 impl UserRewardInfo {
     pub fn update_rewards(
@@ -49,8 +46,8 @@ impl UserRewardInfo {
     }
 }
 
-#[account(zero_copy)]
-#[derive(InitSpace, Debug, Default)]
+#[repr(C)]
+#[derive(Debug, Default)]
 pub struct Position {
     pub pool: Pubkey,
     /// nft mint
@@ -77,16 +74,12 @@ pub struct Position {
     pub padding: [u128; 6],
 }
 
-const_assert_eq!(Position::INIT_SPACE, 400);
-
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default)]
 pub struct PositionMetrics {
     pub total_claimed_a_fee: u64,
     pub total_claimed_b_fee: u64,
 }
-
-const_assert_eq!(PositionMetrics::INIT_SPACE, 16);
 
 impl PositionMetrics {
     pub fn accumulate_claimed_fee(
@@ -126,7 +119,7 @@ impl Position {
     }
 
     pub fn lock(&mut self, total_lock_liquidity: u128) -> Result<()> {
-        require!(
+        solar_require!(
             self.has_sufficient_liquidity(total_lock_liquidity),
             PoolError::InsufficientLiquidity
         );
@@ -138,7 +131,7 @@ impl Position {
     }
 
     pub fn permanent_lock_liquidity(&mut self, permanent_lock_liquidity: u128) -> Result<()> {
-        require!(
+        solar_require!(
             self.has_sufficient_liquidity(permanent_lock_liquidity),
             PoolError::InsufficientLiquidity
         );
@@ -155,7 +148,7 @@ impl Position {
         &mut self,
         permanent_locked_liquidity_delta: u128,
     ) -> Result<()> {
-        require!(
+        solar_require!(
             permanent_locked_liquidity_delta <= self.permanent_locked_liquidity,
             PoolError::InsufficientLiquidity
         );
@@ -394,7 +387,6 @@ pub struct SplitFeeAmount {
     pub fee_b_amount: u64,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct SplitPositionInfo {
     pub liquidity: u128,
     pub fee_a: u64,

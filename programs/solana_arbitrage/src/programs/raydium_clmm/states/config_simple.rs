@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use bytemuck::{Pod, Zeroable};
 
 pub const FEE_RATE_DENOMINATOR_VALUE: u32 = 1_000_000;
@@ -42,7 +42,7 @@ impl AmmConfigSimple {
     pub fn try_from_bytes(data: &[u8]) -> Result<Self> {
         let struct_size = std::mem::size_of::<Self>();
         if data.len() < 8 + struct_size {
-            return Err(anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into());
+            return Err(ProgramError::InvalidAccountData);
         }
         Ok(bytemuck::pod_read_unaligned(&data[8..8 + struct_size]))
     }

@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::dex_type;
 use crate::utils::bot_config::BotConfig;

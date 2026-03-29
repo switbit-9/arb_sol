@@ -1,6 +1,5 @@
 use crate::arbitrage::ArbitragePath;
-use anchor_lang::solana_program::account_info::AccountInfo;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::compat::{AccountInfo, Pubkey};
 
 // Helper function to create a mock AccountInfo with provided data
 pub fn create_mock_account_info_with_data(

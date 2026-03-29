@@ -1,7 +1,7 @@
 //! Swap calculations
 
 use super::{constant_product::ConstantProductCurve, fees::Fees};
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use std::fmt::Debug;
 
 /// Helper function for mapping to ErrorCode::CalculationFailure

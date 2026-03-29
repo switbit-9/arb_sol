@@ -1,5 +1,4 @@
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::compat::*;
 use crate::utils::token::MintFee;
 
 use super::meteora_damm_v1::MeteoraDammV1;
@@ -340,14 +339,14 @@ pub trait ProgramMeta {
     fn log_accounts<'a>(&self, accounts: &[AccountInfo<'a>]) -> Result<()>;
 
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+        Err(solar_error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Get directional fee factors: (fee_factor_a_to_b, fee_factor_b_to_a)
     /// Each is (1 - fee_rate) for that direction, e.g. 0.9975 for 0.25% fee.
     /// For AMMs with symmetric fees, both values are identical.
     fn get_fee_factor(&self) -> Result<(f64, f64)> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+        Err(solar_error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Whether the pool's fee is deducted from the input amount (before swap).
@@ -358,18 +357,18 @@ pub trait ProgramMeta {
 
     /// Get max amount that can be input for a given mint direction
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+        Err(solar_error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Get max amount that can be output for a given input mint direction
     fn get_max_amount_out<'a>(&self, _accounts: &[AccountInfo<'a>], _mint: Pubkey) -> Result<u64> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+        Err(solar_error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Max input the active bin can absorb before crossing to the next bin (DLMM only).
     /// Returns the amount BEFORE fees are added.
     fn get_active_bin_max_in(&self, _input_mint: Pubkey) -> Result<u64> {
-        Err(error!(crate::programs::SolarBError::InvalidProgramType))
+        Err(solar_error!(crate::programs::SolarBError::InvalidProgramType))
     }
 
     /// Combined accessor: returns (prices, fees, mints, kind) in a single call.

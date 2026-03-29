@@ -4,12 +4,7 @@ use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::cpi::invoke_cpi;
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::{read_vault_data};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 
 pub const PROGRAM_ID: Pubkey =
     Pubkey::from_str_const("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
@@ -546,8 +541,8 @@ impl RaydiumAmm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anchor_lang::prelude::Clock;
-    use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+    use solana_program::clock::Clock;
+    use solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
     use solana_client::nonblocking::rpc_client::RpcClient;
     use solana_sdk::pubkey::Pubkey as SdkPubkey;
 
@@ -607,7 +602,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;

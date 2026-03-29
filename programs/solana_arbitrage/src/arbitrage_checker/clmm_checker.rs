@@ -1,4 +1,4 @@
-use anchor_lang::prelude::AccountInfo;
+use crate::compat::AccountInfo;
 use super::clmm_sim::ClmmPool;
 use super::amm_sim::AmmPool;
 use super::dlmm_sim::DlmmPool;

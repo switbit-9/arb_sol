@@ -1,6 +1,6 @@
+use crate::compat::*;
 use crate::utils::token::get_transfer_fee_config;
-use anchor_lang::prelude::*;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFeeConfig;
+use spl_token_2022::extension::transfer_fee::TransferFeeConfig;
 
 pub struct MintInfo<'info> {
     pub mint: AccountInfo<'info>,

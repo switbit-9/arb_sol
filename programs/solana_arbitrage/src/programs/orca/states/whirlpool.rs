@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use bytemuck::{Pod, Zeroable};
 
 /// Number of reward tokens supported
@@ -115,13 +115,13 @@ impl WhirlpoolSimple {
     /// Parse whirlpool from account data (includes 8-byte discriminator)
     pub fn try_from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 + Self::LEN {
-            return Err(error!(crate::programs::SolarBError::InsufficientAccounts));
+            return Err(solar_error!(crate::programs::SolarBError::InsufficientAccounts));
         }
 
         // Verify discriminator
         let discriminator = &data[0..8];
         if discriminator != WHIRLPOOL_DISCRIMINATOR {
-            return Err(error!(crate::programs::SolarBError::AccountMismatch));
+            return Err(solar_error!(crate::programs::SolarBError::AccountMismatch));
         }
 
         // Parse pool state (after discriminator)

@@ -1,7 +1,6 @@
 use super::super::*;
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token;
-use anchor_spl::token_2022::spl_token_2022;
+use crate::compat::*;
+use spl_token_2022;
 use ruint::aliases::U1024;
 use std::ops::Deref;
 use std::ops::Shl;
@@ -51,7 +50,7 @@ impl LbPairExtension for LbPair {
         {
             let flag: TokenProgramFlagWrapper = token_program_flag.try_into()?;
             let token_program_id = match flag.deref() {
-                TokenProgramFlags::TokenProgram => spl_token::ID,
+                TokenProgramFlags::TokenProgram => SPL_TOKEN_ID,
                 TokenProgramFlags::TokenProgram2022 => spl_token_2022::ID,
             };
             token_programs_id[i] = token_program_id;

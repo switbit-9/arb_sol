@@ -1,5 +1,4 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token::native_mint::ID as WSOL;
+use crate::compat::*;
 
 use crate::programs::{self, ProgramInstance, ProgramMeta, PoolKind, SolarBError};
 use crate::utils::bot_config::BotConfig;

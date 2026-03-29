@@ -3,24 +3,19 @@ pub mod dlmm_lib;
 use crate::programs::programs::{PoolKind, ProgramMeta};
 use crate::programs::SolarBError;
 use crate::utils::token::MintFee;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use crate::utils::cpi::invoke_cpi;
 use dlmm_lib::constants::{BASIS_POINT_MAX, FEE_PRECISION};
-use dlmm_lib::dlmm::accounts::{BinArrayBitmapExtension, LbPair};
-use dlmm_lib::dlmm::types::Bin;
+use dlmm_lib::{BinArrayBitmapExtension, LbPair};
+use dlmm_lib::Bin;
 use dlmm_lib::extensions::{BinExtension, LbPairExtension};
 use dlmm_lib::math::price_math::get_price_from_id;
 use dlmm_lib::math::u64x64_math::ONE;
 use dlmm_lib::quote::{get_active_bin_array, quote_exact_in, quote_exact_out, LbPairSlim, SwapCache};
-use dlmm_lib::dlmm::accounts::BinArray;
+use dlmm_lib::BinArray;
 use dlmm_lib::extensions::BinArrayExtension;
 use dlmm_lib::math::u128x128_math::{mul_shr, shl_div};
-use dlmm_lib::dlmm::types::Rounding;
+use dlmm_lib::Rounding;
 
 pub const SCALE_OFFSET: u8 = 64;
 const BIN_ARRAY_HEADER_SIZE: usize = 56;
@@ -138,7 +133,7 @@ impl ProgramMeta for MeteoraDlmm {
             #[cfg(any(test, feature = "debug"))]
             debug_eprintln!("ERROR in quote_exact_in: {}", _e);
             debug_eprintln!("DLMM quote_exact_in failed");
-            anchor_lang::error::Error::from(ProgramError::Custom(2004))
+            ProgramError::Custom(2004)
         })?;
         Ok(quote.amount_out)
     }
@@ -185,7 +180,7 @@ impl ProgramMeta for MeteoraDlmm {
             #[cfg(any(test, feature = "debug"))]
             debug_eprintln!("ERROR in quote_exact_out: {}", _e);
             debug_eprintln!("DLMM quote_exact_out failed");
-            anchor_lang::error::Error::from(ProgramError::Custom(2004))
+            ProgramError::Custom(2004)
         })?;
         Ok(quote.amount_in)
     }
@@ -769,7 +764,7 @@ impl MeteoraDlmm {
             updated_index_reference, updated_volatility_reference,
             v_volatility_accumulator,
             accounts, self.dyn_start,
-        ).map_err(|_| error!(SolarBError::TransferFeeCalculationError))?;
+        ).map_err(|_| solar_error!(SolarBError::TransferFeeCalculationError))?;
 
         // Verify active bin's array index is present in both buy and sell caches.
         // If not, quote_exact_in/out will fail with "Insufficient liquidity" on the first bin.
@@ -781,7 +776,7 @@ impl MeteoraDlmm {
         if buy.bin_array_index != active_bin_array_index
             || sell.bin_array_index != active_bin_array_index
         {
-            return Err(error!(SolarBError::InsufficientBinArray));
+            return Err(solar_error!(SolarBError::InsufficientBinArray));
         }
 
         self.buy_swap_cache = Some(buy);
@@ -888,7 +883,7 @@ impl MeteoraDlmm {
             let token_y: Pubkey = Pubkey::new_from_array(d[112..144].try_into().unwrap());
 
             let pr: u128 = get_price_from_id(active_id, bin_step)
-                .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+                .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))?;
 
             (slim, token_x, token_y, pr, total_fee, base_fee)
         };
@@ -1132,20 +1127,20 @@ impl MeteoraDlmm {
             self.lb_pair_slim.active_id.checked_sub(bin_offset)
         } else {
             self.lb_pair_slim.active_id.checked_add(bin_offset)
-        }.ok_or_else(|| error!(SolarBError::InsufficientAccounts))?;
+        }.ok_or_else(|| solar_error!(SolarBError::InsufficientAccounts))?;
 
         // Find which bin array contains this bin
         let needed_index = BinArray::bin_id_to_bin_array_index(target_bin_id)
-            .map_err(|_| error!(SolarBError::InsufficientAccounts))? as i64;
+            .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))? as i64;
         if needed_index != cache.bin_array_index {
             return Ok(None); // bin array not available
         }
 
         let data = bin_array.try_borrow_data()
-            .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))?;
         let bin_array_index: i64 = bytemuck::pod_read_unaligned(&data[8..16]);
         let (lower_bin_id, upper_bin_id) = BinArray::get_bin_array_lower_upper_bin_id(bin_array_index as i32)
-            .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))?;
 
         if target_bin_id < lower_bin_id || target_bin_id > upper_bin_id {
             return Ok(None);
@@ -1157,7 +1152,7 @@ impl MeteoraDlmm {
             return Ok(None);
         }
 
-        let bin: dlmm_lib::dlmm::types::Bin =
+        let bin: dlmm_lib::Bin =
             bytemuck::pod_read_unaligned(&data[bin_data_offset..bin_data_offset + BIN_SIZE]);
 
         // Compute price for this bin: use stored bin price when available (matches
@@ -1186,7 +1181,7 @@ impl MeteoraDlmm {
 
         // Compute capacity: max_amount_in for this bin (before fees)
         let capacity = bin.get_max_amount_in(price_q64, swap_for_y)
-            .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))?;
 
         // Compute slope = price_f64 * fee_factor
         let price_f64 = price_q64 as f64 / Q64_SCALE;
@@ -1208,7 +1203,7 @@ impl MeteoraDlmm {
         let amount: u64 = self
             .active_bin
             .get_max_amount_in(self.lb_price, swap_for_y)
-            .map_err(|_| error!(SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(SolarBError::InsufficientAccounts))?;
         Ok(amount)
     }
 
@@ -1282,7 +1277,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -1339,18 +1334,18 @@ mod tests {
         let oracle_info = fetch_account_info_from_rpc(&rpc_client, lb_pair.oracle).await;
 
         let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let bitmap_info = try_fetch_account_info_from_rpc(&rpc_client, bitmap_extension_key)
             .await
             .unwrap_or_else(|| create_mock_account_info_with_data(
-                PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+                PROGRAM_ID, solana_program::system_program::id(), None,
             ));
         let host_fee_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let event_authority_info = create_mock_account_info_with_data(
-            event_authority_key, anchor_lang::solana_program::system_program::id(), None,
+            event_authority_key, solana_program::system_program::id(), None,
         );
 
         // Fetch bin arrays

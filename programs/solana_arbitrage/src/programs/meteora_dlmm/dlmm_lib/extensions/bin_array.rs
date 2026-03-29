@@ -1,8 +1,6 @@
 use super::super::*;
 use num_integer::Integer;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta, pubkey::Pubkey,
-};
+use crate::compat::{AccountMeta, Pubkey};
 
 pub trait BinArrayExtension {
     fn is_bin_id_within_range(&self, bin_id: i32) -> Result<bool>;

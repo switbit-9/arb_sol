@@ -1,7 +1,6 @@
 use ruint::aliases::U256;
-use static_assertions::const_assert_eq;
 
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use super::super::{
@@ -34,8 +33,6 @@ use super::fee::FeeMode;
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
 )]
 pub enum CollectFeeMode {
     /// Both token, in this mode only out token is collected
@@ -53,8 +50,6 @@ pub enum CollectFeeMode {
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
 )]
 pub enum PoolStatus {
     Enable,
@@ -69,8 +64,6 @@ pub enum PoolStatus {
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
 )]
 pub enum PoolType {
     Permissionless,
@@ -85,16 +78,14 @@ pub enum PoolType {
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
 )]
 pub enum PoolVersion {
     V0, // 0
     V1, // 1
 }
 
-#[account(zero_copy)]
-#[derive(InitSpace, Debug, Default)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct Pool {
     /// Pool fee
     pub pool_fees: PoolFeesStruct,
@@ -162,10 +153,8 @@ pub struct Pool {
     pub reward_infos: [RewardInfo; NUM_REWARDS],
 }
 
-const_assert_eq!(Pool::INIT_SPACE, 1104);
-
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PoolMetrics {
     pub total_lp_a_fee: u128,
     pub total_lp_b_fee: u128,
@@ -177,11 +166,9 @@ pub struct PoolMetrics {
     pub padding: u64,
 }
 
-const_assert_eq!(PoolMetrics::INIT_SPACE, 80);
-
 /// Stores the state relevant for tracking liquidity mining rewards
-#[zero_copy]
-#[derive(InitSpace, Default, Debug, PartialEq)]
+#[repr(C)]
+#[derive(Default, Debug, PartialEq, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RewardInfo {
     /// Indicates if the reward has been initialized
     pub initialized: u8,
@@ -211,8 +198,6 @@ pub struct RewardInfo {
     /// These rewards will be carried over to the next reward time window.
     pub cumulative_seconds_with_empty_liquidity_reward: u64,
 }
-
-const_assert_eq!(RewardInfo::INIT_SPACE, 192);
 
 impl Pool {
     pub fn has_partner(&self) -> bool {
@@ -781,7 +766,7 @@ impl Pool {
     }
 }
 
-#[derive(Debug, PartialEq, AnchorDeserialize, AnchorSerialize, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct SwapResult2 {
     // This is excluded_transfer_fee_amount_in
     pub included_fee_input_amount: u64,

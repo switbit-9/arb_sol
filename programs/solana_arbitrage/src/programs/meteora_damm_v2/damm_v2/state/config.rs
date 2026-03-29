@@ -1,6 +1,5 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use static_assertions::const_assert_eq;
 
 use super::super::{
     activation_handler::ActivationType,
@@ -23,8 +22,6 @@ use super::super::{
     PartialEq,
     IntoPrimitive,
     TryFromPrimitive,
-    AnchorDeserialize,
-    AnchorSerialize,
     Default,
 )]
 pub enum ConfigType {
@@ -35,8 +32,8 @@ pub enum ConfigType {
     Dynamic,
 }
 
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct PoolFeesConfig {
     pub base_fee: BaseFeeConfig,
     pub dynamic_fee: DynamicFeeConfig,
@@ -47,10 +44,8 @@ pub struct PoolFeesConfig {
     pub padding_1: [u64; 5],
 }
 
-const_assert_eq!(PoolFeesConfig::INIT_SPACE, 128);
-
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct BaseFeeConfig {
     pub cliff_fee_numerator: u64,
     // In fee scheduler first_factor: number_of_period, second_factor: period_frequency, third_factor: reduction_factor
@@ -62,7 +57,6 @@ pub struct BaseFeeConfig {
     pub third_factor: u64,
 }
 
-const_assert_eq!(BaseFeeConfig::INIT_SPACE, 32);
 
 impl BaseFeeConfig {
     fn to_base_fee_parameters(&self) -> BaseFeeParameters {
@@ -148,8 +142,8 @@ impl PoolFeesConfig {
         }
     }
 }
-#[zero_copy]
-#[derive(Debug, InitSpace, Default)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct DynamicFeeConfig {
     pub initialized: u8, // 0, ignore for dynamic fee
     pub padding: [u8; 7],
@@ -163,7 +157,6 @@ pub struct DynamicFeeConfig {
     pub bin_step_u128: u128,
 }
 
-const_assert_eq!(DynamicFeeConfig::INIT_SPACE, 48);
 
 impl DynamicFeeConfig {
     fn to_dynamic_fee_struct(&self) -> DynamicFeeStruct {
@@ -185,8 +178,8 @@ impl DynamicFeeConfig {
     }
 }
 
-#[account(zero_copy)]
-#[derive(InitSpace, Debug)]
+#[repr(C)]
+#[derive(Debug)]
 pub struct Config {
     /// Vault config key
     pub vault_config_key: Pubkey,
@@ -213,7 +206,6 @@ pub struct Config {
     pub _padding_1: [u64; 10],
 }
 
-const_assert_eq!(Config::INIT_SPACE, 320);
 
 pub struct BootstrappingConfig {
     pub activation_point: u64,
@@ -314,7 +306,7 @@ impl Config {
         if self.vault_config_key.eq(&Pubkey::default()) {
             Pubkey::default()
         } else {
-            alpha_vault::derive_vault_pubkey(self.vault_config_key, pool.key())
+            alpha_vault::derive_vault_pubkey(self.vault_config_key, pool)
         }
     }
 

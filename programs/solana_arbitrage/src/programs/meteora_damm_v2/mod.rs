@@ -1,11 +1,6 @@
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use crate::utils::cpi::invoke_cpi;
 use bytemuck;
 pub mod damm_v2;
@@ -130,7 +125,7 @@ impl ProgramMeta for MeteoraDammV2 {
         if !virtual_base.is_finite() || !virtual_quote.is_finite()
             || virtual_base <= 0.0 || virtual_quote <= 0.0
         {
-            return Err(error!(crate::programs::SolarBError::InvalidAccountData));
+            return Err(solar_error!(crate::programs::SolarBError::InvalidAccountData));
         }
 
         Ok((virtual_base as u64, virtual_quote as u64))
@@ -711,7 +706,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -754,16 +749,16 @@ mod tests {
         let quote_vault_info = fetch_account_info_from_rpc(&rpc_client, pool.token_b_vault).await;
 
         let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let pool_authority_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let event_authority_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let referral_token_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
 
         // Layout:

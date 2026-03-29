@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use bytemuck::{Pod, Zeroable};
 
 /// Number of rewards Token

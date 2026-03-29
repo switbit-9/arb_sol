@@ -1,4 +1,4 @@
-use anchor_lang::prelude::Pubkey;
+use crate::compat::Pubkey;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pool {

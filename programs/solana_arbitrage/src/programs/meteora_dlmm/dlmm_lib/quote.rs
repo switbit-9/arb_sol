@@ -1,6 +1,5 @@
 use super::*;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::compat::*;
 use crate::utils::token::MintFee;
 use std::result::Result::Ok;
 

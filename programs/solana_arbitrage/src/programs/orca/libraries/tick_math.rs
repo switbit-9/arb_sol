@@ -1,5 +1,5 @@
 use super::big_num::mul_u256;
-use anchor_lang::prelude::*;
+use crate::compat::*;
 
 /// The minimum tick
 pub const MIN_TICK: i32 = -443636;
@@ -25,7 +25,7 @@ fn mul_shift_96(n0: u128, n1: u128) -> u128 {
 /// the square root of the ratio of the two assets (token_1/token_0)
 pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128> {
     if tick.unsigned_abs() > MAX_TICK as u32 {
-        return Err(error!(crate::programs::SolarBError::AccountMismatch));
+        return Err(solar_error!(crate::programs::SolarBError::AccountMismatch));
     }
 
     if tick >= 0 {
@@ -175,7 +175,7 @@ const LOG_B_P_ERR_MARGIN_UPPER_X64: i128 = 15793534762490258745i128;
 /// Calculates the greatest tick value such that get_sqrt_price_at_tick(tick) <= ratio
 pub fn get_tick_at_sqrt_price(sqrt_price_x64: u128) -> Result<i32> {
     if sqrt_price_x64 < MIN_SQRT_PRICE_X64 || sqrt_price_x64 >= MAX_SQRT_PRICE_X64 {
-        return Err(error!(crate::programs::SolarBError::AccountMismatch));
+        return Err(solar_error!(crate::programs::SolarBError::AccountMismatch));
     }
 
     // Determine log_b(sqrt_ratio). First by calculating integer portion (msb)

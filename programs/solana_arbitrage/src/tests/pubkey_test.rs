@@ -8,8 +8,8 @@ mod tests {
     use crate::utils::test_utils::{
         create_mock_account_info, try_fetch_account_info_from_rpc, write_results_to_file,
     };
-    use anchor_lang::prelude::Clock;
-    use anchor_lang::solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
+    use solana_program::clock::Clock;
+    use solana_program::{account_info::AccountInfo, pubkey::Pubkey, system_program};
     use solana_client::nonblocking::rpc_client::RpcClient;
     use std::str::FromStr;
 
@@ -19,7 +19,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client
             .get_account(&sysvar::clock::ID)
             .await

@@ -1,8 +1,9 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 
 #[cfg(not(feature = "devnet"))]
 pub mod admin {
-    use anchor_lang::{prelude::Pubkey, pubkey};
+    use crate::compat::Pubkey;
+    use solana_program::pubkey;
 
     pub const ADMINS: [Pubkey; 2] = [
         pubkey!("5unTfT2kssBuNvHPY6LbJfJpLqEcdMxGYLWHwShaeTLi"),
@@ -12,7 +13,8 @@ pub mod admin {
 
 #[cfg(feature = "devnet")]
 pub mod admin {
-    use anchor_lang::{prelude::Pubkey, pubkey};
+    use crate::compat::Pubkey;
+    use solana_program::pubkey;
 
     pub const ADMINS: [Pubkey; 3] = [
         pubkey!("5unTfT2kssBuNvHPY6LbJfJpLqEcdMxGYLWHwShaeTLi"),

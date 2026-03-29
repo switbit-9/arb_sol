@@ -9,7 +9,7 @@ use super::super::{
     state::pool::CollectFeeMode,
     PoolError,
 };
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use super::BaseFeeHandler;
@@ -88,7 +88,7 @@ impl BaseFeeHandler for FeeScheduler {
         _activation_type: ActivationType,
     ) -> Result<()> {
         if self.period_frequency != 0 || self.number_of_period != 0 || self.reduction_factor != 0 {
-            require!(
+            solar_require!(
                 self.number_of_period != 0
                     && self.period_frequency != 0
                     && self.reduction_factor != 0,
@@ -99,7 +99,7 @@ impl BaseFeeHandler for FeeScheduler {
         let max_fee_numerator = self.get_max_base_fee_numerator();
         validate_fee_fraction(min_fee_numerator, FEE_DENOMINATOR)?;
         validate_fee_fraction(max_fee_numerator, FEE_DENOMINATOR)?;
-        require!(
+        solar_require!(
             min_fee_numerator >= MIN_FEE_NUMERATOR
                 && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?,
             PoolError::ExceedMaxFeeBps

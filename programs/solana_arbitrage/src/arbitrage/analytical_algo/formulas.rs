@@ -1,6 +1,6 @@
 use super::pool_model::PoolModel;
 use crate::programs::ProgramMeta;
-use anchor_lang::prelude::*;
+use crate::compat::Pubkey;
 
 /// Result of an analytical computation.
 #[derive(Debug)]

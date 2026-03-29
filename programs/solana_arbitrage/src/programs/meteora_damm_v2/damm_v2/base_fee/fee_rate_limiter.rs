@@ -16,7 +16,7 @@ use super::super::{
 };
 
 use super::BaseFeeHandler;
-use anchor_lang::prelude::*;
+use crate::compat::*;
 use num_integer::Integer;
 use ruint::aliases::U256;
 
@@ -277,7 +277,7 @@ impl FeeRateLimiter {
         )?;
 
         // sanity check
-        require!(
+        solar_require!(
             fee_numerator >= self.cliff_fee_numerator,
             PoolError::UndeterminedError
         );
@@ -292,14 +292,14 @@ impl BaseFeeHandler for FeeRateLimiter {
         activation_type: ActivationType,
     ) -> Result<()> {
         // can only be applied in OnlyB collect fee mode
-        require!(
+        solar_require!(
             collect_fee_mode == CollectFeeMode::OnlyB,
             PoolError::InvalidFeeRateLimiter
         );
         let max_fee_numerator_from_bps =
             to_numerator(self.max_fee_bps.into(), FEE_DENOMINATOR.into())?;
 
-        require!(
+        solar_require!(
             self.cliff_fee_numerator >= MIN_FEE_NUMERATOR
                 && self.cliff_fee_numerator <= max_fee_numerator_from_bps,
             PoolError::InvalidFeeRateLimiter
@@ -309,7 +309,7 @@ impl BaseFeeHandler for FeeRateLimiter {
             return Ok(());
         }
 
-        require!(
+        solar_require!(
             self.is_non_zero_rate_limiter(),
             PoolError::InvalidFeeRateLimiter
         );
@@ -319,21 +319,21 @@ impl BaseFeeHandler for FeeRateLimiter {
             ActivationType::Timestamp => MAX_RATE_LIMITER_DURATION_IN_SECONDS,
         };
 
-        require!(
+        solar_require!(
             self.max_limiter_duration <= max_limiter_duration,
             PoolError::InvalidFeeRateLimiter
         );
 
         let fee_increment_numerator =
             to_numerator(self.fee_increment_bps.into(), FEE_DENOMINATOR.into())?;
-        require!(
+        solar_require!(
             fee_increment_numerator < FEE_DENOMINATOR,
             PoolError::InvalidFeeRateLimiter
         );
 
         let max_fee_bps_u64 =
             u64::try_from(self.max_fee_bps).map_err(|_| PoolError::TypeCastFailed)?;
-        require!(
+        solar_require!(
             max_fee_bps_u64 <= get_max_fee_bps(CURRENT_POOL_VERSION)?,
             PoolError::InvalidFeeRateLimiter
         );
@@ -341,7 +341,7 @@ impl BaseFeeHandler for FeeRateLimiter {
         // validate max fee (more amount, then more fee)
         let min_fee_numerator = self.get_fee_numerator_from_included_fee_amount(0)?;
         let max_fee_numerator = self.get_fee_numerator_from_included_fee_amount(u64::MAX)?;
-        require!(
+        solar_require!(
             min_fee_numerator >= MIN_FEE_NUMERATOR
                 && max_fee_numerator <= get_max_fee_numerator(CURRENT_POOL_VERSION)?,
             PoolError::InvalidFeeRateLimiter

@@ -1,7 +1,8 @@
 use crate::programs::raydium_cpmm::curve::TradeDirection;
 use crate::programs::raydium_cpmm::error::ErrorCode;
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::Mint;
+use crate::compat::*;
+use spl_token_2022::state::Mint;
+use solana_program::program_pack::Pack;
 use std::ops::{BitAnd, BitOr, BitXor};
 /// Seed to derive account address and signature
 pub const POOL_SEED: &str = "pool";
@@ -22,7 +23,7 @@ pub enum PoolStatusBitFlag {
     Disable,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreatorFeeOn {
     /// Both token0 and token1 can be used as trade fees.
     /// It depends on what the input token is.
@@ -61,9 +62,8 @@ pub struct SwapParams {
     pub is_creator_fee_on_input: bool,
 }
 
-#[account(zero_copy(unsafe))]
 #[repr(C, packed)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PoolState {
     /// Which config the pool belongs
     pub amm_config: Pubkey,
@@ -121,7 +121,7 @@ pub struct PoolState {
     /// 1: only token_0 as trade fee
     /// 2: only token_1 as trade fee
     pub creator_fee_on: u8,
-    pub enable_creator_fee: bool,
+    pub enable_creator_fee: u8,
     pub padding1: [u8; 6],
     pub creator_fees_token_0: u64,
     pub creator_fees_token_1: u64,
@@ -141,28 +141,32 @@ impl PoolState {
         amm_config: Pubkey,
         token_0_vault: Pubkey,
         token_1_vault: Pubkey,
-        token_0_mint: &InterfaceAccount<Mint>,
-        token_1_mint: &InterfaceAccount<Mint>,
+        token_0_mint: &AccountInfo,
+        token_1_mint: &AccountInfo,
         lp_mint: Pubkey,
         lp_mint_decimals: u8,
         observation_key: Pubkey,
         creator_fee_on: CreatorFeeOn,
         enable_creator_fee: bool,
     ) {
-        self.amm_config = amm_config.key();
-        self.pool_creator = pool_creator.key();
+        self.amm_config = amm_config;
+        self.pool_creator = pool_creator;
         self.token_0_vault = token_0_vault;
         self.token_1_vault = token_1_vault;
-        self.lp_mint = lp_mint.key();
-        self.token_0_mint = token_0_mint.key();
-        self.token_1_mint = token_1_mint.key();
-        self.token_0_program = *token_0_mint.to_account_info().owner;
-        self.token_1_program = *token_1_mint.to_account_info().owner;
+        self.lp_mint = lp_mint;
+        self.token_0_mint = *token_0_mint.key;
+        self.token_1_mint = *token_1_mint.key;
+        self.token_0_program = *token_0_mint.owner;
+        self.token_1_program = *token_1_mint.owner;
         self.observation_key = observation_key;
         self.auth_bump = auth_bump;
         self.lp_mint_decimals = lp_mint_decimals;
-        self.mint_0_decimals = token_0_mint.decimals;
-        self.mint_1_decimals = token_1_mint.decimals;
+        let mint_0_data = token_0_mint.try_borrow_data().unwrap();
+        let mint_0 = Mint::unpack(&mint_0_data).unwrap();
+        self.mint_0_decimals = mint_0.decimals;
+        let mint_1_data = token_1_mint.try_borrow_data().unwrap();
+        let mint_1 = Mint::unpack(&mint_1_data).unwrap();
+        self.mint_1_decimals = mint_1.decimals;
         self.lp_supply = lp_supply;
         self.protocol_fees_token_0 = 0;
         self.protocol_fees_token_1 = 0;
@@ -171,7 +175,7 @@ impl PoolState {
         self.open_time = open_time;
         self.recent_epoch = Clock::get().unwrap().epoch;
         self.creator_fee_on = creator_fee_on.to_u8();
-        self.enable_creator_fee = enable_creator_fee;
+        self.enable_creator_fee = enable_creator_fee as u8;
         self.padding1 = [0u8; 6];
         self.creator_fees_token_0 = 0;
         self.creator_fees_token_1 = 0;
@@ -304,7 +308,7 @@ impl PoolState {
                 self.is_creator_fee_on_input(TradeDirection::OneForZero)?,
             )
         } else {
-            return err!(ErrorCode::InvalidVault);
+            return solar_err!(ErrorCode::InvalidVault);
         };
         Ok(SwapParams {
             trade_direction,
@@ -317,7 +321,7 @@ impl PoolState {
     }
 
     pub fn adjust_creator_fee_rate(&self, creator_fee_rate: u64) -> u64 {
-        if self.enable_creator_fee {
+        if self.enable_creator_fee != 0 {
             creator_fee_rate
         } else {
             0
@@ -331,8 +335,8 @@ impl PoolState {
         creator_fee: u64,
         direction: TradeDirection,
     ) -> Result<()> {
-        if !self.enable_creator_fee {
-            require_eq!(creator_fee, 0)
+        if self.enable_creator_fee == 0 {
+            solar_require!(creator_fee == 0, ErrorCode::InvalidVault)
         }
         let is_creator_fee_on_input = self.is_creator_fee_on_input(direction)?;
         match direction {

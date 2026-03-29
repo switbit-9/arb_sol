@@ -2,7 +2,7 @@ use super::dlmm_sim::DlmmPool;
 use super::amm_sim::AmmPool;
 use super::optimizer::optimal_linear_vs_cp;
 use super::{ArbitrageResult, FEE_PRECISION, FEE_PRECISION_SHL32, SCALE_OFFSET, FD};
-use anchor_lang::prelude::AccountInfo;
+use crate::compat::AccountInfo;
 
 const HALF_SHIFT: u8 = 32;
 
@@ -676,7 +676,7 @@ fn analytical_amm_to_dlmm(
 mod tests {
     use super::*;
     use super::super::dlmm_sim::DlmmBin;
-    use anchor_lang::prelude::Pubkey;
+    use crate::compat::Pubkey;
 
     fn make_test_accounts(bins: &[DlmmBin], bin_array_index: i64) -> (Vec<u8>, Vec<u8>) {
         let d1 = super::super::dlmm_sim::make_test_bin_array_data(bins, bin_array_index);

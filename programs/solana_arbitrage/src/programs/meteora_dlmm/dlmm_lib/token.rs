@@ -1,11 +1,10 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::{
+use crate::compat::*;
+use spl_token_2022::extension::transfer_fee::{
     TransferFee, TransferFeeConfig, MAX_FEE_BASIS_POINTS,
 };
-use anchor_spl::token_interface::spl_token_2022::extension::BaseStateWithExtensions;
+use spl_token_2022::extension::BaseStateWithExtensions;
 
-use anchor_spl::token::Token;
-use anchor_spl::token_2022::spl_token_2022::{
+use spl_token_2022::{
     self,
     extension::{self, StateWithExtensions},
 };
@@ -96,7 +95,7 @@ pub fn calculate_transfer_fee_included_amount(
 }
 
 pub fn get_epoch_transfer_fee(token_mint: &AccountInfo, epoch: u64) -> Result<Option<TransferFee>> {
-    if *token_mint.owner == Token::id() {
+    if *token_mint.owner == SPL_TOKEN_ID {
         return Ok(None);
     }
 
@@ -113,11 +112,11 @@ pub fn get_epoch_transfer_fee(token_mint: &AccountInfo, epoch: u64) -> Result<Op
 }
 
 pub fn get_transfer_fee(mint_info: &AccountInfo, pre_fee_amount: u64, epoch: u64) -> Result<u64> {
-    if *mint_info.owner == Token::id() {
+    if *mint_info.owner == SPL_TOKEN_ID {
         return Ok(0);
     }
     let mint_data = mint_info.try_borrow_data()?;
-    let mint = StateWithExtensions::<anchor_spl::token_2022::spl_token_2022::state::Mint>::unpack(
+    let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(
         &mint_data,
     )?;
 

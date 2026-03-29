@@ -1,9 +1,8 @@
-use anchor_lang::prelude::*;
+use crate::compat::*;
 
 pub const AMM_CONFIG_SEED: &str = "amm_config";
 
 /// Holds the current owner of the factory
-#[account]
 #[derive(Default, Debug)]
 pub struct AmmConfig {
     /// Bump to identify PDA
@@ -38,7 +37,7 @@ impl AmmConfig {
     /// a different discriminator than our local Anchor struct.
     pub fn try_from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 + (Self::LEN - 8) {
-            return Err(anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound.into());
+            return Err(ProgramError::InvalidAccountData.into());
         }
 
         let offset = 8; // Skip discriminator
@@ -56,43 +55,43 @@ impl AmmConfig {
         let trade_fee_rate = u64::from_le_bytes(
             data[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                .map_err(|_| ProgramError::InvalidAccountData)?,
         );
         cursor += 8;
 
         let protocol_fee_rate = u64::from_le_bytes(
             data[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                .map_err(|_| ProgramError::InvalidAccountData)?,
         );
         cursor += 8;
 
         let fund_fee_rate = u64::from_le_bytes(
             data[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                .map_err(|_| ProgramError::InvalidAccountData)?,
         );
         cursor += 8;
 
         let create_pool_fee = u64::from_le_bytes(
             data[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                .map_err(|_| ProgramError::InvalidAccountData)?,
         );
         cursor += 8;
 
         let protocol_owner = Pubkey::try_from(&data[cursor..cursor + 32])
-            .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?;
+            .map_err(|_| ProgramError::InvalidAccountData)?;
         cursor += 32;
 
         let fund_owner = Pubkey::try_from(&data[cursor..cursor + 32])
-            .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?;
+            .map_err(|_| ProgramError::InvalidAccountData)?;
         cursor += 32;
 
         let creator_fee_rate = u64::from_le_bytes(
             data[cursor..cursor + 8]
                 .try_into()
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                .map_err(|_| ProgramError::InvalidAccountData)?,
         );
         cursor += 8;
 
@@ -101,7 +100,7 @@ impl AmmConfig {
             padding[i] = u64::from_le_bytes(
                 data[cursor..cursor + 8]
                     .try_into()
-                    .map_err(|_| anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound)?,
+                    .map_err(|_| ProgramError::InvalidAccountData)?,
             );
             cursor += 8;
         }

@@ -1,6 +1,6 @@
 use super::seeds::*;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::compat::*;
+use solana_program::pubkey;
 
 // DLMM program ID from IDL
 const DLMM_PROGRAM_ID: Pubkey = pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");

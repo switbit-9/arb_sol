@@ -9,6 +9,7 @@ use super::ArbitrageResult;
 /// Pools must be pre-oriented so that base = mid_token and quote = start_token.
 /// Use `AmmPool::flipped()` at the call site when the pool's native orientation
 /// doesn't match the arb direction.
+#[inline(never)]
 pub fn check_amm_amm(pool_a: &AmmPool, pool_b: &AmmPool, max_amount_in: u64) -> ArbitrageResult {
     debug_eprintln!(
         "[check_amm_amm] pool_a: base={} quote={} buy_fi={} buy_fo={} sell_fi={} sell_fo={} | pool_b: base={} quote={} buy_fi={} buy_fo={} sell_fi={} sell_fo={} | max_in={}",

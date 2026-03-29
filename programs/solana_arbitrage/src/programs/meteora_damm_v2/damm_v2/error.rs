@@ -1,166 +1,69 @@
 //! Error module includes error messages and codes of the program
-use anchor_lang::prelude::*;
+use solana_program::program_error::ProgramError;
+
+const POOL_ERROR_BASE: u32 = 6100;
 
 /// Error messages and codes of the program
-#[error_code]
-#[derive(PartialEq)]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolError {
-    #[msg("Math operation overflow")]
-    MathOverflow,
+    MathOverflow = 0,
+    InvalidFee = 1,
+    ExceededSlippage = 2,
+    PoolDisabled = 3,
+    ExceedMaxFeeBps = 4,
+    InvalidAdmin = 5,
+    AmountIsZero = 6,
+    TypeCastFailed = 7,
+    UnableToModifyActivationPoint = 8,
+    InvalidAuthorityToCreateThePool = 9,
+    InvalidActivationType = 10,
+    InvalidActivationPoint = 11,
+    InvalidQuoteMint = 12,
+    InvalidFeeCurve = 13,
+    InvalidPriceRange = 14,
+    PriceRangeViolation = 15,
+    InvalidParameters = 16,
+    InvalidCollectFeeMode = 17,
+    InvalidInput = 18,
+    CannotCreateTokenBadgeOnSupportedMint = 19,
+    InvalidTokenBadge = 20,
+    InvalidMinimumLiquidity = 21,
+    InvalidVestingInfo = 22,
+    InsufficientLiquidity = 23,
+    InvalidVestingAccount = 24,
+    InvalidPoolStatus = 25,
+    UnsupportNativeMintToken2022 = 26,
+    InvalidRewardIndex = 27,
+    InvalidRewardDuration = 28,
+    RewardInitialized = 29,
+    RewardUninitialized = 30,
+    InvalidRewardVault = 31,
+    MustWithdrawnIneligibleReward = 32,
+    IdenticalRewardDuration = 33,
+    RewardCampaignInProgress = 34,
+    IdenticalFunder = 35,
+    InvalidFunder = 36,
+    RewardNotEnded = 37,
+    FeeInverseIsIncorrect = 38,
+    PositionIsNotEmpty = 39,
+    InvalidPoolCreatorAuthority = 40,
+    InvalidConfigType = 41,
+    InvalidPoolCreator = 42,
+    RewardVaultFrozenSkipRequired = 43,
+    InvalidSplitPositionParameters = 44,
+    UnsupportPositionHasVestingLock = 45,
+    SamePosition = 46,
+    InvalidBaseFeeMode = 47,
+    InvalidFeeRateLimiter = 48,
+    FailToValidateSingleSwapInstruction = 49,
+    InvalidFeeScheduler = 50,
+    UndeterminedError = 51,
+    InvalidPoolVersion = 52,
+}
 
-    #[msg("Invalid fee setup")]
-    InvalidFee,
-
-    #[msg("Exceeded slippage tolerance")]
-    ExceededSlippage,
-
-    #[msg("Pool disabled")]
-    PoolDisabled,
-
-    #[msg("Exceeded max fee bps")]
-    ExceedMaxFeeBps,
-
-    #[msg("Invalid admin")]
-    InvalidAdmin,
-
-    #[msg("Amount is zero")]
-    AmountIsZero,
-
-    #[msg("Type cast error")]
-    TypeCastFailed,
-
-    #[msg("Unable to modify activation point")]
-    UnableToModifyActivationPoint,
-
-    #[msg("Invalid authority to create the pool")]
-    InvalidAuthorityToCreateThePool,
-
-    #[msg("Invalid activation type")]
-    InvalidActivationType,
-
-    #[msg("Invalid activation point")]
-    InvalidActivationPoint,
-
-    #[msg("Quote token must be SOL,USDC")]
-    InvalidQuoteMint,
-
-    #[msg("Invalid fee curve")]
-    InvalidFeeCurve,
-
-    #[msg("Invalid Price Range")]
-    InvalidPriceRange,
-
-    #[msg("Trade is over price range")]
-    PriceRangeViolation,
-
-    #[msg("Invalid parameters")]
-    InvalidParameters,
-
-    #[msg("Invalid collect fee mode")]
-    InvalidCollectFeeMode,
-
-    #[msg("Invalid input")]
-    InvalidInput,
-
-    #[msg("Cannot create token badge on supported mint")]
-    CannotCreateTokenBadgeOnSupportedMint,
-
-    #[msg("Invalid token badge")]
-    InvalidTokenBadge,
-
-    #[msg("Invalid minimum liquidity")]
-    InvalidMinimumLiquidity,
-
-    #[msg("Invalid vesting information")]
-    InvalidVestingInfo,
-
-    #[msg("Insufficient liquidity")]
-    InsufficientLiquidity,
-
-    #[msg("Invalid vesting account")]
-    InvalidVestingAccount,
-
-    #[msg("Invalid pool status")]
-    InvalidPoolStatus,
-
-    #[msg("Unsupported native mint token2022")]
-    UnsupportNativeMintToken2022,
-
-    #[msg("Invalid reward index")]
-    InvalidRewardIndex,
-
-    #[msg("Invalid reward duration")]
-    InvalidRewardDuration,
-
-    #[msg("Reward already initialized")]
-    RewardInitialized,
-
-    #[msg("Reward not initialized")]
-    RewardUninitialized,
-
-    #[msg("Invalid reward vault")]
-    InvalidRewardVault,
-
-    #[msg("Must withdraw ineligible reward")]
-    MustWithdrawnIneligibleReward,
-
-    #[msg("Reward duration is the same")]
-    IdenticalRewardDuration,
-
-    #[msg("Reward campaign in progress")]
-    RewardCampaignInProgress,
-
-    #[msg("Identical funder")]
-    IdenticalFunder,
-
-    #[msg("Invalid funder")]
-    InvalidFunder,
-
-    #[msg("Reward not ended")]
-    RewardNotEnded,
-
-    #[msg("Fee inverse is incorrect")]
-    FeeInverseIsIncorrect,
-
-    #[msg("Position is not empty")]
-    PositionIsNotEmpty,
-
-    #[msg("Invalid pool creator authority")]
-    InvalidPoolCreatorAuthority,
-
-    #[msg("Invalid config type")]
-    InvalidConfigType,
-
-    #[msg("Invalid pool creator")]
-    InvalidPoolCreator,
-
-    #[msg("Reward vault is frozen, must skip reward to proceed")]
-    RewardVaultFrozenSkipRequired,
-
-    #[msg("Invalid parameters for split position")]
-    InvalidSplitPositionParameters,
-
-    #[msg("Unsupported split position has vesting lock")]
-    UnsupportPositionHasVestingLock,
-
-    #[msg("Same position")]
-    SamePosition,
-
-    #[msg("Invalid base fee mode")]
-    InvalidBaseFeeMode,
-
-    #[msg("Invalid fee rate limiter")]
-    InvalidFeeRateLimiter,
-
-    #[msg("Fail to validate single swap instruction in rate limiter")]
-    FailToValidateSingleSwapInstruction,
-
-    #[msg("Invalid fee scheduler")]
-    InvalidFeeScheduler,
-
-    #[msg("Undetermined error")]
-    UndeterminedError,
-
-    #[msg("Invalid pool version")]
-    InvalidPoolVersion,
+impl From<PoolError> for ProgramError {
+    fn from(e: PoolError) -> Self {
+        ProgramError::Custom(POOL_ERROR_BASE + e as u32)
+    }
 }

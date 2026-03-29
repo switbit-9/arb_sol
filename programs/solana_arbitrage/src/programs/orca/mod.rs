@@ -6,12 +6,7 @@ use self::states::{OracleSimple, TickArraySimple, WhirlpoolSimple, FEE_RATE_HARD
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, apply_transfer_inverse_fee, MintFee};
 use crate::utils::utils::read_token_amount;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    account_info::AccountInfo,
-    instruction::AccountMeta,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use crate::utils::cpi::invoke_cpi;
 
 /// Orca Whirlpool Program ID
@@ -167,7 +162,7 @@ impl ProgramMeta for OrcaWhirlpool {
         let out_fee = apply_transfer_inverse_fee(amount_out, output_transfer_fee);
         let amount_out_with_fee = amount_out
             .checked_add(out_fee)
-            .ok_or(error!(crate::programs::SolarBError::FeeOverflow))?;
+            .ok_or(solar_error!(crate::programs::SolarBError::FeeOverflow))?;
 
         // Borrow tick array data at this level to avoid nested stack frames
         let data_0 = accounts[self.dyn_start + D_TICK_ARRAY_0]
@@ -186,7 +181,7 @@ impl ProgramMeta for OrcaWhirlpool {
         let in_fee = apply_transfer_inverse_fee(amount_in, input_transfer_fee);
         let final_amount_in = amount_in
             .checked_add(in_fee)
-            .ok_or(error!(crate::programs::SolarBError::FeeOverflow))?;
+            .ok_or(solar_error!(crate::programs::SolarBError::FeeOverflow))?;
 
         Ok(final_amount_in)
     }
@@ -448,7 +443,7 @@ impl ProgramMeta for OrcaWhirlpool {
     /// These are returned as (base_reserve, quote_reserve).
     fn get_vault_amounts(&self) -> Result<(u64, u64)> {
         if self.liquidity == 0 || self.sqrt_price == 0 {
-            return Err(error!(crate::programs::SolarBError::InsufficientFunds));
+            return Err(solar_error!(crate::programs::SolarBError::InsufficientFunds));
         }
         let sqrt_p = self.sqrt_price as f64 / (1u128 << 64) as f64;
         let l = self.liquidity as f64;
@@ -536,7 +531,7 @@ impl ProgramMeta for OrcaWhirlpool {
         let tick_lower = floor_to_tick_spacing(self.tick_current_index, tick_spacing);
         let tick_boundary = if a_to_b { tick_lower } else { tick_lower + tick_spacing };
         let sqrt_price_boundary = tick_math::get_sqrt_price_at_tick(tick_boundary)
-            .map_err(|_| error!(crate::programs::SolarBError::InsufficientAccounts))?;
+            .map_err(|_| solar_error!(crate::programs::SolarBError::InsufficientAccounts))?;
         let net_cap = libraries::liquidity_math::get_amount_in_for_liquidity(
             self.sqrt_price, sqrt_price_boundary, self.liquidity, a_to_b,
         )
@@ -669,7 +664,7 @@ impl OrcaWhirlpool {
         data_2: &Option<std::cell::Ref<'a, &mut [u8]>>,
     ) -> Result<u64> {
         if self.liquidity == 0 {
-            return Err(error!(crate::programs::SolarBError::InsufficientFunds));
+            return Err(solar_error!(crate::programs::SolarBError::InsufficientFunds));
         }
 
         let mut amount_remaining = amount_in;
@@ -781,7 +776,7 @@ impl OrcaWhirlpool {
         data_2: &Option<std::cell::Ref<'a, &mut [u8]>>,
     ) -> Result<u64> {
         if self.liquidity == 0 {
-            return Err(error!(crate::programs::SolarBError::InsufficientFunds));
+            return Err(solar_error!(crate::programs::SolarBError::InsufficientFunds));
         }
 
         let mut amount_remaining = amount_out;
@@ -1131,8 +1126,8 @@ mod tests {
     use super::*;
     use crate::programs::orca::states::{get_tick_array_start_index, TICK_ARRAY_SIZE};
     use crate::utils::token::MintFee;
-    use anchor_lang::prelude::Clock;
-    use anchor_lang::solana_program::pubkey::Pubkey;
+    use solana_program::clock::Clock;
+    use solana_program::pubkey::Pubkey;
     use solana_client::nonblocking::rpc_client::RpcClient;
 
     fn create_mock_account_info_with_data(
@@ -1189,7 +1184,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -1242,7 +1237,7 @@ mod tests {
         let oracle_info = try_fetch_account_info_from_rpc(&rpc_client, oracle_key)
             .await
             .unwrap_or_else(|| create_mock_account_info_with_data(
-                oracle_key, anchor_lang::solana_program::system_program::id(), None,
+                oracle_key, solana_program::system_program::id(), None,
             ));
 
         // Derive tick array PDAs based on current tick and tick spacing
@@ -1298,7 +1293,7 @@ mod tests {
         eprintln!("  fee_rate (static): {}, total_fee_rate: {}", static_fee_rate, total_fee_rate);
 
         let program_id_info = create_mock_account_info_with_data(
-            PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            PROGRAM_ID, solana_program::system_program::id(), None,
         );
 
         // Layout:

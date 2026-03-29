@@ -1,4 +1,4 @@
-use anchor_lang::prelude::AccountInfo;
+use crate::compat::AccountInfo;
 use super::whirlpool_sim::WhirlpoolPool;
 use super::amm_sim::AmmPool;
 use super::dlmm_sim::DlmmPool;

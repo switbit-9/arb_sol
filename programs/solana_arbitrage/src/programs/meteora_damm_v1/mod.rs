@@ -1,12 +1,7 @@
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
 use crate::utils::utils::read_token_amount;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use crate::utils::cpi::invoke_cpi;
 
 // ── Pool account data byte offsets (after 8-byte Anchor discriminator) ──
@@ -474,11 +469,11 @@ impl MeteoraDammV1 {
         dyn_end: usize,
         clock: &Clock,
     ) -> Result<Self> {
-        require!(
+        solar_require!(
             dyn_end - dyn_start >= Self::DYNAMIC_ACCOUNTS,
             crate::programs::SolarBError::InsufficientAccounts
         );
-        require!(
+        solar_require!(
             dyn_end <= accounts.len(),
             crate::programs::SolarBError::InsufficientAccounts
         );
@@ -681,7 +676,7 @@ mod tests {
     }
 
     async fn get_clock_from_rpc(rpc_client: &RpcClient) -> Clock {
-        use anchor_client::solana_sdk::sysvar;
+        use solana_program::sysvar;
         let clock_account = rpc_client.get_account(&sysvar::clock::ID).await
             .expect("Failed to fetch clock");
         let data = &clock_account.data;
@@ -764,22 +759,22 @@ mod tests {
         let b_vault_lp_info = fetch_account_info_from_rpc(&rpc_client, b_vault_lp_key).await;
 
         let program_id_info = create_mock_account_info_with_data(
-            MeteoraDammV1::PROGRAM_ID, anchor_lang::solana_program::system_program::id(), None,
+            MeteoraDammV1::PROGRAM_ID, solana_program::system_program::id(), None,
         );
         let pool_id_info = account_to_account_info(pool_id, pool_account);
         let a_vault_info = account_to_account_info(a_vault_key, a_vault_account);
         let b_vault_info = account_to_account_info(b_vault_key, b_vault_account);
         let proto_fee_a_info = create_mock_account_info_with_data(
-            proto_fee_a_key, anchor_lang::solana_program::system_program::id(), None,
+            proto_fee_a_key, solana_program::system_program::id(), None,
         );
         let proto_fee_b_info = create_mock_account_info_with_data(
-            proto_fee_b_key, anchor_lang::solana_program::system_program::id(), None,
+            proto_fee_b_key, solana_program::system_program::id(), None,
         );
         let vault_program_info = create_mock_account_info_with_data(
-            Pubkey::new_unique(), anchor_lang::solana_program::system_program::id(), None,
+            Pubkey::new_unique(), solana_program::system_program::id(), None,
         );
         let token_program_info = create_mock_account_info_with_data(
-            anchor_spl::token::ID, anchor_lang::solana_program::system_program::id(), None,
+            crate::compat::SPL_TOKEN_ID, solana_program::system_program::id(), None,
         );
 
         // Layout:

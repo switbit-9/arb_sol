@@ -1,11 +1,6 @@
 use crate::programs::{PoolKind, ProgramMeta};
 use crate::utils::token::{apply_transfer_fee, MintFee};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    instruction::AccountMeta,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-};
+use crate::compat::*;
 use crate::utils::cpi::invoke_cpi;
 mod constants;
 use crate::utils::utils::read_vault_data;
@@ -679,7 +674,7 @@ impl PumpAmm {
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
 
         #[cfg(any(test, feature = "benchmark"))]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.005) as u64;
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 0.9) as u64;
 
 
         let price = get_price_f64(base_vault_amount, quote_vault_amount);
@@ -940,7 +935,7 @@ mod tests {
     use super::*;
     use crate::utils::token::MintFee;
     use crate::utils::utils::read_token_amount;
-    use anchor_lang::solana_program::system_program;
+    use solana_program::system_program;
     use solana_client::nonblocking::rpc_client::RpcClient;
 
     const POOL_BASE_MINT_OFFSET: usize = 43;

@@ -1,8 +1,7 @@
 use crate::programs::{ProgramInstance, ProgramMeta};
 use crate::utils::bot_config::BotConfig;
 use crate::utils::token::{get_transfer_fees, MintFee};
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token::native_mint::ID as WSOL;
+use crate::compat::*;
 
 /// Maximum golden-section iterations. 100 iterations on a 1 SOL range narrows
 /// well below 1 lamport — fully exhaustive.

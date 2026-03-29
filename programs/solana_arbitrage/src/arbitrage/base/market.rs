@@ -1,6 +1,6 @@
 use super::{edge::Edge, edge::EdgeSide, pool::Pool};
 use crate::programs::ProgramMeta;
-use anchor_lang::solana_program::pubkey::Pubkey;
+use crate::compat::Pubkey;
 use std::collections::HashSet;
 
 pub struct Market<'info, T: ProgramMeta + ?Sized> {
