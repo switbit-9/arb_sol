@@ -1058,9 +1058,9 @@ fn run_simulation<'info>(
     Ok(profit)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmark"))]
 #[path = "tests/test_fixtures.rs"]
-mod test_fixtures;
+pub mod test_fixtures;
 #[cfg(test)]
 #[path = "tests/pubkey_test.rs"]
 mod pubkey_test;
