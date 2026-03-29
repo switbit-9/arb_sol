@@ -123,6 +123,11 @@ impl ProgramMeta for MeteoraDammV1 {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok(((self.price, inverse), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::MeteoraDammV1))
+    }
+
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_in) } else { Ok(self.sell_max_in) }
     }

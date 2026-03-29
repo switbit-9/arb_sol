@@ -1,26 +1,7 @@
 use anchor_lang::prelude::declare_program;
 use anyhow::*;
 
-macro_rules! debug_log_path {
-    () => { concat!(env!("CARGO_MANIFEST_DIR"), "/debug_log_5.txt") };
-}
-
-macro_rules! debug_eprintln {
-    ($($arg:tt)*) => {{
-        #[cfg(any(test, feature = "debug"))]
-        {
-            eprintln!($($arg)*);
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(debug_log_path!())
-            {
-                let _ = writeln!(f, $($arg)*);
-            }
-        }
-    }};
-}
+// debug_eprintln! and debug_log_path! are available crate-wide via #[macro_use] utils::debug
 
 declare_program!(dlmm);
 

@@ -213,6 +213,11 @@ impl ProgramMeta for RaydiumCLMM {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok(((self.price, inverse), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::RaydiumCLMM))
+    }
+
     /// Virtual reserves from concentrated liquidity within the active tick range.
     /// Within a single tick range (constant L), a CLMM swap is mathematically
     /// equivalent to a constant-product AMM:

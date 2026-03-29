@@ -1,9 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 
-use crate::programs::{self, ProgramInstance, ProgramMeta, PoolKind};
+use crate::programs::{self, ProgramInstance, ProgramMeta, PoolKind, SolarBError};
 use crate::utils::bot_config::BotConfig;
 use crate::MAX_POOLS;
+#[cfg(feature = "benchmark")]
 use crate::sol_remaining_cu;
 use super::{ArbitrageResult, Hop, amm_sim, dlmm_sim, whirlpool_sim, clmm_sim};
 use super::dlmm_checker::{check_dlmm_dlmm, check_dlmm_to_amm, check_amm_to_dlmm};
@@ -17,19 +18,24 @@ use super::clmm_checker::{
     check_clmm_to_dlmm, check_dlmm_to_clmm,
     check_clmm_to_whirlpool, check_whirlpool_to_clmm,
 };
-use whirlpool_sim::{WhirlpoolPool, WhirlpoolTick};
 use programs::orca::{D_TICK_ARRAY_0, D_TICK_ARRAY_1, D_TICK_ARRAY_2};
-use programs::orca::states::TickArraySimple;
-/// Pre-extracted checker pool: AMM (stack), DLMM (stack, account-backed), or Whirlpool/CLMM (heap-boxed).
+/// Pre-extracted checker pool: AMM (stack), DLMM/Whirlpool/CLMM (stack, account-backed lazy ticks).
 enum CheckerPool {
     Amm(amm_sim::AmmPool),
     Dlmm(dlmm_sim::DlmmPool),
-    Whirlpool(Box<whirlpool_sim::WhirlpoolPool>),
-    Clmm(Box<clmm_sim::ClmmPool>),
+    Whirlpool(whirlpool_sim::WhirlpoolPool),
+    Clmm(clmm_sim::ClmmPool),
 }
 const ONE_Q64: u128 = 1u128 << 64;
 const Q32: f64 = (1u64 << 32) as f64; // 4294967296.0
-const MAX_BINS_TO_LOAD: usize = 10;
+const MAX_CANDIDATES: usize = MAX_POOLS; // * (MAX_POOLS - 1);
+
+struct Candidate {
+    bi: u8,
+    si: u8,
+    excess: u128,
+    score: u128, // depth >= max_in: excess; depth < max_in: excess * depth / max_in
+}
 
 /// Pre-extracted per-pool info cached once during the price scan.
 /// Avoids redundant `get_mints()` / `pool_kind()` calls in the N^2 pair loop.
@@ -48,23 +54,25 @@ struct PoolInfo {
 
 /// Extract arbitrage_checker pools from ProgramInstance and run the checker.
 /// Pre-extracts all pools once to avoid repeated heap allocations (BPF bump allocator never frees).
+#[inline(never)]
 pub fn run_arb_checker<'info>(
     accounts: &[AccountInfo<'info>],
     instances: &[ProgramInstance],
     config: &BotConfig,
-) -> ArbitrageResult {
+) -> Option<ArbitrageResult> {
     let start_token = config.start_token.unwrap_or(WSOL);
     let max_in = config.max_amount_in;
     let mut best = ArbitrageResult::none();
 
     let n = instances.len().min(MAX_POOLS);
-    if n < 2 { return best; }
+    if n < 2 { return None; }
 
     // Pre-extract prices, fees, mints, and pool kind once per pool — no heap alloc.
     let first = &instances[0];
     let (base_mint, quote_mint) = first.get_mints();
     let middle_mint = if *base_mint == start_token { *quote_mint } else { *base_mint };
 
+    #[cfg(feature = "benchmark")]
     let cu_price_start = sol_remaining_cu();
     let mut info: Box<[PoolInfo; MAX_POOLS]> = Box::new([const { PoolInfo {
         base: Pubkey::new_from_array([0; 32]),
@@ -77,27 +85,17 @@ pub fn run_arb_checker<'info>(
     } }; MAX_POOLS]);
     for i in 0..n {
         let inst = &instances[i];
-        let (price_btq, price_qtb) = match inst.get_prices() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let (fee_btq, fee_qtb) = match inst.get_fee_factor() {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let (base, quote) = inst.get_mints();
+        let ((price_btq, price_qtb), (fee_btq, fee_qtb), (base, quote), kind) =
+            match inst.get_checker_info() {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
         // Convert effective prices to Q32 fixed-point once per pool (cold O(N) path).
         // The N^2 pre-filter loop then uses pure integer math.
         let eff_btq_q32 = (price_btq * fee_btq * Q32) as u64;
         let eff_qtb_q32 = (price_qtb * fee_qtb * Q32) as u64;
         let buy = if start_token == *base { eff_btq_q32 } else { eff_qtb_q32 };
         let sell = if middle_mint == *base { eff_btq_q32 } else { eff_qtb_q32 };
-        // Compute liquidity depth proxy per direction (~20-200 CU per pool).
-        // buy_depth: max start_token this pool can absorb as buy pool (start_token lamports).
-        // sell_depth: max mid_token this pool can absorb as sell pool (mid_token lamports).
-        // For AMMs, input reserve ≈ max useful input before extreme slippage.
-        // For DLMM, active bin capacity in the input denomination.
-        let kind = inst.pool_kind();
         let (buy_depth, sell_depth) = if kind == PoolKind::MeteoraDlmm {
             let bd = inst.get_active_bin_max_in(start_token).unwrap_or(0);
             let sd = inst.get_active_bin_max_in(middle_mint).unwrap_or(0);
@@ -122,21 +120,14 @@ pub fn run_arb_checker<'info>(
             sell_depth,
         };
     }
-    msg!("  [CU] price_extract: {}", cu_price_start.saturating_sub(sol_remaining_cu()));
+    #[cfg(feature = "benchmark")]
+    debug_msg!("  [CU] price_extract: {}", cu_price_start.saturating_sub(sol_remaining_cu()));
 
     // ---------- Phase 1: Rank all candidates by excess (descending) ----------
     // N^2 pre-filter is cheap (integer multiply). Collect all passing pairs ranked by excess.
     // Max possible candidates = MAX_POOLS * (MAX_POOLS - 1)
+    #[cfg(feature = "benchmark")]
     let cu_n2_start = sol_remaining_cu();
-    const MAX_CANDIDATES: usize = MAX_POOLS; // * (MAX_POOLS - 1);
-
-    struct Candidate {
-        bi: u8,
-        si: u8,
-        excess: u128,
-        score: u128, // excess * min(buy_depth, sell_depth, max_in) — estimated absolute profit
-    }
-
     let mut candidates: [Candidate; MAX_CANDIDATES] = [const { Candidate { bi: 0, si: 0, excess: 0, score: 0 } }; MAX_CANDIDATES];
     let mut cand_count: usize = 0;
 
@@ -190,14 +181,25 @@ pub fn run_arb_checker<'info>(
             let sell_depth_start = if bi_info.buy_price_q32 > 0 {
                 ((si_info.sell_depth as u128) << 32) / (bi_info.buy_price_q32 as u128)
             } else { 0 } as u64;
-            let pair_depth = bi_info.buy_depth.min(sell_depth_start).min(max_in) as u128;
-            let score = (excess >> 32).saturating_mul(pair_depth);
+            let raw_depth = bi_info.buy_depth.min(sell_depth_start);
+            // depth >= max_in: rank by price*fee margin alone.
+            // depth < max_in: scale excess down by depth/max_in fraction.
+            let score = if raw_depth >= max_in {
+                excess
+            } else {
+                excess.saturating_mul(raw_depth as u128) / (max_in as u128)
+            };
 
             if cand_count < MAX_CANDIDATES {
                 candidates[cand_count] = Candidate { bi: bi as u8, si: si as u8, excess, score };
                 cand_count += 1;
             }
         }
+    }
+
+
+    if cand_count == 0 {
+        return None;
     }
 
     // Sort candidates descending by score (insertion sort — tiny array).
@@ -211,7 +213,8 @@ pub fn run_arb_checker<'info>(
     }
 
     debug_eprintln!("checker: {} candidates ranked by score", cand_count);
-    msg!("  [CU] n2_filter+sort: {}", cu_n2_start.saturating_sub(sol_remaining_cu()));
+    #[cfg(feature = "benchmark")]
+    debug_msg!("  [CU] n2_filter+sort: {}", cu_n2_start.saturating_sub(sol_remaining_cu()));
 
     // ---------- Phase 2: Check top-2, then fallback ----------
     // Run checker on #1 and #2. If either profits → take best and return immediately.
@@ -227,6 +230,7 @@ pub fn run_arb_checker<'info>(
         let si_info = &info[si];
 
         // Lazy pool extraction
+        #[cfg(feature = "benchmark")]
         let cu_extract_start = sol_remaining_cu();
         for idx in [bi, si] {
             if pools[idx].is_none() {
@@ -246,7 +250,7 @@ pub fn run_arb_checker<'info>(
                     buy_flags[idx] = sfy;
                     sell_flags[idx] = !sfy;
                 } else if kind == PoolKind::OrcaWhirlpool {
-                    pools[idx] = Some(extract_whirlpool(inst, accounts).map(|p| CheckerPool::Whirlpool(p)));
+                    pools[idx] = Some(extract_whirlpool(inst, accounts).map(CheckerPool::Whirlpool));
                     let atb = match inst {
                         ProgramInstance::OrcaWhirlpool(w) => start_token == w.base_token_pk,
                         _ => false,
@@ -254,7 +258,7 @@ pub fn run_arb_checker<'info>(
                     buy_flags[idx] = atb;
                     sell_flags[idx] = !atb;
                 } else if kind == PoolKind::RaydiumCLMM {
-                    pools[idx] = Some(extract_clmm(inst, accounts).map(|p| CheckerPool::Clmm(p)));
+                    pools[idx] = Some(extract_clmm(inst, accounts).map(CheckerPool::Clmm));
                     let zfo = match inst {
                         ProgramInstance::RaydiumCLMM(c) => start_token == c.base_token_pk,
                         _ => false,
@@ -267,7 +271,8 @@ pub fn run_arb_checker<'info>(
             }
         }
 
-        msg!("  [CU] cand#{} extract({:?}+{:?}): {}", ci, bi_info.kind, si_info.kind, cu_extract_start.saturating_sub(sol_remaining_cu()));
+        #[cfg(feature = "benchmark")]
+        debug_msg!("  [CU] cand#{} extract({:?}+{:?}): {}", ci, bi_info.kind, si_info.kind, cu_extract_start.saturating_sub(sol_remaining_cu()));
 
         let (buy_pool, sell_pool) = match (&pools[bi], &pools[si]) {
             (Some(Some(b)), Some(Some(s))) => (b, s),
@@ -277,6 +282,7 @@ pub fn run_arb_checker<'info>(
         let buy_mid_is_base = middle_mint == bi_info.base;
         let sell_mid_is_base = middle_mint == si_info.base;
 
+        #[cfg(feature = "benchmark")]
         let cu_checker_start = sol_remaining_cu();
         let result = match (buy_pool, sell_pool) {
             (CheckerPool::Amm(a), CheckerPool::Amm(b)) => {
@@ -294,13 +300,13 @@ pub fn run_arb_checker<'info>(
                 check_dlmm_dlmm(da, buy_flags[bi], db, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Whirlpool(wp), CheckerPool::Amm(amm)) => {
-                check_whirlpool_to_amm(wp, buy_flags[bi], amm, sell_mid_is_base, max_in)
+                check_whirlpool_to_amm(wp, buy_flags[bi], amm, sell_mid_is_base, max_in, accounts)
             }
             (CheckerPool::Amm(amm), CheckerPool::Whirlpool(wp)) => {
-                check_amm_to_whirlpool(amm, buy_mid_is_base, wp, sell_flags[si], max_in)
+                check_amm_to_whirlpool(amm, buy_mid_is_base, wp, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Whirlpool(wa), CheckerPool::Whirlpool(wb)) => {
-                check_whirlpool_whirlpool(wa, buy_flags[bi], wb, sell_flags[si], max_in)
+                check_whirlpool_whirlpool(wa, buy_flags[bi], wb, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Whirlpool(wp), CheckerPool::Dlmm(dlmm)) => {
                 check_whirlpool_to_dlmm(wp, buy_flags[bi], dlmm, sell_flags[si], max_in, accounts)
@@ -309,13 +315,13 @@ pub fn run_arb_checker<'info>(
                 check_dlmm_to_whirlpool(dlmm, buy_flags[bi], wp, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Amm(amm)) => {
-                check_clmm_to_amm(clmm, buy_flags[bi], amm, sell_mid_is_base, max_in)
+                check_clmm_to_amm(clmm, buy_flags[bi], amm, sell_mid_is_base, max_in, accounts)
             }
             (CheckerPool::Amm(amm), CheckerPool::Clmm(clmm)) => {
-                check_amm_to_clmm(amm, buy_mid_is_base, clmm, sell_flags[si], max_in)
+                check_amm_to_clmm(amm, buy_mid_is_base, clmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(ca), CheckerPool::Clmm(cb)) => {
-                check_clmm_clmm(ca, buy_flags[bi], cb, sell_flags[si], max_in)
+                check_clmm_clmm(ca, buy_flags[bi], cb, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Dlmm(dlmm)) => {
                 check_clmm_to_dlmm(clmm, buy_flags[bi], dlmm, sell_flags[si], max_in, accounts)
@@ -324,14 +330,15 @@ pub fn run_arb_checker<'info>(
                 check_dlmm_to_clmm(dlmm, buy_flags[bi], clmm, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Clmm(clmm), CheckerPool::Whirlpool(wp)) => {
-                check_clmm_to_whirlpool(clmm, buy_flags[bi], wp, sell_flags[si], max_in)
+                check_clmm_to_whirlpool(clmm, buy_flags[bi], wp, sell_flags[si], max_in, accounts)
             }
             (CheckerPool::Whirlpool(wp), CheckerPool::Clmm(clmm)) => {
-                check_whirlpool_to_clmm(wp, buy_flags[bi], clmm, sell_flags[si], max_in)
+                check_whirlpool_to_clmm(wp, buy_flags[bi], clmm, sell_flags[si], max_in, accounts)
             }
         };
 
-        msg!("  [CU] cand#{} checker: {} (profit={})", ci, cu_checker_start.saturating_sub(sol_remaining_cu()), result.profit);
+        #[cfg(feature = "benchmark")]
+        debug_msg!("  [CU] cand#{} checker: {} (profit={})", ci, cu_checker_start.saturating_sub(sol_remaining_cu()), result.profit);
 
         if result.profit > best.profit {
             best = result;
@@ -346,19 +353,20 @@ pub fn run_arb_checker<'info>(
         // Beyond top-2, return immediately on first profitable result.
         if ci == 1 && best.profit > 0 {
             debug_eprintln!("checker: early exit after top-2 (profit={})", best.profit);
-            return best;
+            return Some(best);
         }
         if ci >= 2 && best.profit > 0 {
             debug_eprintln!("checker: fallback exit at cand#{} (profit={})", ci, best.profit);
-            return best;
+            return Some(best);
         }
 
     }
 
-    best
+    Some(best)
 }
 
 /// Extract a checker AmmPool from a ProgramInstance.
+#[inline(never)]
 pub(crate) fn extract_amm(inst: &ProgramInstance) -> Option<amm_sim::AmmPool> {
     match inst {
         ProgramInstance::PumpAmm(p) => Some(amm_sim::AmmPool::from_pump_with_fee(
@@ -405,6 +413,7 @@ pub(crate) fn extract_amm(inst: &ProgramInstance) -> Option<amm_sim::AmmPool> {
 /// Extract a checker DlmmPool from a MeteoraDlmm ProgramInstance.
 /// Records account indices and bin ranges — bins are read on demand by the checker.
 /// D_BIN_BUY → swap_for_y=true, D_BIN_SELL → swap_for_y=false (independent of arb direction).
+#[inline(never)]
 pub(crate) fn extract_dlmm<'info>(
     inst: &ProgramInstance,
     accounts: &[AccountInfo<'info>],
@@ -460,13 +469,16 @@ pub(crate) fn extract_dlmm<'info>(
         let bin_array_index = i64::from_le_bytes(inner[0..8].try_into().ok()?);
         let lower_bin_id = (bin_array_index as i32) * 70;
 
-        let active_idx_in_array = (slim.active_id - lower_bin_id).max(0).min(69) as usize;
+        let raw_active_idx = slim.active_id - lower_bin_id;
+        if raw_active_idx < 0 || raw_active_idx >= 70 {
+            // Active bin is not in this bin array — skip this direction.
+            continue;
+        }
+        let active_idx_in_array = raw_active_idx as usize;
         let (start, end) = if sfy_dir {
-            let end = (active_idx_in_array + 1).min(70);
-            (end.saturating_sub(MAX_BINS_TO_LOAD), end)
+            (0, (active_idx_in_array + 1).min(70))
         } else {
-            let start = active_idx_in_array;
-            (start, (start + MAX_BINS_TO_LOAD).min(70))
+            (active_idx_in_array, 70)
         };
         pool.set_bin_source(sfy_dir, acc_idx, lower_bin_id, start as u8, end as u8);
     }
@@ -475,109 +487,66 @@ pub(crate) fn extract_dlmm<'info>(
 }
 
 /// Extract a checker WhirlpoolPool from an OrcaWhirlpool ProgramInstance.
-/// Reads initialized ticks from the 3 tick array AccountInfos.
-/// Returns Box<WhirlpoolPool> to keep stack usage low.
+/// Records tick array account indices — ticks are read lazily by the checker.
+#[inline(never)]
 pub(crate) fn extract_whirlpool<'info>(
     inst: &ProgramInstance,
     accounts: &[AccountInfo<'info>],
-) -> Option<Box<whirlpool_sim::WhirlpoolPool>> {
-
+) -> Option<whirlpool_sim::WhirlpoolPool> {
+    use programs::orca::states::tick::{TICK_ARRAY_DISCRIMINATOR, DYNAMIC_TICK_ARRAY_DISCRIMINATOR};
 
     let wp = match inst {
         ProgramInstance::OrcaWhirlpool(w) => w,
         _ => return None,
     };
 
-    // Collect initialized ticks from all 3 tick arrays
-    let mut ticks = Box::new([WhirlpoolTick { tick_index: 0, liquidity_net: 0 }; 128]);
-    let mut tick_count = 0usize;
-
-    for offset in [D_TICK_ARRAY_0, D_TICK_ARRAY_1, D_TICK_ARRAY_2] {
-        let acc_idx = wp.dyn_start + offset;
-        if acc_idx >= accounts.len() {
-            debug_eprintln!("[extract_wp] ta offset={} acc_idx={} OOB (accounts.len={})", offset, acc_idx, accounts.len());
-            continue;
-        }
-        let acc = &accounts[acc_idx];
-        let data = match acc.try_borrow_data() {
-            Ok(d) => d,
-            Err(_) => {
-                debug_eprintln!("[extract_wp] ta offset={} borrow failed key={}", offset, acc.key);
-                continue;
-            }
-        };
-        debug_eprintln!(
-            "[extract_wp] ta offset={} key={} data_len={} disc={:?}",
-            offset, acc.key, data.len(),
-            if data.len() >= 8 { &data[0..8] } else { &data[..] }
-        );
-        // Try fixed TickArray first, then DynamicTickArray
-        if let Some(array) = TickArraySimple::try_from_bytes(&data) {
-            for i in 0..88 {
-                if tick_count >= 128 { break; }
-                if let Some(tick) = array.get_tick(i) {
-                    if tick.initialized {
-                        let tick_index = array.start_tick_index + (i as i32) * (wp.tick_spacing as i32);
-                        ticks[tick_count] = WhirlpoolTick {
-                            tick_index,
-                            liquidity_net: tick.liquidity_net,
-                        };
-                        tick_count += 1;
-                    }
-                }
-            }
-        } else if let Some((start_tick_index, dyn_ticks)) = programs::orca::states::tick::parse_dynamic_tick_array(&data) {
-            for entry in &dyn_ticks {
-                if entry.0 >= 88 { break; } // sentinel
-                if tick_count >= 128 { break; }
-                let tick_index = start_tick_index + (entry.0 as i32) * (wp.tick_spacing as i32);
-                ticks[tick_count] = WhirlpoolTick {
-                    tick_index,
-                    liquidity_net: entry.1.liquidity_net,
-                };
-                tick_count += 1;
-            }
-        } else {
-            debug_eprintln!("[extract_wp] ta offset={} unknown format", offset);
-            continue;
-        }
-    }
-
-    if tick_count > 0 {
-        debug_eprintln!(
-            "[extract_wp] tick_count={} range=[{}..{}] current_tick={}",
-            tick_count,
-            ticks[..tick_count].iter().map(|t| t.tick_index).min().unwrap_or(0),
-            ticks[..tick_count].iter().map(|t| t.tick_index).max().unwrap_or(0),
-            wp.tick_current_index,
-        );
-    } else {
-        debug_eprintln!(
-            "[extract_wp] tick_count=0 current_tick={}",
-            wp.tick_current_index,
-        );
-    }
-
-    let pool = WhirlpoolPool::new(
+    let mut pool = whirlpool_sim::WhirlpoolPool::new_lazy(
         wp.sqrt_price,
         wp.liquidity,
         wp.tick_current_index,
         wp.tick_spacing,
         wp.fee_rate,
-        &ticks[..tick_count],
     );
 
-    Some(Box::new(pool))
+    // Register tick array accounts — no tick data is read here.
+    // Both formats store start_tick_index as i32 at offset 8.
+    const START_TICK_OFF: usize = 8;
+    const BITMAP_OFF: usize = 8 + 4 + 32; // 44: disc + start + whirlpool pubkey
+
+    for offset in [D_TICK_ARRAY_0, D_TICK_ARRAY_1, D_TICK_ARRAY_2] {
+        let acc_idx = wp.dyn_start + offset;
+        if acc_idx >= accounts.len() { continue; }
+        let data = match accounts[acc_idx].try_borrow_data() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if data.len() < START_TICK_OFF + 4 { continue; }
+
+        let start_tick = i32::from_le_bytes(
+            data[START_TICK_OFF..START_TICK_OFF + 4].try_into().ok()?,
+        );
+
+        if data.len() >= 8 && data[0..8] == TICK_ARRAY_DISCRIMINATOR {
+            pool.add_simple_source(acc_idx, start_tick);
+        } else if data.len() >= BITMAP_OFF + 16 && data[0..8] == DYNAMIC_TICK_ARRAY_DISCRIMINATOR {
+            let bitmap = u128::from_le_bytes(
+                data[BITMAP_OFF..BITMAP_OFF + 16].try_into().ok()?,
+            );
+            pool.add_dynamic_source(acc_idx, start_tick, bitmap);
+        }
+    }
+
+    Some(pool)
 }
 
 /// Extract a checker ClmmPool from a RaydiumCLMM ProgramInstance.
-/// Reads initialized ticks from the 4 tick array AccountInfos (2 buy + 2 sell).
-/// Returns Box<ClmmPool> to keep stack usage low.
+/// Records tick array account indices — ticks are read lazily by the checker.
+#[inline(never)]
 pub(crate) fn extract_clmm<'info>(
     inst: &ProgramInstance,
     accounts: &[AccountInfo<'info>],
-) -> Option<Box<clmm_sim::ClmmPool>> {
-    use clmm_sim::{ClmmPool, ClmmTick};
+) -> Option<clmm_sim::ClmmPool> {
+    use clmm_sim::ClmmPool;
     use programs::raydium_clmm::{D_TICK_BUY_0, D_TICK_BUY_1, D_TICK_SELL_0, D_TICK_SELL_1};
 
     let clmm = match inst {
@@ -585,59 +554,32 @@ pub(crate) fn extract_clmm<'info>(
         _ => return None,
     };
 
-    let mut ticks = [ClmmTick { tick_index: 0, liquidity_net: 0 }; 128];
-    let mut tick_count = 0usize;
-
-    // Raydium CLMM TickArray layout (after 8-byte discriminator):
-    //   [0..32]  pool_id
-    //   [32..36] start_tick_index (i32)
-    //   [36..]   ticks[60] (each 168 bytes)
-    // Within each tick: [0..4] unused, [4..20] liquidity_net (i128), [20..36] liquidity_gross (u128)
-    const TA_DISC: usize = 8;
-    const TA_START: usize = TA_DISC + 32;
-    const TA_TICKS: usize = TA_START + 4;
-    const TICK_SIZE: usize = 168;
-    const TICK_CNT: usize = 60;
-    const LIQ_NET_OFF: usize = 4;
-    const LIQ_GROSS_OFF: usize = 20;
-    const MIN_LEN: usize = TA_TICKS + TICK_SIZE * TICK_CNT;
-
-    for offset in [D_TICK_BUY_0, D_TICK_BUY_1, D_TICK_SELL_0, D_TICK_SELL_1] {
-        let acc_idx = clmm.dyn_start + offset;
-        if acc_idx >= accounts.len() { continue; }
-        let acc = &accounts[acc_idx];
-        let data = match acc.try_borrow_data() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        if data.len() < MIN_LEN { continue; }
-
-        let start_tick = i32::from_le_bytes(data[TA_START..TA_START + 4].try_into().ok()?);
-
-        for i in 0..TICK_CNT {
-            if tick_count >= 128 { break; }
-            let base = TA_TICKS + i * TICK_SIZE;
-            let liq_gross_bytes: [u8; 16] = data[base + LIQ_GROSS_OFF..base + LIQ_GROSS_OFF + 16].try_into().ok()?;
-            let liq_gross = u128::from_le_bytes(liq_gross_bytes);
-            if liq_gross == 0 { continue; } // not initialized
-
-            let liq_net_bytes: [u8; 16] = data[base + LIQ_NET_OFF..base + LIQ_NET_OFF + 16].try_into().ok()?;
-            let liquidity_net = i128::from_le_bytes(liq_net_bytes);
-            let tick_index = start_tick + (i as i32) * (clmm.tick_spacing as i32);
-
-            ticks[tick_count] = ClmmTick { tick_index, liquidity_net };
-            tick_count += 1;
-        }
-    }
-
-    let pool = ClmmPool::new(
+    let mut pool = ClmmPool::new_lazy(
         clmm.sqrt_price_x64,
         clmm.liquidity,
         clmm.tick_current,
         clmm.tick_spacing,
         clmm.trade_fee_rate,
-        &ticks[..tick_count],
     );
 
-    Some(Box::new(pool))
+    // Register tick array accounts — no tick data is read here.
+    // start_tick_index is at offset 8 (disc) + 32 (pool_id) = 40.
+    const TA_START_OFF: usize = 8 + 32;
+    const MIN_HDR: usize = TA_START_OFF + 4;
+
+    for offset in [D_TICK_BUY_0, D_TICK_BUY_1, D_TICK_SELL_0, D_TICK_SELL_1] {
+        let acc_idx = clmm.dyn_start + offset;
+        if acc_idx >= accounts.len() { continue; }
+        let data = match accounts[acc_idx].try_borrow_data() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if data.len() < MIN_HDR { continue; }
+        let start_tick = i32::from_le_bytes(
+            data[TA_START_OFF..TA_START_OFF + 4].try_into().ok()?,
+        );
+        pool.add_tick_source(acc_idx, start_tick);
+    }
+
+    Some(pool)
 }

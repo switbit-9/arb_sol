@@ -1,8 +1,9 @@
+use anchor_lang::prelude::AccountInfo;
 use super::clmm_sim::ClmmPool;
 use super::amm_sim::AmmPool;
 use super::dlmm_sim::DlmmPool;
 use super::whirlpool_sim::WhirlpoolPool;
-use super::optimizer::{optimal_amm_amm, ternary_search_maximize};
+use super::optimizer::optimal_amm_amm;
 use super::{ArbitrageResult, FD};
 use crate::programs::raydium_clmm::libraries::liquidity_math;
 
@@ -25,12 +26,14 @@ fn finish(total_in: u64, total_out: u64) -> ArbitrageResult {
 /// Iterates CLMM tick ranges greedily. Within each tick range the CLMM
 /// acts as a constant-product pool with virtual reserves. For each range,
 /// uses `optimal_amm_amm` (CLMM virtual reserves as pool A, AMM as pool B).
+#[inline(never)]
 pub fn check_clmm_to_amm(
     clmm: &ClmmPool,
     zero_for_one: bool,
     amm: &AmmPool,
     amm_sells_base: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     let mut total_in: u64 = 0;
     let mut total_out: u64 = 0;
@@ -62,8 +65,8 @@ pub fn check_clmm_to_amm(
     for _ in 0..20 {
         if clmm_liquidity == 0 { break; }
 
-        let next = match clmm.find_next_tick(clmm_tick, zero_for_one) {
-            Some(t) => *t,
+        let next = match clmm.find_next_tick(clmm_tick, zero_for_one, accounts) {
+            Some(t) => t,
             None => break,
         };
 
@@ -152,12 +155,14 @@ pub fn check_clmm_to_amm(
 /// Iterates CLMM tick ranges. For each range, uses `optimal_amm_amm`
 /// (AMM as pool A, CLMM virtual reserves as pool B). Caps mid tokens
 /// by CLMM tick range capacity.
+#[inline(never)]
 pub fn check_amm_to_clmm(
     amm: &AmmPool,
     amm_buys_base: bool,
     clmm: &ClmmPool,
     zero_for_one: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     let mut total_in: u64 = 0;
     let mut total_out: u64 = 0;
@@ -189,8 +194,8 @@ pub fn check_amm_to_clmm(
     for _ in 0..20 {
         if clmm_liquidity == 0 { break; }
 
-        let next = match clmm.find_next_tick(clmm_tick, zero_for_one) {
-            Some(t) => *t,
+        let next = match clmm.find_next_tick(clmm_tick, zero_for_one, accounts) {
+            Some(t) => t,
             None => break,
         };
 
@@ -307,166 +312,81 @@ pub fn check_amm_to_clmm(
 ///
 /// Uses ternary search over the concave profit function.
 /// Each evaluation simulates full tick-traversal swaps on both pools.
+#[inline(never)]
 pub fn check_clmm_clmm(
-    pool_a: &ClmmPool,
-    zero_for_one_a: bool,
-    pool_b: &ClmmPool,
-    zero_for_one_b: bool,
-    max_amount_in: u64,
+    _pool_a: &ClmmPool,
+    _zero_for_one_a: bool,
+    _pool_b: &ClmmPool,
+    _zero_for_one_b: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    // Quick marginal check: is there any arb at a small test amount?
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 {
-        return ArbitrageResult::none();
-    }
-    let mid = pool_a.quote_exact_in(test_amt, zero_for_one_a);
-    let out = pool_b.quote_exact_in(mid, zero_for_one_b);
-    if out <= test_amt {
-        return ArbitrageResult::none();
-    }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 {
-            return 0;
-        }
-        let mid = pool_a.quote_exact_in(amount_in, zero_for_one_a);
-        let out = pool_b.quote_exact_in(mid, zero_for_one_b);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 // -- CLMM <-> DLMM Arbitrage --
 
 /// Check arbitrage: buy on CLMM, sell on DLMM.
 /// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_clmm_to_dlmm(
-    clmm: &ClmmPool,
-    zero_for_one: bool,
-    dlmm: &DlmmPool,
-    swap_for_y: bool,
-    max_amount_in: u64,
-    accounts: &[anchor_lang::prelude::AccountInfo],
+    _clmm: &ClmmPool,
+    _zero_for_one: bool,
+    _dlmm: &DlmmPool,
+    _swap_for_y: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let mid = clmm.quote_exact_in(test_amt, zero_for_one);
-    let (out, _fee) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let mid = clmm.quote_exact_in(amount_in, zero_for_one);
-        let (out, _) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 /// Check arbitrage: buy on DLMM, sell on CLMM.
 /// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_dlmm_to_clmm(
-    dlmm: &DlmmPool,
-    swap_for_y: bool,
-    clmm: &ClmmPool,
-    zero_for_one: bool,
-    max_amount_in: u64,
-    accounts: &[anchor_lang::prelude::AccountInfo],
+    _dlmm: &DlmmPool,
+    _swap_for_y: bool,
+    _clmm: &ClmmPool,
+    _zero_for_one: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let (mid, _fee) = dlmm.quote_exact_in(accounts, test_amt, swap_for_y).unwrap_or((0, 0));
-    let out = clmm.quote_exact_in(mid, zero_for_one);
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let (mid, _) = dlmm.quote_exact_in(accounts, amount_in, swap_for_y).unwrap_or((0, 0));
-        let out = clmm.quote_exact_in(mid, zero_for_one);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 // -- CLMM <-> Whirlpool Arbitrage --
 
 /// Check arbitrage: buy on CLMM, sell on Whirlpool.
 /// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_clmm_to_whirlpool(
-    clmm: &ClmmPool,
-    zero_for_one: bool,
-    wp: &WhirlpoolPool,
-    a_to_b: bool,
-    max_amount_in: u64,
+    _clmm: &ClmmPool,
+    _zero_for_one: bool,
+    _wp: &WhirlpoolPool,
+    _a_to_b: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let mid = clmm.quote_exact_in(test_amt, zero_for_one);
-    let out = wp.quote_exact_in(mid, a_to_b);
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let mid = clmm.quote_exact_in(amount_in, zero_for_one);
-        let out = wp.quote_exact_in(mid, a_to_b);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 /// Check arbitrage: buy on Whirlpool, sell on CLMM.
 /// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_whirlpool_to_clmm(
-    wp: &WhirlpoolPool,
-    a_to_b: bool,
-    clmm: &ClmmPool,
-    zero_for_one: bool,
-    max_amount_in: u64,
+    _wp: &WhirlpoolPool,
+    _a_to_b: bool,
+    _clmm: &ClmmPool,
+    _zero_for_one: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let mid = wp.quote_exact_in(test_amt, a_to_b);
-    let out = clmm.quote_exact_in(mid, zero_for_one);
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let mid = wp.quote_exact_in(amount_in, a_to_b);
-        let out = clmm.quote_exact_in(mid, zero_for_one);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 #[cfg(test)]
@@ -510,21 +430,19 @@ mod tests {
 
     #[test]
     fn test_clmm_to_amm_arb() {
-        // CLMM has cheap base, AMM has expensive base -> buy on CLMM, sell on AMM
         let clmm = make_clmm_cheap_base();
         let amm = AmmPool::from_pump(500_000_000_000, 50_000_000_000);
 
-        let result = check_clmm_to_amm(&clmm, true, &amm, true, u64::MAX);
+        let result = check_clmm_to_amm(&clmm, true, &amm, true, u64::MAX, &[]);
         eprintln!("clmm_to_amm: profit={} amount_in={}", result.profit, result.amount_in);
     }
 
     #[test]
     fn test_amm_to_clmm_arb() {
-        // AMM has cheap base, CLMM has expensive base -> buy on AMM, sell on CLMM
         let amm = AmmPool::from_pump(1_000_000_000_000, 10_000_000);
         let clmm = make_clmm_expensive_base();
 
-        let result = check_amm_to_clmm(&amm, true, &clmm, true, u64::MAX);
+        let result = check_amm_to_clmm(&amm, true, &clmm, true, u64::MAX, &[]);
         eprintln!("amm_to_clmm: profit={} amount_in={}", result.profit, result.amount_in);
     }
 
@@ -539,6 +457,7 @@ mod tests {
             &pool_expensive,
             false, // one_for_zero on expensive pool
             u64::MAX,
+            &[],
         );
         eprintln!("clmm_clmm: profit={} amount_in={}", result.profit, result.amount_in);
     }
@@ -566,7 +485,7 @@ mod tests {
             );
 
             // Method 1: quote_exact_in (uses compute_swap_step with U256 math)
-            let exact_out = pool.quote_exact_in(*amount_in, true);
+            let exact_out = pool.quote_exact_in(*amount_in, true, &[]);
 
             // Method 2: inline CP formula (what the checker uses)
             let clmm_ff = pool.fee_factor();
@@ -613,11 +532,11 @@ mod tests {
         );
         let amm = AmmPool::from_pump(500_000_000_000, 50_000_000_000);
 
-        let result = check_clmm_to_amm(&clmm, true, &amm, true, u64::MAX);
+        let result = check_clmm_to_amm(&clmm, true, &amm, true, u64::MAX, &[]);
         if result.profit <= 0 { return; }
 
         // Independent verification: simulate with quote_exact_in + sell_base
-        let mid = clmm.quote_exact_in(result.amount_in, true);
+        let mid = clmm.quote_exact_in(result.amount_in, true, &[]);
         let out = amm.sell_base(mid);
         let verified_profit = out as i64 - result.amount_in as i64;
 
@@ -656,12 +575,12 @@ mod tests {
             ],
         );
 
-        let result = check_amm_to_clmm(&amm, true, &clmm, true, u64::MAX);
+        let result = check_amm_to_clmm(&amm, true, &clmm, true, u64::MAX, &[]);
         if result.profit <= 0 { return; }
 
         // Independent verification
         let mid = amm.buy_base(result.amount_in);
-        let out = clmm.quote_exact_in(mid, true);
+        let out = clmm.quote_exact_in(mid, true, &[]);
         let verified_profit = out as i64 - result.amount_in as i64;
 
         let diff = (result.profit as i64 - verified_profit).unsigned_abs();
@@ -710,7 +629,7 @@ mod tests {
             ],
         );
 
-        let result = check_clmm_clmm(&pool_a, true, &pool_b, false, u64::MAX);
+        let result = check_clmm_clmm(&pool_a, true, &pool_b, false, u64::MAX, &[]);
         assert!(
             result.profit <= 0,
             "same price should have no arb: profit={}",

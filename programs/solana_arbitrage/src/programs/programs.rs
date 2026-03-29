@@ -203,6 +203,10 @@ impl ProgramMeta for ProgramInstance {
         dispatch!(self, get_active_bin_max_in(input_mint))
     }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        dispatch!(self, get_checker_info())
+    }
+
     fn get_cached_max_amounts(&self, input_mint: Pubkey) -> (u64, u64) {
         dispatch!(self, get_cached_max_amounts(input_mint))
     }
@@ -366,6 +370,14 @@ pub trait ProgramMeta {
     /// Returns the amount BEFORE fees are added.
     fn get_active_bin_max_in(&self, _input_mint: Pubkey) -> Result<u64> {
         Err(error!(crate::programs::SolarBError::InvalidProgramType))
+    }
+
+    /// Combined accessor: returns (prices, fees, mints, kind) in a single call.
+    /// Avoids 3–4 separate enum matches in hot loops.
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let prices = self.get_prices()?;
+        let fees = self.get_fee_factor()?;
+        Ok((prices, fees, self.get_mints(), self.pool_kind()))
     }
 
     /// Get cached max amounts for a given input direction. Returns (max_in, max_out).

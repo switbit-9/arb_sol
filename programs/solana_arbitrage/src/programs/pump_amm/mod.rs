@@ -148,6 +148,11 @@ impl ProgramMeta for PumpAmm {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok(((self.price, inverse), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::PumpAmm))
+    }
+
     fn fast_quote<'a>(&mut self, _accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, _profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let amount_in = if max_in > 0 { amount_in.min(max_in) } else { amount_in };
@@ -673,8 +678,8 @@ impl PumpAmm {
         let (base_token_pk, base_vault_amount) = read_vault_data(base_vault)?;
         let (quote_token_pk, quote_vault_amount) = read_vault_data(quote_vault)?;
 
-        // #[cfg(test)]
-        let base_vault_amount: u64 = (base_vault_amount as f64 * 0.99) as u64;
+        #[cfg(any(test, feature = "benchmark"))]
+        let base_vault_amount: u64 = (base_vault_amount as f64 * 1.005) as u64;
 
 
         let price = get_price_f64(base_vault_amount, quote_vault_amount);

@@ -1,3 +1,5 @@
+#![cfg(feature = "benchmark")]
+
 use anchor_lang::AnchorSerialize;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program_test::*;
@@ -209,7 +211,7 @@ async fn test_start_bot_cu() {
         &payer.pubkey(),
         &[
             ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
-            ComputeBudgetInstruction::request_heap_frame(256 * 1024),
+            // ComputeBudgetInstruction::request_heap_frame(256 * 1024),
             ix,
         ],
         &[address_lookup_table_account],

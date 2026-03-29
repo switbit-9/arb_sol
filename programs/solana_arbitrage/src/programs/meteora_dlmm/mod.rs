@@ -235,6 +235,11 @@ impl ProgramMeta for MeteoraDlmm {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok(((self.price, inverse), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::MeteoraDlmm))
+    }
+
     fn fast_quote<'a>(&mut self, accounts: &[AccountInfo<'a>], input_mint: Pubkey, amount_in: u64, profit_pct: f64) -> Result<(u64, u64)> {
         let (max_in, max_out) = self.get_cached_max_amounts(input_mint);
         let max_in_active = self.get_max_amount_in_active_bin(input_mint).unwrap_or(u64::MAX);
@@ -344,6 +349,7 @@ impl ProgramMeta for MeteoraDlmm {
         MeteoraDlmm::get_bin_segment_impl(self, accounts, input_mint, bin_offset, prev_price_q64)
     }
 
+    #[inline(never)]
     fn invoke_swap_base_in<'a>(
         &mut self,
         accounts: &[AccountInfo<'a>],
@@ -475,6 +481,7 @@ impl ProgramMeta for MeteoraDlmm {
         Ok(())
     }
 
+    #[inline(never)]
     fn invoke_swap_base_out<'a>(
         &mut self,
         accounts: &[AccountInfo<'a>],

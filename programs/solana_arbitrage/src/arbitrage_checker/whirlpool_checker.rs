@@ -1,7 +1,8 @@
+use anchor_lang::prelude::AccountInfo;
 use super::whirlpool_sim::WhirlpoolPool;
 use super::amm_sim::AmmPool;
 use super::dlmm_sim::DlmmPool;
-use super::optimizer::{optimal_amm_amm, ternary_search_maximize};
+use super::optimizer::optimal_amm_amm;
 use super::{ArbitrageResult, FD};
 use crate::programs::orca::libraries::liquidity_math;
 
@@ -24,12 +25,14 @@ fn finish(total_in: u64, total_out: u64) -> ArbitrageResult {
 /// Iterates WP tick ranges greedily. Within each tick range the Whirlpool
 /// acts as a constant-product pool with virtual reserves. For each range,
 /// uses `optimal_amm_amm` (WP virtual reserves as pool A, AMM as pool B).
+#[inline(never)]
 pub fn check_whirlpool_to_amm(
     wp: &WhirlpoolPool,
     a_to_b: bool,
     amm: &AmmPool,
     amm_sells_base: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     debug_eprintln!(
         "[check_wp_to_amm] wp: sqrt_p={} liq={} tick={} fee={} a_to_b={} | amm: base={} quote={} sells_base={} | max_in={}",
@@ -67,8 +70,8 @@ pub fn check_whirlpool_to_amm(
     for _ in 0..20 {
         if wp_liquidity == 0 { break; }
 
-        let next = match wp.find_next_tick(wp_tick, a_to_b) {
-            Some(t) => *t,
+        let next = match wp.find_next_tick(wp_tick, a_to_b, accounts) {
+            Some(t) => t,
             None => break,
         };
 
@@ -97,8 +100,6 @@ pub fn check_whirlpool_to_amm(
         if remaining == 0 { break; }
 
         // Optimal for (WP as first CP pool, AMM as second CP pool)
-        // WP is "Pool A" (buy side): quote_a = input_reserve, base_a = output_reserve
-        // AMM is "Pool B" (sell side)
         let (opt_amt, opt_profit) = optimal_amm_amm(
             wp_res_in,
             wp_res_out,
@@ -173,12 +174,14 @@ pub fn check_whirlpool_to_amm(
 /// Iterates WP tick ranges. For each range, uses `optimal_amm_amm`
 /// (AMM as pool A, WP virtual reserves as pool B). Caps mid tokens
 /// by WP tick range capacity.
+#[inline(never)]
 pub fn check_amm_to_whirlpool(
     amm: &AmmPool,
     amm_buys_base: bool,
     wp: &WhirlpoolPool,
     a_to_b: bool,
     max_amount_in: u64,
+    accounts: &[AccountInfo],
 ) -> ArbitrageResult {
     debug_eprintln!(
         "[check_amm_to_wp] amm: base={} quote={} buys_base={} | wp: sqrt_p={} liq={} tick={} fee={} a_to_b={} | max_in={}",
@@ -199,7 +202,6 @@ pub fn check_amm_to_whirlpool(
     let fo = FD - amm_fo_raw as u128;
 
     // AMM reserves (evolving) — oriented for buy/sell direction
-    // "in" = what user puts in, "out" = what AMM gives (mid tokens)
     let (mut amm_res_in, mut amm_res_out) = if amm_buys_base {
         (amm.quote_vault as u128, amm.base_vault as u128)
     } else {
@@ -217,8 +219,8 @@ pub fn check_amm_to_whirlpool(
     for _ in 0..20 {
         if wp_liquidity == 0 { break; }
 
-        let next = match wp.find_next_tick(wp_tick, a_to_b) {
-            Some(t) => *t,
+        let next = match wp.find_next_tick(wp_tick, a_to_b, accounts) {
+            Some(t) => t,
             None => break,
         };
 
@@ -344,122 +346,47 @@ pub fn check_amm_to_whirlpool(
 // ── Whirlpool ↔ Whirlpool Arbitrage ──
 
 /// Check arbitrage between two Whirlpool pools sharing a common token.
-///
-/// Path: input -[pool_a swap]-> mid -[pool_b swap]-> output
-///
-/// Uses ternary search over the concave profit function.
-/// Each evaluation simulates full tick-traversal swaps on both pools.
+#[inline(never)]
 pub fn check_whirlpool_whirlpool(
-    pool_a: &WhirlpoolPool,
-    a_to_b_a: bool,
-    pool_b: &WhirlpoolPool,
-    a_to_b_b: bool,
-    max_amount_in: u64,
+    _pool_a: &WhirlpoolPool,
+    _a_to_b_a: bool,
+    _pool_b: &WhirlpoolPool,
+    _a_to_b_b: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    debug_eprintln!(
-        "[check_wp_wp] pool_a: sqrt_p={} liq={} tick={} fee={} a_to_b={} | pool_b: sqrt_p={} liq={} tick={} fee={} a_to_b={} | max_in={}",
-        pool_a.sqrt_price, pool_a.liquidity, pool_a.tick_current_index, pool_a.fee_rate, a_to_b_a,
-        pool_b.sqrt_price, pool_b.liquidity, pool_b.tick_current_index, pool_b.fee_rate, a_to_b_b,
-        max_amount_in
-    );
-
-    // Quick marginal check: is there any arb at a small test amount?
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 {
-        return ArbitrageResult::none();
-    }
-    let mid = pool_a.quote_exact_in(test_amt, a_to_b_a);
-    let out = pool_b.quote_exact_in(mid, a_to_b_b);
-    if out <= test_amt {
-        debug_eprintln!("[check_wp_wp] no marginal arb at test_amt={}: out={}", test_amt, out);
-        return ArbitrageResult::none();
-    }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 {
-            return 0;
-        }
-        let mid = pool_a.quote_exact_in(amount_in, a_to_b_a);
-        let out = pool_b.quote_exact_in(mid, a_to_b_b);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-
-    debug_eprintln!(
-        "[check_wp_wp] RESULT: amount_in={} profit={}",
-        amt, profit
-    );
-
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 // ── Whirlpool ↔ DLMM Arbitrage ──
 
 /// Check arbitrage: buy on Whirlpool, sell on DLMM.
-/// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_whirlpool_to_dlmm(
-    wp: &WhirlpoolPool,
-    a_to_b: bool,
-    dlmm: &DlmmPool,
-    swap_for_y: bool,
-    max_amount_in: u64,
-    accounts: &[anchor_lang::prelude::AccountInfo],
+    _wp: &WhirlpoolPool,
+    _a_to_b: bool,
+    _dlmm: &DlmmPool,
+    _swap_for_y: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let mid = wp.quote_exact_in(test_amt, a_to_b);
-    let (out, _fee) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let mid = wp.quote_exact_in(amount_in, a_to_b);
-        let (out, _) = dlmm.quote_exact_in(accounts, mid, swap_for_y).unwrap_or((0, 0));
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 /// Check arbitrage: buy on DLMM, sell on Whirlpool.
-/// Uses ternary search over the concave profit function.
+#[inline(never)]
 pub fn check_dlmm_to_whirlpool(
-    dlmm: &DlmmPool,
-    swap_for_y: bool,
-    wp: &WhirlpoolPool,
-    a_to_b: bool,
-    max_amount_in: u64,
-    accounts: &[anchor_lang::prelude::AccountInfo],
+    _dlmm: &DlmmPool,
+    _swap_for_y: bool,
+    _wp: &WhirlpoolPool,
+    _a_to_b: bool,
+    _max_amount_in: u64,
+    _accounts: &[AccountInfo],
 ) -> ArbitrageResult {
-    let test_amt = 10_000u64.min(max_amount_in);
-    if test_amt == 0 { return ArbitrageResult::none(); }
-    let (mid, _fee) = dlmm.quote_exact_in(accounts, test_amt, swap_for_y).unwrap_or((0, 0));
-    let out = wp.quote_exact_in(mid, a_to_b);
-    if out <= test_amt { return ArbitrageResult::none(); }
-
-    let profit_fn = |amount_in: u64| -> i128 {
-        if amount_in == 0 { return 0; }
-        let (mid, _) = dlmm.quote_exact_in(accounts, amount_in, swap_for_y).unwrap_or((0, 0));
-        let out = wp.quote_exact_in(mid, a_to_b);
-        out as i128 - amount_in as i128
-    };
-
-    let (amt, profit) = ternary_search_maximize(profit_fn, 1, max_amount_in, 44);
-    if profit > 0 {
-        ArbitrageResult::from_pair(amt, profit as i64)
-    } else {
-        ArbitrageResult::none()
-    }
+    // Disabled: ternary search too expensive for now
+    ArbitrageResult::none()
 }
 
 #[cfg(test)]
@@ -468,15 +395,13 @@ mod tests {
     use super::super::whirlpool_sim::WhirlpoolTick;
 
     fn make_wp_cheap_base() -> WhirlpoolPool {
-        // WP at price=0.01 (base is cheap relative to quote)
-        // sqrt(0.01) = 0.1, in Q64.64: 0.1 * 2^64 ≈ 1_844_674_407_370_955_161
         let sqrt_price = 1_844_674_407_370_955_161u128;
         WhirlpoolPool::new(
             sqrt_price,
-            100_000_000_000_000, // high liquidity
-            -23028,              // tick for price ~0.01
+            100_000_000_000_000,
+            -23028,
             10,
-            3000, // 0.3%
+            3000,
             &[
                 WhirlpoolTick { tick_index: -30000, liquidity_net: 100_000_000_000_000 },
                 WhirlpoolTick { tick_index: -10000, liquidity_net: -100_000_000_000_000 },
@@ -485,13 +410,11 @@ mod tests {
     }
 
     fn make_wp_expensive_base() -> WhirlpoolPool {
-        // WP at price=0.05 (base is expensive relative to quote)
-        // sqrt(0.05) ≈ 0.2236, in Q64.64: 0.2236 * 2^64 ≈ 4_125_206_105_282_697_830
         let sqrt_price = 4_125_206_105_282_697_830u128;
         WhirlpoolPool::new(
             sqrt_price,
             50_000_000_000_000,
-            -14979, // tick for price ~0.05
+            -14979,
             10,
             3000,
             &[
@@ -503,22 +426,19 @@ mod tests {
 
     #[test]
     fn test_wp_to_amm_arb() {
-        // WP has cheap base, AMM has expensive base → buy on WP, sell on AMM
         let wp = make_wp_cheap_base();
         let amm = AmmPool::from_pump(500_000_000_000, 50_000_000_000);
 
-        let result = check_whirlpool_to_amm(&wp, true, &amm, true, u64::MAX);
-        // There should be arb if WP price differs enough from AMM price
+        let result = check_whirlpool_to_amm(&wp, true, &amm, true, u64::MAX, &[]);
         eprintln!("wp_to_amm: profit={} amount_in={}", result.profit, result.amount_in);
     }
 
     #[test]
     fn test_amm_to_wp_arb() {
-        // AMM has cheap base, WP has expensive base → buy on AMM, sell on WP
         let amm = AmmPool::from_pump(1_000_000_000_000, 10_000_000);
         let wp = make_wp_expensive_base();
 
-        let result = check_amm_to_whirlpool(&amm, true, &wp, true, u64::MAX);
+        let result = check_amm_to_whirlpool(&amm, true, &wp, true, u64::MAX, &[]);
         eprintln!("amm_to_wp: profit={} amount_in={}", result.profit, result.amount_in);
     }
 
@@ -527,31 +447,27 @@ mod tests {
         let pool_cheap = make_wp_cheap_base();
         let pool_expensive = make_wp_expensive_base();
 
-        // Buy base on cheap pool (a_to_b=false means buy base/sell quote on WP)
-        // Then sell base on expensive pool
         let result = check_whirlpool_whirlpool(
             &pool_cheap,
-            true,  // a_to_b on cheap pool
+            true,
             &pool_expensive,
-            false, // b_to_a on expensive pool
+            false,
             u64::MAX,
+            &[],
         );
         eprintln!("wp_wp: profit={} amount_in={}", result.profit, result.amount_in);
     }
 
-    /// Precision test: verify the inline CP formula matches quote_exact_in
-    /// (which uses exact U256 on-chain math) within acceptable tolerance.
+    /// Precision test: verify the inline CP formula matches quote_exact_in.
     #[test]
     fn test_cp_vs_exact_precision() {
-        // Test various amounts at different price points
         let test_cases: Vec<(u128, u128, i32, u64)> = vec![
-            // (sqrt_price, liquidity, tick, amount_in)
-            (1u128 << 64, 1_000_000_000_000, 0, 1_000_000),          // price=1, small
-            (1u128 << 64, 1_000_000_000_000, 0, 1_000_000_000),      // price=1, medium
-            (1u128 << 64, 1_000_000_000_000, 0, 100_000_000_000),    // price=1, large
-            (1_844_674_407_370_955_161, 100_000_000_000_000, -23028, 500_000_000), // price~0.01
-            (4_125_206_105_282_697_830, 50_000_000_000_000, -14979, 1_000_000_000), // price~0.05
-            (18_446_744_073_709_551_616 * 10, 500_000_000_000, 23028, 2_000_000_000), // price~100
+            (1u128 << 64, 1_000_000_000_000, 0, 1_000_000),
+            (1u128 << 64, 1_000_000_000_000, 0, 1_000_000_000),
+            (1u128 << 64, 1_000_000_000_000, 0, 100_000_000_000),
+            (1_844_674_407_370_955_161, 100_000_000_000_000, -23028, 500_000_000),
+            (4_125_206_105_282_697_830, 50_000_000_000_000, -14979, 1_000_000_000),
+            (18_446_744_073_709_551_616 * 10, 500_000_000_000, 23028, 2_000_000_000),
         ];
 
         for (sqrt_price, liquidity, tick, amount_in) in &test_cases {
@@ -563,10 +479,8 @@ mod tests {
                 ],
             );
 
-            // Method 1: quote_exact_in (uses compute_swap_step with U256 math)
-            let exact_out = pool.quote_exact_in(*amount_in, true);
+            let exact_out = pool.quote_exact_in(*amount_in, true, &[]);
 
-            // Method 2: inline CP formula (what the checker uses)
             let wp_ff = pool.fee_factor();
             let (v_a, v_b) = WhirlpoolPool::virtual_reserves(*sqrt_price, *liquidity);
             let in_eff = (*amount_in as u128) * wp_ff / FD;
@@ -586,7 +500,6 @@ mod tests {
                 amount_in, exact_out, cp_out, diff, pct_err
             );
 
-            // Must be within 0.001% for any real trade
             assert!(
                 pct_err < 0.001 || diff <= 5,
                 "CP divergence too large: exact={} cp={} diff={} err={:.6}%",
@@ -595,12 +508,11 @@ mod tests {
         }
     }
 
-    /// End-to-end precision test: verify checker profit matches
-    /// independent simulation using quote_exact_in + AmmPool methods.
+    /// End-to-end precision test: checker profit vs independent simulation.
     #[test]
     fn test_wp_to_amm_profit_precision() {
         let wp = WhirlpoolPool::new(
-            4_125_206_105_282_697_830, // price ~0.05
+            4_125_206_105_282_697_830,
             50_000_000_000_000,
             -14979,
             10,
@@ -612,11 +524,10 @@ mod tests {
         );
         let amm = AmmPool::from_pump(500_000_000_000, 50_000_000_000);
 
-        let result = check_whirlpool_to_amm(&wp, true, &amm, true, u64::MAX);
+        let result = check_whirlpool_to_amm(&wp, true, &amm, true, u64::MAX, &[]);
         if result.profit <= 0 { return; }
 
-        // Independent verification: simulate with quote_exact_in + sell_base
-        let mid = wp.quote_exact_in(result.amount_in, true);
+        let mid = wp.quote_exact_in(result.amount_in, true, &[]);
         let out = amm.sell_base(mid);
         let verified_profit = out as i64 - result.amount_in as i64;
 
@@ -655,12 +566,11 @@ mod tests {
             ],
         );
 
-        let result = check_amm_to_whirlpool(&amm, true, &wp, true, u64::MAX);
+        let result = check_amm_to_whirlpool(&amm, true, &wp, true, u64::MAX, &[]);
         if result.profit <= 0 { return; }
 
-        // Independent verification
         let mid = amm.buy_base(result.amount_in);
-        let out = wp.quote_exact_in(mid, true);
+        let out = wp.quote_exact_in(mid, true, &[]);
         let verified_profit = out as i64 - result.amount_in as i64;
 
         let diff = (result.profit as i64 - verified_profit).unsigned_abs();
@@ -684,32 +594,23 @@ mod tests {
 
     #[test]
     fn test_wp_wp_no_arb_same_price() {
-        // Two pools at the same price — no arb after fees
-        let sqrt_price = 1u128 << 64; // price = 1.0
+        let sqrt_price = 1u128 << 64;
         let pool_a = WhirlpoolPool::new(
-            sqrt_price,
-            1_000_000_000_000,
-            0,
-            10,
-            3000,
+            sqrt_price, 1_000_000_000_000, 0, 10, 3000,
             &[
                 WhirlpoolTick { tick_index: -1000, liquidity_net: 1_000_000_000_000 },
                 WhirlpoolTick { tick_index: 1000, liquidity_net: -1_000_000_000_000 },
             ],
         );
         let pool_b = WhirlpoolPool::new(
-            sqrt_price,
-            1_000_000_000_000,
-            0,
-            10,
-            3000,
+            sqrt_price, 1_000_000_000_000, 0, 10, 3000,
             &[
                 WhirlpoolTick { tick_index: -1000, liquidity_net: 1_000_000_000_000 },
                 WhirlpoolTick { tick_index: 1000, liquidity_net: -1_000_000_000_000 },
             ],
         );
 
-        let result = check_whirlpool_whirlpool(&pool_a, true, &pool_b, false, u64::MAX);
+        let result = check_whirlpool_whirlpool(&pool_a, true, &pool_b, false, u64::MAX, &[]);
         assert!(
             result.profit <= 0,
             "same price should have no arb: profit={}",

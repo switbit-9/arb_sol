@@ -1,5 +1,5 @@
 macro_rules! debug_log_path {
-    () => { concat!(env!("CARGO_MANIFEST_DIR"), "/debug_log_5.txt") };
+    () => { concat!(env!("CARGO_MANIFEST_DIR"), "/debug_log_6.txt") };
 }
 
 macro_rules! debug_eprintln {
@@ -15,6 +15,15 @@ macro_rules! debug_eprintln {
             {
                 let _ = writeln!(f, $($arg)*);
             }
+        }
+    }};
+}
+
+macro_rules! debug_msg {
+    ($($arg:tt)*) => {{
+        #[cfg(any(test, feature = "benchmark"))]
+        {
+            anchor_lang::prelude::msg!($($arg)*);
         }
     }};
 }

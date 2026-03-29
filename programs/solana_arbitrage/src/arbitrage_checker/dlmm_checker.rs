@@ -27,6 +27,7 @@ fn dlmm_out_full(gross_in: u128, price: u128, fee_adj: u128, swap_for_y: bool) -
 ///
 /// Both DLMM sides are linear within a bin (fixed price per bin).
 /// Uses direct rate math instead of full swap simulations.
+#[inline(never)]
 pub fn check_dlmm_dlmm(
     pool_a: &DlmmPool,
     swap_for_y_a: bool,
@@ -71,7 +72,12 @@ pub fn check_dlmm_dlmm(
     let mut need_load_a = true;
     let mut need_load_b = true;
 
-    for _ in 0..70 {
+    let max_bins = {
+        let (sa, ea) = pool_a.bin_range(swap_for_y_a);
+        let (sb, eb) = pool_b.bin_range(swap_for_y_b);
+        (ea - sa) + (eb - sb)
+    };
+    for _ in 0..max_bins {
         // Load pool_a bin if needed
         if need_load_a {
             loop {
@@ -237,6 +243,7 @@ fn finish(total_in: u64, total_out: u64) -> ArbitrageResult {
 ///
 /// For each DLMM bin, the output is linear. Against the AMM CP curve,
 /// optimal per-bin is analytical. We iterate bins greedily.
+#[inline(never)]
 pub fn check_dlmm_to_amm(
     dlmm: &DlmmPool,
     swap_for_y: bool,
@@ -281,7 +288,8 @@ pub fn check_dlmm_to_amm(
     let const_fee = dlmm.variable_fee_control == 0;
     let cached_fee_adj = if const_fee { FEE_PRECISION - dlmm.get_base_fee() } else { 0 };
 
-    for _ in 0..70 {
+    let (bin_start, bin_end) = dlmm.bin_range(swap_for_y);
+    for _ in 0..(bin_end - bin_start) {
         let bin = match dlmm.read_bin(accounts, cursor, swap_for_y) { Some(b) => b, None => break };
 
         let bin_out = if swap_for_y { bin.amount_y } else { bin.amount_x };
@@ -416,6 +424,7 @@ pub fn check_dlmm_to_amm(
 /// Path: quote_in -[AMM buy base]-> base -[DLMM sell base]-> quote_out
 ///
 /// The AMM side is a CP curve, the DLMM side is piecewise linear across bins.
+#[inline(never)]
 pub fn check_amm_to_dlmm(
     amm: &AmmPool,
     amm_buys_base: bool,
@@ -476,7 +485,8 @@ fn analytical_amm_to_dlmm(
     let const_fee = dlmm.variable_fee_control == 0;
     let cached_fee_adj = if const_fee { FEE_PRECISION - dlmm.get_base_fee() } else { 0 };
 
-    for _ in 0..70 {
+    let (bin_start, bin_end) = dlmm.bin_range(swap_for_y);
+    for _ in 0..(bin_end - bin_start) {
         let bin = match dlmm.read_bin(accounts, cursor, swap_for_y) { Some(b) => b, None => break };
 
         let bin_out_available = if swap_for_y { bin.amount_y } else { bin.amount_x };

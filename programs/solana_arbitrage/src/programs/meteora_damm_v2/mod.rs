@@ -146,6 +146,10 @@ impl ProgramMeta for MeteoraDammV2 {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        Ok(((self.price, self.inverse_price), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::MeteoraDammV2))
+    }
+
     fn get_max_amount_in<'a>(&self, _accounts: &[AccountInfo<'a>], mint: Pubkey) -> Result<u64> {
         if mint == self.base_token_pk { Ok(self.buy_max_in.min(u64::MAX as u128) as u64) } else { Ok(self.sell_max_in.min(u64::MAX as u128) as u64) }
     }

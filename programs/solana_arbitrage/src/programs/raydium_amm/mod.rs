@@ -84,6 +84,11 @@ impl ProgramMeta for RaydiumAmm {
 
     fn get_fee_factor(&self) -> Result<(f64, f64)> { Ok(self.fee_factor) }
 
+    fn get_checker_info(&self) -> Result<((f64, f64), (f64, f64), (&Pubkey, &Pubkey), PoolKind)> {
+        let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
+        Ok(((self.price, inverse), self.fee_factor, (&self.base_token_pk, &self.quote_token_pk), PoolKind::RaydiumAmm))
+    }
+
     fn get_prices(&self) -> Result<(f64, f64)> {
         let inverse = if self.price > 0.0 { 1.0 / self.price } else { 0.0 };
         Ok((self.price, inverse))
