@@ -351,11 +351,11 @@ pub fn run_arb_checker<'info>(
 
         // Early exit: after checking top-2 candidates, if we found profit → return.
         // Beyond top-2, return immediately on first profitable result.
-        if ci == 1 && best.profit > 0 {
+        if ci == 1 && best.profit > config.min_profit {
             debug_eprintln!("checker: early exit after top-2 (profit={})", best.profit);
             return Some(best);
         }
-        if ci >= 2 && best.profit > 0 {
+        if ci >= 2 && best.profit > config.min_profit {
             debug_eprintln!("checker: fallback exit at cand#{} (profit={})", ci, best.profit);
             return Some(best);
         }

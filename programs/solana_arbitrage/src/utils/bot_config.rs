@@ -54,7 +54,7 @@ impl<'info> MintInfo<'info> {
 pub struct BotConfig {
     pub start_token: Option<Pubkey>,
     pub max_amount_in: u64,
-    pub min_profit: i128,
+    pub min_profit: i64,
     pub mints: u8,
     pub mode: u8,
     pub clock: Clock,
@@ -65,7 +65,7 @@ impl BotConfig {
     pub fn new(
         start_token: Option<Pubkey>,
         max_amount_in: u64,
-        min_profit: i128,
+        min_profit: i64,
         mints: u8,
         mode: u8,
         clock: Clock,

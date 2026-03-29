@@ -13,12 +13,12 @@ pub mod programs;
 // #[path = "tests/lib_test.rs"]
 // mod lib_test;
 
-// #[path = "tests/test_fixtures.rs"]
-// pub mod test_fixtures;
+#[path = "tests/test_fixtures.rs"]
+pub mod test_fixtures;
 
-// #[cfg(test)]
-// #[path = "tests/pubkey_test.rs"]
-// mod pubkey_test;
+#[cfg(test)]
+#[path = "tests/pubkey_test.rs"]
+mod pubkey_test;
 
 use anchor_spl::token::spl_token::native_mint::ID as WSOL;
 use arbitrage_checker::ArbitrageResult;

@@ -1,3 +1,4 @@
+use anchor_lang::prelude::AccountInfo;
 use crate::programs::orca::libraries::{tick_math, liquidity_math, swap_math};
 use super::FD;
 
@@ -10,11 +11,29 @@ pub struct WhirlpoolTick {
 
 /// Max initialized ticks we store (3 tick arrays x 88 = 264 max, far fewer initialized).
 const MAX_TICKS: usize = 128;
+const MAX_WP_SOURCES: usize = 3;
+
+// Byte layout: simple (v1) tick array
+const SIMPLE_TICKS_OFF: usize = 12; // 8 disc + 4 start_tick_index
+const SIMPLE_TICK_SIZE: usize = 113;
+const SIMPLE_TICK_COUNT: usize = 88;
+
+// Byte layout: dynamic (v2) tick array
+const DYN_TICKS_OFF: usize = 60; // 8 disc + 4 start + 32 whirlpool + 16 bitmap
+const DYN_TICK_INIT_SIZE: usize = 113; // 1 tag + 112 data
+
+#[derive(Clone, Copy, Debug)]
+struct WpTickSource {
+    acc_idx: usize,
+    start_tick: i32,
+    is_dynamic: bool,
+}
 
 /// Lightweight Whirlpool pool for arbitrage checking.
 ///
 /// Stores only essential state: current sqrt_price, liquidity, tick position, fee rate,
-/// and a sorted list of initialized ticks with their liquidity deltas.
+/// and either pre-loaded ticks (eager, via `new`) or tick array account references
+/// (lazy, via `new_lazy` + `add_*_source`).
 ///
 /// Within each tick range (between two initialized ticks), the Whirlpool is
 /// mathematically equivalent to a constant-product AMM with virtual reserves:
@@ -26,8 +45,12 @@ pub struct WhirlpoolPool {
     pub tick_current_index: i32,
     pub tick_spacing: u16,
     pub fee_rate: u32,          // hundredths of basis point, denominator 1_000_000
+    // Eager path (populated by new())
     ticks_storage: [WhirlpoolTick; MAX_TICKS],
     tick_count: usize,
+    // Lazy path (populated by new_lazy + add_*_source)
+    sources: [WpTickSource; MAX_WP_SOURCES],
+    source_count: usize,
 }
 
 impl WhirlpoolPool {
@@ -51,6 +74,47 @@ impl WhirlpoolPool {
             fee_rate,
             ticks_storage: storage,
             tick_count: count,
+            sources: [WpTickSource { acc_idx: 0, start_tick: 0, is_dynamic: false }; MAX_WP_SOURCES],
+            source_count: 0,
+        }
+    }
+
+    /// Create a pool with no ticks. Register tick array sources with
+    /// `add_simple_source` / `add_dynamic_source`, then ticks are read
+    /// lazily from account data during `find_next_tick`.
+    pub fn new_lazy(
+        sqrt_price: u128,
+        liquidity: u128,
+        tick_current_index: i32,
+        tick_spacing: u16,
+        fee_rate: u32,
+    ) -> Self {
+        Self {
+            sqrt_price,
+            liquidity,
+            tick_current_index,
+            tick_spacing,
+            fee_rate,
+            ticks_storage: [WhirlpoolTick { tick_index: 0, liquidity_net: 0 }; MAX_TICKS],
+            tick_count: 0,
+            sources: [WpTickSource { acc_idx: 0, start_tick: 0, is_dynamic: false }; MAX_WP_SOURCES],
+            source_count: 0,
+        }
+    }
+
+    /// Register a simple (v1) tick array source for lazy loading.
+    pub fn add_simple_source(&mut self, acc_idx: usize, start_tick: i32) {
+        if self.source_count < MAX_WP_SOURCES {
+            self.sources[self.source_count] = WpTickSource { acc_idx, start_tick, is_dynamic: false };
+            self.source_count += 1;
+        }
+    }
+
+    /// Register a dynamic (v2) tick array source for lazy loading.
+    pub fn add_dynamic_source(&mut self, acc_idx: usize, start_tick: i32, _bitmap: u128) {
+        if self.source_count < MAX_WP_SOURCES {
+            self.sources[self.source_count] = WpTickSource { acc_idx, start_tick, is_dynamic: true };
+            self.source_count += 1;
         }
     }
 
@@ -85,18 +149,169 @@ impl WhirlpoolPool {
     /// Find the next initialized tick in the given direction.
     /// For a_to_b (descending): largest tick_index <= current_tick.
     /// For b_to_a (ascending): smallest tick_index > current_tick.
-    /// Uses binary search (ticks are sorted by tick_index).
-    pub fn find_next_tick(&self, current_tick: i32, a_to_b: bool) -> Option<&WhirlpoolTick> {
+    ///
+    /// Eager path (tick_count > 0): binary search on pre-loaded ticks.
+    /// Lazy path: reads tick data on demand from account data.
+    pub fn find_next_tick(&self, current_tick: i32, a_to_b: bool, accounts: &[AccountInfo]) -> Option<WhirlpoolTick> {
+        if self.tick_count > 0 {
+            return self.find_next_tick_eager(current_tick, a_to_b);
+        }
+        self.find_next_tick_lazy(current_tick, a_to_b, accounts)
+    }
+
+    fn find_next_tick_eager(&self, current_tick: i32, a_to_b: bool) -> Option<WhirlpoolTick> {
         let ticks = self.ticks();
         if ticks.is_empty() { return None; }
-        // partition_point returns the first index where tick_index > current_tick
         let idx = ticks.partition_point(|t| t.tick_index <= current_tick);
         if a_to_b {
-            // Want largest tick_index <= current_tick → element at idx - 1
-            if idx > 0 { Some(&ticks[idx - 1]) } else { None }
+            if idx > 0 { Some(ticks[idx - 1]) } else { None }
         } else {
-            // Want smallest tick_index > current_tick → element at idx
-            if idx < ticks.len() { Some(&ticks[idx]) } else { None }
+            if idx < ticks.len() { Some(ticks[idx]) } else { None }
+        }
+    }
+
+    fn find_next_tick_lazy(&self, current_tick: i32, a_to_b: bool, accounts: &[AccountInfo]) -> Option<WhirlpoolTick> {
+        let mut best: Option<WhirlpoolTick> = None;
+        let spacing = self.tick_spacing as i32;
+
+        for si in 0..self.source_count {
+            let s = &self.sources[si];
+            if s.acc_idx >= accounts.len() { continue; }
+            let data = match accounts[s.acc_idx].try_borrow_data() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            if s.is_dynamic {
+                Self::scan_dynamic(&data, s.start_tick, spacing, current_tick, a_to_b, &mut best);
+            } else {
+                Self::scan_simple(&data, s.start_tick, spacing, current_tick, a_to_b, &mut best);
+            }
+        }
+
+        best
+    }
+
+    /// Scan a simple (v1) tick array for the next initialized tick.
+    /// Uses directed scan: for a_to_b scans backwards from the highest valid slot,
+    /// for b_to_a scans forwards from the lowest valid slot.
+    fn scan_simple(data: &[u8], start_tick: i32, spacing: i32, current_tick: i32, a_to_b: bool, best: &mut Option<WhirlpoolTick>) {
+        if data.len() < SIMPLE_TICKS_OFF { return; }
+
+        if a_to_b {
+            // Want largest tick_index <= current_tick. Scan backwards.
+            let max_slot = if current_tick < start_tick {
+                return; // no slot has tick_index <= current_tick
+            } else {
+                (((current_tick - start_tick) / spacing) as usize).min(SIMPLE_TICK_COUNT - 1)
+            };
+
+            for i in (0..=max_slot).rev() {
+                let off = SIMPLE_TICKS_OFF + i * SIMPLE_TICK_SIZE;
+                if off + SIMPLE_TICK_SIZE > data.len() { continue; }
+                if data[off] == 0 { continue; }
+
+                let tick_index = start_tick + (i as i32) * spacing;
+                // Already guaranteed tick_index <= current_tick by max_slot bound
+                if best.map_or(false, |b| tick_index <= b.tick_index) {
+                    break; // this and all remaining are worse
+                }
+
+                if let Ok(bytes) = <[u8; 16]>::try_from(&data[off + 1..off + 17]) {
+                    *best = Some(WhirlpoolTick {
+                        tick_index,
+                        liquidity_net: i128::from_le_bytes(bytes),
+                    });
+                }
+                break; // first found scanning backwards is the best from this source
+            }
+        } else {
+            // Want smallest tick_index > current_tick. Scan forwards.
+            let min_slot = if current_tick < start_tick {
+                0
+            } else {
+                (((current_tick - start_tick) / spacing) as usize + 1).min(SIMPLE_TICK_COUNT)
+            };
+            if min_slot >= SIMPLE_TICK_COUNT { return; }
+
+            for i in min_slot..SIMPLE_TICK_COUNT {
+                let off = SIMPLE_TICKS_OFF + i * SIMPLE_TICK_SIZE;
+                if off + SIMPLE_TICK_SIZE > data.len() { break; }
+                if data[off] == 0 { continue; }
+
+                let tick_index = start_tick + (i as i32) * spacing;
+                if best.map_or(false, |b| tick_index >= b.tick_index) {
+                    break; // this and all remaining are worse
+                }
+
+                if let Ok(bytes) = <[u8; 16]>::try_from(&data[off + 1..off + 17]) {
+                    *best = Some(WhirlpoolTick {
+                        tick_index,
+                        liquidity_net: i128::from_le_bytes(bytes),
+                    });
+                }
+                break;
+            }
+        }
+    }
+
+    /// Scan a dynamic (v2) tick array for the next initialized tick.
+    /// Must walk sequentially due to variable-length encoding.
+    fn scan_dynamic(data: &[u8], start_tick: i32, spacing: i32, current_tick: i32, a_to_b: bool, best: &mut Option<WhirlpoolTick>) {
+        let mut cursor = DYN_TICKS_OFF;
+        let mut found_in_source: Option<WhirlpoolTick> = None;
+
+        for i in 0..SIMPLE_TICK_COUNT {
+            if cursor >= data.len() { break; }
+
+            if data[cursor] == 0 {
+                cursor += 1;
+                continue;
+            }
+            // Initialized tick
+            if cursor + DYN_TICK_INIT_SIZE > data.len() { break; }
+
+            let tick_index = start_tick + (i as i32) * spacing;
+
+            if a_to_b {
+                // Want largest tick_index <= current_tick
+                if tick_index > current_tick {
+                    // Past the boundary — done scanning this source
+                    break;
+                }
+                if let Ok(bytes) = <[u8; 16]>::try_from(&data[cursor + 1..cursor + 17]) {
+                    found_in_source = Some(WhirlpoolTick {
+                        tick_index,
+                        liquidity_net: i128::from_le_bytes(bytes),
+                    });
+                    // Keep going — a later slot may have a larger valid tick_index
+                }
+            } else {
+                // Want smallest tick_index > current_tick
+                if tick_index > current_tick {
+                    if let Ok(bytes) = <[u8; 16]>::try_from(&data[cursor + 1..cursor + 17]) {
+                        found_in_source = Some(WhirlpoolTick {
+                            tick_index,
+                            liquidity_net: i128::from_le_bytes(bytes),
+                        });
+                    }
+                    break; // first valid ascending is the best from this source
+                }
+            }
+
+            cursor += DYN_TICK_INIT_SIZE;
+        }
+
+        // Merge with overall best
+        if let Some(found) = found_in_source {
+            let dominated = match best {
+                Some(b) if a_to_b => found.tick_index <= b.tick_index,
+                Some(b) => found.tick_index >= b.tick_index,
+                None => false,
+            };
+            if !dominated {
+                *best = Some(found);
+            }
         }
     }
 
@@ -133,7 +348,7 @@ impl WhirlpoolPool {
 
     /// Quote exact-in swap simulation across tick ranges.
     /// Uses the same math as the on-chain Whirlpool swap.
-    pub fn quote_exact_in(&self, amount_in: u64, a_to_b: bool) -> u64 {
+    pub fn quote_exact_in(&self, amount_in: u64, a_to_b: bool, accounts: &[AccountInfo]) -> u64 {
         if amount_in == 0 {
             return 0;
         }
@@ -148,7 +363,7 @@ impl WhirlpoolPool {
                 break;
             }
 
-            let next_tick_data = match self.find_next_tick(tick, a_to_b) {
+            let next_tick_data = match self.find_next_tick(tick, a_to_b, accounts) {
                 Some(t) => t,
                 None => break,
             };
@@ -230,7 +445,7 @@ mod tests {
     #[test]
     fn test_quote_basic() {
         let pool = make_pool_price_1();
-        let out = pool.quote_exact_in(1_000_000, true);
+        let out = pool.quote_exact_in(1_000_000, true, &[]);
         assert!(out > 0, "should produce output");
         assert!(out < 1_000_000, "fees + slippage reduce output");
     }
@@ -238,14 +453,14 @@ mod tests {
     #[test]
     fn test_quote_zero() {
         let pool = make_pool_price_1();
-        assert_eq!(pool.quote_exact_in(0, true), 0);
+        assert_eq!(pool.quote_exact_in(0, true, &[]), 0);
     }
 
     #[test]
     fn test_quote_symmetry() {
         let pool = make_pool_price_1();
-        let out_a_to_b = pool.quote_exact_in(1_000_000, true);
-        let out_b_to_a = pool.quote_exact_in(1_000_000, false);
+        let out_a_to_b = pool.quote_exact_in(1_000_000, true, &[]);
+        let out_b_to_a = pool.quote_exact_in(1_000_000, false, &[]);
         // At price=1.0 with symmetric liquidity, outputs should be similar
         let diff = (out_a_to_b as i64 - out_b_to_a as i64).abs();
         assert!(
@@ -261,10 +476,10 @@ mod tests {
     fn test_find_next_tick() {
         let pool = make_pool_price_1();
         // a_to_b from tick 0: should find tick -1000
-        let t = pool.find_next_tick(0, true).unwrap();
+        let t = pool.find_next_tick(0, true, &[]).unwrap();
         assert_eq!(t.tick_index, -1000);
         // b_to_a from tick 0: should find tick 1000
-        let t = pool.find_next_tick(0, false).unwrap();
+        let t = pool.find_next_tick(0, false, &[]).unwrap();
         assert_eq!(t.tick_index, 1000);
     }
 

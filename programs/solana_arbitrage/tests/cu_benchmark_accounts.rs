@@ -16,9 +16,9 @@ fn get_api_url() -> String {
     format!("https://mainnet.helius-rpc.com/?api-key={}", api_key)
 }
 
-/// Anchor discriminator: first 8 bytes of sha256("global:benchmark_cu_accounts")
-fn benchmark_cu_accounts_discriminator() -> [u8; 8] {
-    let hash = <sha2::Sha256 as sha2::Digest>::digest(b"global:benchmark_cu_accounts");
+/// Anchor discriminator: first 8 bytes of sha256("global:initialize")
+fn initialize_discriminator() -> [u8; 8] {
+    let hash = <sha2::Sha256 as sha2::Digest>::digest(b"global:initialize");
     let mut disc = [0u8; 8];
     disc.copy_from_slice(&hash[..8]);
     disc
@@ -84,7 +84,7 @@ fn build_instruction_data() -> Vec<u8> {
         pool_fees: vec![10500],
     };
 
-    let disc = benchmark_cu_accounts_discriminator();
+    let disc = initialize_discriminator();
     let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(&disc);
     data.serialize(&mut buf).expect("borsh serialize");
