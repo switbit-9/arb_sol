@@ -1,48 +1,1194 @@
 max_amount_in: 3000000000
-OrcaWhirlpool
-OrcaWhirlpool: pool_id Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2 , price 0.02860404798622913, inverse_price 34.96008678496941, fee_rate 0.05%
-OrcaWhirlpool
-OrcaWhirlpool: pool_id 6KX9iiLFBcwfjq3uMqeeMukaMZt5rQYTsbZZTnxbzsz6 , price 0.028644885690985094, inverse_price 34.910245786552835, fee_rate 0.16%
-RaydiumCPMM
-RaydiumCPMM: pool_id HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs , price 0.027285615835248637, inverse_price 36.6493468953763, fee_rate 0.25%
-iteration bi=0 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.028604 -> sell_price=0.027286, profit=4.52% buy_fee=0.0500% sell_fee=0.2500%
-iteration bi=1 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.028645 -> sell_price=0.027286, profit=4.55% buy_fee=0.1600% sell_fee=0.2500%
-checker: 2 candidates ranked by score
-[check_wp_to_amm] wp: sqrt_p=3122074551177170653 liq=7919573996 tick=-35530 fee=1600 a_to_b=true | amm: base=39603418575 quote=1080603665 sells_base=false | max_in=3000000000
-[check_wp_to_amm] range: tick=-35840 v_in=46792718201 v_out=1340372064 cap_net=731898445 cap_gross=733071360 opt_amt=471442406 opt_profit=10609718
-[check_wp_to_amm] filled: amt=471442406 mid=13348533 out=482052124 total_in=471442406 total_out=482052124
-[check_wp_to_amm] RESULT: total_in=471442406 total_out=482052124 profit=10609718
-[check_wp_to_amm] wp: sqrt_p=3119848257892385338 liq=4404603773713 tick=-35544 fee=500 a_to_b=true | amm: base=39603418575 quote=1080603665 sells_base=false | max_in=3000000000
-[check_wp_to_amm] range: tick=-36216 v_in=26043125127716 v_out=744938800864 cap_net=890076106162 cap_gross=890521366846 opt_amt=845213311 opt_profit=18880774
-[check_wp_to_amm] filled: amt=845213311 mid=24163650 out=864094085 total_in=845213311 total_out=864094085
-[check_wp_to_amm] RESULT: total_in=845213311 total_out=864094085 profit=18880774
-checker: early exit after top-2 (profit=18880774)
+PumpAmm
+PumpAMM: pool_id A9AbvoCw63ZxkhbwAkxqNeJfpx8GXkMofQ3mkCGeCWHc , price 0.00024395376019058988, inverse_price 4099.137472686405, fee_rate 1.25%
+MeteoraDlmm
+MeteoraDlmm: pool_id 2jcYrSUjp1m15GBdgaThK1Rye2u9jHKJQfaymFhahECe , price 0.0002749659739489588, inverse_price 3636.813623294449, fee_rate 10%
+iteration bi=0 si=1: PumpAmm -> MeteoraDlmm, buy_price=0.000244 -> sell_price=0.000275, profit=0.17% buy_fee=1.2500% sell_fee=10.0000%
+checker: 1 candidates ranked by score
+[amm_to_dlmm] amm: base=324878683022067 quote=79255376329 buys_base=true | dlmm: active_id=-660 bins=41 swap_for_y=true | max_in=3000000000
+[amm_to_dlmm] bin[40] id=-660 dlmm_rate=1062872100000000/4294967296000000000 virt_base=324878683022067 virt_quote=79255376329 amount_in=69398631 bin_out=2903
+[amm_to_dlmm] bin[39] sqrt_k <= virt_quote, no arb — break
+[amm_to_dlmm] RESULT: total_in=2899 total_out=2903 profit=4
 ==============================================
+[quote_exact_in] amount_in=4573588319472 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=4573588319472
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=4573588319472
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=4573576588727
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=4573576588727
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=4518324172739
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=4518324172739
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=4462110845209
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=4462110845209
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=4404921216537
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=4404921216537
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=4346739666775
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=4346739666775
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=4287550329476
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=4287550329476
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=4227337100817
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=4227337100817
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=4166083631849
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=4166083631849
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=4103773324881
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=4103773324881
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=4040389329817
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=4040389329817
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=3975914540441
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=3975914540441
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=3910331590644
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=3910331590644
+[quote_exact_in] Bin -672: in=66708740043 out=14222103 fee=6670874005 | remaining=3843622850601
+[quote_exact_in] Bin -673: amount_x=0 amount_y=14287342 price=4315819398604856 empty=false amount_left=3843622850601
+[quote_exact_in] Bin -673: in=67852427708 out=14287342 fee=6785242771 | remaining=3775770422893
+[quote_exact_in] Bin -674: amount_x=0 amount_y=14352581 price=4262537677634426 empty=false amount_left=3775770422893
+[quote_exact_in] Bin -674: in=69014284325 out=14352581 fee=6901428433 | remaining=3706756138568
+[quote_exact_in] Bin -675: amount_x=0 amount_y=14417820 price=4209913755688322 empty=false amount_left=3706756138568
+[quote_exact_in] Bin -675: in=70194585416 out=14417820 fee=7019458542 | remaining=3636561553152
+[quote_exact_in] Bin -676: amount_x=0 amount_y=14483058 price=4157939511790935 empty=false amount_left=3636561553152
+[quote_exact_in] Bin -676: in=71393605622 out=14483058 fee=7139360563 | remaining=3565167947530
+[quote_exact_in] Bin -677: amount_x=0 amount_y=14548297 price=4106606925225615 empty=false amount_left=3565167947530
+[quote_exact_in] Bin -677: in=72611638420 out=14548297 fee=7261163842 | remaining=3492556309110
+[quote_exact_in] Bin -678: amount_x=0 amount_y=14613536 price=4055908074296903 empty=false amount_left=3492556309110
+[quote_exact_in] Bin -678: in=73848966788 out=14613536 fee=7384896679 | remaining=3418707342322
+[quote_exact_in] Bin -679: amount_x=0 amount_y=14678775 price=4005835135108053 empty=false amount_left=3418707342322
+[quote_exact_in] Bin -679: in=75105882797 out=14678775 fee=7510588280 | remaining=3343601459525
+[quote_exact_in] Bin -680: amount_x=0 amount_y=14744014 price=3956380380353632 empty=false amount_left=3343601459525
+[quote_exact_in] Bin -680: in=76382682804 out=14744014 fee=7638268281 | remaining=3267218776721
+[quote_exact_in] Bin -681: amount_x=0 amount_y=14809253 price=3907536178127044 empty=false amount_left=3267218776721
+[quote_exact_in] Bin -681: in=77679667518 out=14809253 fee=7767966752 | remaining=3189539109203
+[quote_exact_in] Bin -682: amount_x=0 amount_y=14874492 price=3859294990742760 empty=false amount_left=3189539109203
+[quote_exact_in] Bin -682: in=78997142055 out=14874492 fee=7899714206 | remaining=3110541967148
+[quote_exact_in] Bin -683: amount_x=0 amount_y=14939731 price=3811649373573096 empty=false amount_left=3110541967148
+[quote_exact_in] Bin -683: in=80335416007 out=14939731 fee=8033541601 | remaining=3030206551141
+[quote_exact_in] Bin -684: amount_x=0 amount_y=15004970 price=3764591973899354 empty=false amount_left=3030206551141
+[quote_exact_in] Bin -684: in=81694803505 out=15004970 fee=8169480351 | remaining=2948511747636
+[quote_exact_in] Bin -685: amount_x=0 amount_y=15070209 price=3718115529777140 empty=false amount_left=2948511747636
+[quote_exact_in] Bin -685: in=83075623282 out=15070209 fee=8307562329 | remaining=2865436124354
+[quote_exact_in] Bin -686: amount_x=0 amount_y=15135448 price=3672212868915694 empty=false amount_left=2865436124354
+[quote_exact_in] Bin -686: in=84478198740 out=15135448 fee=8447819874 | remaining=2780957925614
+[quote_exact_in] Bin -687: amount_x=0 amount_y=15200687 price=3626876907571056 empty=false amount_left=2780957925614
+[quote_exact_in] Bin -687: in=85902858018 out=15200687 fee=8590285802 | remaining=2695055067596
+[quote_exact_in] Bin -688: amount_x=0 amount_y=15265926 price=3582100649452894 empty=false amount_left=2695055067596
+[quote_exact_in] Bin -688: in=87349934060 out=15265926 fee=8734993406 | remaining=2607705133536
+[quote_exact_in] Bin -689: amount_x=0 amount_y=15331165 price=3537877184644834 empty=false amount_left=2607705133536
+[quote_exact_in] Bin -689: in=88819764682 out=15331165 fee=8881976469 | remaining=2518885368854
+[quote_exact_in] Bin -690: amount_x=0 amount_y=15396404 price=3494199688538108 empty=false amount_left=2518885368854
+[quote_exact_in] Bin -690: in=90312692640 out=15396404 fee=9031269264 | remaining=2428572676214
+[quote_exact_in] Bin -691: amount_x=0 amount_y=15461643 price=3451061420778378 empty=false amount_left=2428572676214
+[quote_exact_in] Bin -691: in=91829065710 out=15461643 fee=9182906571 | remaining=2336743610504
+[quote_exact_in] Bin -692: amount_x=0 amount_y=15526882 price=3408455724225558 empty=false amount_left=2336743610504
+[quote_exact_in] Bin -692: in=93369236749 out=15526882 fee=9336923675 | remaining=2243374373755
+[quote_exact_in] Bin -693: amount_x=0 amount_y=15592121 price=3366376023926477 empty=false amount_left=2243374373755
+[quote_exact_in] Bin -693: in=94933563773 out=15592121 fee=9493356378 | remaining=2148440809982
+[quote_exact_in] Bin -694: amount_x=0 amount_y=15657360 price=3324815826100225 empty=false amount_left=2148440809982
+[quote_exact_in] Bin -694: in=96522410028 out=15657360 fee=9652241003 | remaining=2051918399954
+[quote_exact_in] Bin -695: amount_x=0 amount_y=15722599 price=3283768717136024 empty=false amount_left=2051918399954
+[quote_exact_in] Bin -695: in=98136144072 out=15722599 fee=9813614408 | remaining=1953782255882
+[quote_exact_in] Bin -696: amount_x=0 amount_y=15787838 price=3243228362603481 empty=false amount_left=1953782255882
+[quote_exact_in] Bin -696: in=99775139838 out=15787838 fee=9977513984 | remaining=1854007116044
+[quote_exact_in] Bin -697: amount_x=0 amount_y=15853077 price=3203188506275043 empty=false amount_left=1854007116044
+[quote_exact_in] Bin -697: in=101439776727 out=15853077 fee=10143977673 | remaining=1752567339317
+[quote_exact_in] Bin -698: amount_x=0 amount_y=15918316 price=3163642969160536 empty=false amount_left=1752567339317
+[quote_exact_in] Bin -698: in=103130439673 out=15918316 fee=10313043968 | remaining=1649436899644
+[quote_exact_in] Bin -699: amount_x=0 amount_y=0 price=3124585648553616 empty=true amount_left=1649436899644
+[quote_exact_in] Bin -700: amount_x=0 amount_y=0 price=3086010517089991 empty=true amount_left=1649436899644
+[quote_exact_in] RESULT: amount_in=4573588319472 total_out=559035912 out_transfer_fee=0 final_out=559035912 total_fee=292415141997
+[quote_exact_in] amount_in=7335355767184 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=7335355767184
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=7335355767184
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=7335344036439
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=7335344036439
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=7280091620451
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=7280091620451
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=7223878292921
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=7223878292921
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=7166688664249
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=7166688664249
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=7108507114487
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=7108507114487
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=7049317777188
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=7049317777188
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=6989104548529
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=6989104548529
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=6927851079561
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=6927851079561
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=6865540772593
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=6865540772593
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=6802156777529
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=6802156777529
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=6737681988153
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=6737681988153
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=6672099038356
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=6672099038356
+[quote_exact_in] Bin -672: in=66708740043 out=14222103 fee=6670874005 | remaining=6605390298313
+[quote_exact_in] Bin -673: amount_x=0 amount_y=14287342 price=4315819398604856 empty=false amount_left=6605390298313
+[quote_exact_in] Bin -673: in=67852427708 out=14287342 fee=6785242771 | remaining=6537537870605
+[quote_exact_in] Bin -674: amount_x=0 amount_y=14352581 price=4262537677634426 empty=false amount_left=6537537870605
+[quote_exact_in] Bin -674: in=69014284325 out=14352581 fee=6901428433 | remaining=6468523586280
+[quote_exact_in] Bin -675: amount_x=0 amount_y=14417820 price=4209913755688322 empty=false amount_left=6468523586280
+[quote_exact_in] Bin -675: in=70194585416 out=14417820 fee=7019458542 | remaining=6398329000864
+[quote_exact_in] Bin -676: amount_x=0 amount_y=14483058 price=4157939511790935 empty=false amount_left=6398329000864
+[quote_exact_in] Bin -676: in=71393605622 out=14483058 fee=7139360563 | remaining=6326935395242
+[quote_exact_in] Bin -677: amount_x=0 amount_y=14548297 price=4106606925225615 empty=false amount_left=6326935395242
+[quote_exact_in] Bin -677: in=72611638420 out=14548297 fee=7261163842 | remaining=6254323756822
+[quote_exact_in] Bin -678: amount_x=0 amount_y=14613536 price=4055908074296903 empty=false amount_left=6254323756822
+[quote_exact_in] Bin -678: in=73848966788 out=14613536 fee=7384896679 | remaining=6180474790034
+[quote_exact_in] Bin -679: amount_x=0 amount_y=14678775 price=4005835135108053 empty=false amount_left=6180474790034
+[quote_exact_in] Bin -679: in=75105882797 out=14678775 fee=7510588280 | remaining=6105368907237
+[quote_exact_in] Bin -680: amount_x=0 amount_y=14744014 price=3956380380353632 empty=false amount_left=6105368907237
+[quote_exact_in] Bin -680: in=76382682804 out=14744014 fee=7638268281 | remaining=6028986224433
+[quote_exact_in] Bin -681: amount_x=0 amount_y=14809253 price=3907536178127044 empty=false amount_left=6028986224433
+[quote_exact_in] Bin -681: in=77679667518 out=14809253 fee=7767966752 | remaining=5951306556915
+[quote_exact_in] Bin -682: amount_x=0 amount_y=14874492 price=3859294990742760 empty=false amount_left=5951306556915
+[quote_exact_in] Bin -682: in=78997142055 out=14874492 fee=7899714206 | remaining=5872309414860
+[quote_exact_in] Bin -683: amount_x=0 amount_y=14939731 price=3811649373573096 empty=false amount_left=5872309414860
+[quote_exact_in] Bin -683: in=80335416007 out=14939731 fee=8033541601 | remaining=5791973998853
+[quote_exact_in] Bin -684: amount_x=0 amount_y=15004970 price=3764591973899354 empty=false amount_left=5791973998853
+[quote_exact_in] Bin -684: in=81694803505 out=15004970 fee=8169480351 | remaining=5710279195348
+[quote_exact_in] Bin -685: amount_x=0 amount_y=15070209 price=3718115529777140 empty=false amount_left=5710279195348
+[quote_exact_in] Bin -685: in=83075623282 out=15070209 fee=8307562329 | remaining=5627203572066
+[quote_exact_in] Bin -686: amount_x=0 amount_y=15135448 price=3672212868915694 empty=false amount_left=5627203572066
+[quote_exact_in] Bin -686: in=84478198740 out=15135448 fee=8447819874 | remaining=5542725373326
+[quote_exact_in] Bin -687: amount_x=0 amount_y=15200687 price=3626876907571056 empty=false amount_left=5542725373326
+[quote_exact_in] Bin -687: in=85902858018 out=15200687 fee=8590285802 | remaining=5456822515308
+[quote_exact_in] Bin -688: amount_x=0 amount_y=15265926 price=3582100649452894 empty=false amount_left=5456822515308
+[quote_exact_in] Bin -688: in=87349934060 out=15265926 fee=8734993406 | remaining=5369472581248
+[quote_exact_in] Bin -689: amount_x=0 amount_y=15331165 price=3537877184644834 empty=false amount_left=5369472581248
+[quote_exact_in] Bin -689: in=88819764682 out=15331165 fee=8881976469 | remaining=5280652816566
+[quote_exact_in] Bin -690: amount_x=0 amount_y=15396404 price=3494199688538108 empty=false amount_left=5280652816566
+[quote_exact_in] Bin -690: in=90312692640 out=15396404 fee=9031269264 | remaining=5190340123926
+[quote_exact_in] Bin -691: amount_x=0 amount_y=15461643 price=3451061420778378 empty=false amount_left=5190340123926
+[quote_exact_in] Bin -691: in=91829065710 out=15461643 fee=9182906571 | remaining=5098511058216
+[quote_exact_in] Bin -692: amount_x=0 amount_y=15526882 price=3408455724225558 empty=false amount_left=5098511058216
+[quote_exact_in] Bin -692: in=93369236749 out=15526882 fee=9336923675 | remaining=5005141821467
+[quote_exact_in] Bin -693: amount_x=0 amount_y=15592121 price=3366376023926477 empty=false amount_left=5005141821467
+[quote_exact_in] Bin -693: in=94933563773 out=15592121 fee=9493356378 | remaining=4910208257694
+[quote_exact_in] Bin -694: amount_x=0 amount_y=15657360 price=3324815826100225 empty=false amount_left=4910208257694
+[quote_exact_in] Bin -694: in=96522410028 out=15657360 fee=9652241003 | remaining=4813685847666
+[quote_exact_in] Bin -695: amount_x=0 amount_y=15722599 price=3283768717136024 empty=false amount_left=4813685847666
+[quote_exact_in] Bin -695: in=98136144072 out=15722599 fee=9813614408 | remaining=4715549703594
+[quote_exact_in] Bin -696: amount_x=0 amount_y=15787838 price=3243228362603481 empty=false amount_left=4715549703594
+[quote_exact_in] Bin -696: in=99775139838 out=15787838 fee=9977513984 | remaining=4615774563756
+[quote_exact_in] Bin -697: amount_x=0 amount_y=15853077 price=3203188506275043 empty=false amount_left=4615774563756
+[quote_exact_in] Bin -697: in=101439776727 out=15853077 fee=10143977673 | remaining=4514334787029
+[quote_exact_in] Bin -698: amount_x=0 amount_y=15918316 price=3163642969160536 empty=false amount_left=4514334787029
+[quote_exact_in] Bin -698: in=103130439673 out=15918316 fee=10313043968 | remaining=4411204347356
+[quote_exact_in] Bin -699: amount_x=0 amount_y=0 price=3124585648553616 empty=true amount_left=4411204347356
+[quote_exact_in] Bin -700: amount_x=0 amount_y=0 price=3086010517089991 empty=true amount_left=4411204347356
+[quote_exact_in] RESULT: amount_in=7335355767184 total_out=559035912 out_transfer_fee=0 final_out=559035912 total_fee=292415141997
+[quote_exact_in] amount_in=2841761324790 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=2841761324790
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=2841761324790
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=2841749594045
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=2841749594045
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=2786497178057
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=2786497178057
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=2730283850527
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=2730283850527
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=2673094221855
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=2673094221855
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=2614912672093
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=2614912672093
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=2555723334794
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=2555723334794
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=2495510106135
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=2495510106135
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=2434256637167
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=2434256637167
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=2371946330199
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=2371946330199
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=2308562335135
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=2308562335135
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=2244087545759
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=2244087545759
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=2178504595962
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=2178504595962
+[quote_exact_in] Bin -672: in=66708740043 out=14222103 fee=6670874005 | remaining=2111795855919
+[quote_exact_in] Bin -673: amount_x=0 amount_y=14287342 price=4315819398604856 empty=false amount_left=2111795855919
+[quote_exact_in] Bin -673: in=67852427708 out=14287342 fee=6785242771 | remaining=2043943428211
+[quote_exact_in] Bin -674: amount_x=0 amount_y=14352581 price=4262537677634426 empty=false amount_left=2043943428211
+[quote_exact_in] Bin -674: in=69014284325 out=14352581 fee=6901428433 | remaining=1974929143886
+[quote_exact_in] Bin -675: amount_x=0 amount_y=14417820 price=4209913755688322 empty=false amount_left=1974929143886
+[quote_exact_in] Bin -675: in=70194585416 out=14417820 fee=7019458542 | remaining=1904734558470
+[quote_exact_in] Bin -676: amount_x=0 amount_y=14483058 price=4157939511790935 empty=false amount_left=1904734558470
+[quote_exact_in] Bin -676: in=71393605622 out=14483058 fee=7139360563 | remaining=1833340952848
+[quote_exact_in] Bin -677: amount_x=0 amount_y=14548297 price=4106606925225615 empty=false amount_left=1833340952848
+[quote_exact_in] Bin -677: in=72611638420 out=14548297 fee=7261163842 | remaining=1760729314428
+[quote_exact_in] Bin -678: amount_x=0 amount_y=14613536 price=4055908074296903 empty=false amount_left=1760729314428
+[quote_exact_in] Bin -678: in=73848966788 out=14613536 fee=7384896679 | remaining=1686880347640
+[quote_exact_in] Bin -679: amount_x=0 amount_y=14678775 price=4005835135108053 empty=false amount_left=1686880347640
+[quote_exact_in] Bin -679: in=75105882797 out=14678775 fee=7510588280 | remaining=1611774464843
+[quote_exact_in] Bin -680: amount_x=0 amount_y=14744014 price=3956380380353632 empty=false amount_left=1611774464843
+[quote_exact_in] Bin -680: in=76382682804 out=14744014 fee=7638268281 | remaining=1535391782039
+[quote_exact_in] Bin -681: amount_x=0 amount_y=14809253 price=3907536178127044 empty=false amount_left=1535391782039
+[quote_exact_in] Bin -681: in=77679667518 out=14809253 fee=7767966752 | remaining=1457712114521
+[quote_exact_in] Bin -682: amount_x=0 amount_y=14874492 price=3859294990742760 empty=false amount_left=1457712114521
+[quote_exact_in] Bin -682: in=78997142055 out=14874492 fee=7899714206 | remaining=1378714972466
+[quote_exact_in] Bin -683: amount_x=0 amount_y=14939731 price=3811649373573096 empty=false amount_left=1378714972466
+[quote_exact_in] Bin -683: in=80335416007 out=14939731 fee=8033541601 | remaining=1298379556459
+[quote_exact_in] Bin -684: amount_x=0 amount_y=15004970 price=3764591973899354 empty=false amount_left=1298379556459
+[quote_exact_in] Bin -684: in=81694803505 out=15004970 fee=8169480351 | remaining=1216684752954
+[quote_exact_in] Bin -685: amount_x=0 amount_y=15070209 price=3718115529777140 empty=false amount_left=1216684752954
+[quote_exact_in] Bin -685: in=83075623282 out=15070209 fee=8307562329 | remaining=1133609129672
+[quote_exact_in] Bin -686: amount_x=0 amount_y=15135448 price=3672212868915694 empty=false amount_left=1133609129672
+[quote_exact_in] Bin -686: in=84478198740 out=15135448 fee=8447819874 | remaining=1049130930932
+[quote_exact_in] Bin -687: amount_x=0 amount_y=15200687 price=3626876907571056 empty=false amount_left=1049130930932
+[quote_exact_in] Bin -687: in=85902858018 out=15200687 fee=8590285802 | remaining=963228072914
+[quote_exact_in] Bin -688: amount_x=0 amount_y=15265926 price=3582100649452894 empty=false amount_left=963228072914
+[quote_exact_in] Bin -688: in=87349934060 out=15265926 fee=8734993406 | remaining=875878138854
+[quote_exact_in] Bin -689: amount_x=0 amount_y=15331165 price=3537877184644834 empty=false amount_left=875878138854
+[quote_exact_in] Bin -689: in=88819764682 out=15331165 fee=8881976469 | remaining=787058374172
+[quote_exact_in] Bin -690: amount_x=0 amount_y=15396404 price=3494199688538108 empty=false amount_left=787058374172
+[quote_exact_in] Bin -690: in=90312692640 out=15396404 fee=9031269264 | remaining=696745681532
+[quote_exact_in] Bin -691: amount_x=0 amount_y=15461643 price=3451061420778378 empty=false amount_left=696745681532
+[quote_exact_in] Bin -691: in=91829065710 out=15461643 fee=9182906571 | remaining=604916615822
+[quote_exact_in] Bin -692: amount_x=0 amount_y=15526882 price=3408455724225558 empty=false amount_left=604916615822
+[quote_exact_in] Bin -692: in=93369236749 out=15526882 fee=9336923675 | remaining=511547379073
+[quote_exact_in] Bin -693: amount_x=0 amount_y=15592121 price=3366376023926477 empty=false amount_left=511547379073
+[quote_exact_in] Bin -693: in=94933563773 out=15592121 fee=9493356378 | remaining=416613815300
+[quote_exact_in] Bin -694: amount_x=0 amount_y=15657360 price=3324815826100225 empty=false amount_left=416613815300
+[quote_exact_in] Bin -694: in=96522410028 out=15657360 fee=9652241003 | remaining=320091405272
+[quote_exact_in] Bin -695: amount_x=0 amount_y=15722599 price=3283768717136024 empty=false amount_left=320091405272
+[quote_exact_in] Bin -695: in=98136144072 out=15722599 fee=9813614408 | remaining=221955261200
+[quote_exact_in] Bin -696: amount_x=0 amount_y=15787838 price=3243228362603481 empty=false amount_left=221955261200
+[quote_exact_in] Bin -696: in=99775139838 out=15787838 fee=9977513984 | remaining=122180121362
+[quote_exact_in] Bin -697: amount_x=0 amount_y=15853077 price=3203188506275043 empty=false amount_left=122180121362
+[quote_exact_in] Bin -697: in=101439776727 out=15853077 fee=10143977673 | remaining=20740344635
+[quote_exact_in] Bin -698: amount_x=0 amount_y=15918316 price=3163642969160536 empty=false amount_left=20740344635
+[quote_exact_in] Bin -698: in=20740344635 out=3201298 fee=2074034464 | remaining=0
+[quote_exact_in] RESULT: amount_in=2841761324790 total_out=546318894 out_transfer_fee=0 final_out=546318894 total_fee=284176132493
+[quote_exact_in] amount_in=1762446659046 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1762446659046
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1762446659046
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=1762434928301
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=1762434928301
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=1707182512313
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=1707182512313
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=1650969184783
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=1650969184783
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=1593779556111
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=1593779556111
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=1535598006349
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=1535598006349
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=1476408669050
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=1476408669050
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=1416195440391
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=1416195440391
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=1354941971423
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=1354941971423
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=1292631664455
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=1292631664455
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=1229247669391
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=1229247669391
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=1164772880015
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=1164772880015
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=1099189930218
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=1099189930218
+[quote_exact_in] Bin -672: in=66708740043 out=14222103 fee=6670874005 | remaining=1032481190175
+[quote_exact_in] Bin -673: amount_x=0 amount_y=14287342 price=4315819398604856 empty=false amount_left=1032481190175
+[quote_exact_in] Bin -673: in=67852427708 out=14287342 fee=6785242771 | remaining=964628762467
+[quote_exact_in] Bin -674: amount_x=0 amount_y=14352581 price=4262537677634426 empty=false amount_left=964628762467
+[quote_exact_in] Bin -674: in=69014284325 out=14352581 fee=6901428433 | remaining=895614478142
+[quote_exact_in] Bin -675: amount_x=0 amount_y=14417820 price=4209913755688322 empty=false amount_left=895614478142
+[quote_exact_in] Bin -675: in=70194585416 out=14417820 fee=7019458542 | remaining=825419892726
+[quote_exact_in] Bin -676: amount_x=0 amount_y=14483058 price=4157939511790935 empty=false amount_left=825419892726
+[quote_exact_in] Bin -676: in=71393605622 out=14483058 fee=7139360563 | remaining=754026287104
+[quote_exact_in] Bin -677: amount_x=0 amount_y=14548297 price=4106606925225615 empty=false amount_left=754026287104
+[quote_exact_in] Bin -677: in=72611638420 out=14548297 fee=7261163842 | remaining=681414648684
+[quote_exact_in] Bin -678: amount_x=0 amount_y=14613536 price=4055908074296903 empty=false amount_left=681414648684
+[quote_exact_in] Bin -678: in=73848966788 out=14613536 fee=7384896679 | remaining=607565681896
+[quote_exact_in] Bin -679: amount_x=0 amount_y=14678775 price=4005835135108053 empty=false amount_left=607565681896
+[quote_exact_in] Bin -679: in=75105882797 out=14678775 fee=7510588280 | remaining=532459799099
+[quote_exact_in] Bin -680: amount_x=0 amount_y=14744014 price=3956380380353632 empty=false amount_left=532459799099
+[quote_exact_in] Bin -680: in=76382682804 out=14744014 fee=7638268281 | remaining=456077116295
+[quote_exact_in] Bin -681: amount_x=0 amount_y=14809253 price=3907536178127044 empty=false amount_left=456077116295
+[quote_exact_in] Bin -681: in=77679667518 out=14809253 fee=7767966752 | remaining=378397448777
+[quote_exact_in] Bin -682: amount_x=0 amount_y=14874492 price=3859294990742760 empty=false amount_left=378397448777
+[quote_exact_in] Bin -682: in=78997142055 out=14874492 fee=7899714206 | remaining=299400306722
+[quote_exact_in] Bin -683: amount_x=0 amount_y=14939731 price=3811649373573096 empty=false amount_left=299400306722
+[quote_exact_in] Bin -683: in=80335416007 out=14939731 fee=8033541601 | remaining=219064890715
+[quote_exact_in] Bin -684: amount_x=0 amount_y=15004970 price=3764591973899354 empty=false amount_left=219064890715
+[quote_exact_in] Bin -684: in=81694803505 out=15004970 fee=8169480351 | remaining=137370087210
+[quote_exact_in] Bin -685: amount_x=0 amount_y=15070209 price=3718115529777140 empty=false amount_left=137370087210
+[quote_exact_in] Bin -685: in=83075623282 out=15070209 fee=8307562329 | remaining=54294463928
+[quote_exact_in] Bin -686: amount_x=0 amount_y=15135448 price=3672212868915694 empty=false amount_left=54294463928
+[quote_exact_in] Bin -686: in=54294463928 out=9727610 fee=5429446393 | remaining=0
+[quote_exact_in] RESULT: amount_in=1762446659046 total_out=366914056 out_transfer_fee=0 final_out=366914056 total_fee=176244665915
+[quote_exact_in] amount_in=1091455415204 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1091455415204
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1091455415204
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=1091443684459
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=1091443684459
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=1036191268471
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=1036191268471
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=979977940941
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=979977940941
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=922788312269
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=922788312269
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=864606762507
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=864606762507
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=805417425208
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=805417425208
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=745204196549
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=745204196549
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=683950727581
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=683950727581
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=621640420613
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=621640420613
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=558256425549
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=558256425549
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=493781636173
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=493781636173
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=428198686376
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=428198686376
+[quote_exact_in] Bin -672: in=66708740043 out=14222103 fee=6670874005 | remaining=361489946333
+[quote_exact_in] Bin -673: amount_x=0 amount_y=14287342 price=4315819398604856 empty=false amount_left=361489946333
+[quote_exact_in] Bin -673: in=67852427708 out=14287342 fee=6785242771 | remaining=293637518625
+[quote_exact_in] Bin -674: amount_x=0 amount_y=14352581 price=4262537677634426 empty=false amount_left=293637518625
+[quote_exact_in] Bin -674: in=69014284325 out=14352581 fee=6901428433 | remaining=224623234300
+[quote_exact_in] Bin -675: amount_x=0 amount_y=14417820 price=4209913755688322 empty=false amount_left=224623234300
+[quote_exact_in] Bin -675: in=70194585416 out=14417820 fee=7019458542 | remaining=154428648884
+[quote_exact_in] Bin -676: amount_x=0 amount_y=14483058 price=4157939511790935 empty=false amount_left=154428648884
+[quote_exact_in] Bin -676: in=71393605622 out=14483058 fee=7139360563 | remaining=83035043262
+[quote_exact_in] Bin -677: amount_x=0 amount_y=14548297 price=4106606925225615 empty=false amount_left=83035043262
+[quote_exact_in] Bin -677: in=72611638420 out=14548297 fee=7261163842 | remaining=10423404842
+[quote_exact_in] Bin -678: amount_x=0 amount_y=14613536 price=4055908074296903 empty=false amount_left=10423404842
+[quote_exact_in] Bin -678: in=10423404842 out=2062626 fee=1042340485 | remaining=0
+[quote_exact_in] RESULT: amount_in=1091455415204 total_out=240514092 out_transfer_fee=0 final_out=240514092 total_fee=109145541528
+[quote_exact_in] amount_in=675521867491 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=675521867491
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=675521867491
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=675510136746
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=675510136746
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=620257720758
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=620257720758
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=564044393228
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=564044393228
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=506854764556
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=506854764556
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=448673214794
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=448673214794
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=389483877495
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=389483877495
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=329270648836
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=329270648836
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=268017179868
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=268017179868
+[quote_exact_in] Bin -668: in=62310306968 out=13961147 fee=6231030697 | remaining=205706872900
+[quote_exact_in] Bin -669: amount_x=0 amount_y=14026386 price=4535690271927027 empty=false amount_left=205706872900
+[quote_exact_in] Bin -669: in=63383995064 out=14026386 fee=6338399507 | remaining=142322877836
+[quote_exact_in] Bin -670: amount_x=0 amount_y=14091625 price=4479694095730397 empty=false amount_left=142322877836
+[quote_exact_in] Bin -670: in=64474789376 out=14091625 fee=6447478938 | remaining=77848088460
+[quote_exact_in] Bin -671: amount_x=0 amount_y=14156864 price=4424389230351009 empty=false amount_left=77848088460
+[quote_exact_in] Bin -671: in=65582949797 out=14156864 fee=6558294980 | remaining=12265138663
+[quote_exact_in] Bin -672: amount_x=0 amount_y=14222103 price=4369767141087417 empty=false amount_left=12265138663
+[quote_exact_in] Bin -672: in=12265138663 out=2614890 fee=1226513867 | remaining=0
+[quote_exact_in] RESULT: amount_in=675521867491 total_out=154755155 out_transfer_fee=0 final_out=154755155 total_fee=67552186754
+[quote_exact_in] amount_in=417805917071 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=417805917071
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=417805917071
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=417794186326
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=417794186326
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=362541770338
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=362541770338
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=306328442808
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=306328442808
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=249138814136
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=249138814136
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=190957264374
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=190957264374
+[quote_exact_in] Bin -665: in=59189337299 out=13765430 fee=5918933730 | remaining=131767927075
+[quote_exact_in] Bin -666: amount_x=0 amount_y=13830669 price=4707913620709319 empty=false amount_left=131767927075
+[quote_exact_in] Bin -666: in=60213228659 out=13830669 fee=6021322866 | remaining=71554698416
+[quote_exact_in] Bin -667: amount_x=0 amount_y=13895908 price=4649791230330191 empty=false amount_left=71554698416
+[quote_exact_in] Bin -667: in=61253468968 out=13895908 fee=6125346897 | remaining=10301229448
+[quote_exact_in] Bin -668: amount_x=0 amount_y=13961147 price=4592386400326115 empty=false amount_left=10301229448
+[quote_exact_in] Bin -668: in=10301229448 out=2308076 fee=1030122945 | remaining=0
+[quote_exact_in] RESULT: amount_in=417805917071 total_out=98212319 out_transfer_fee=0 final_out=98212319 total_fee=41780591710
+[quote_exact_in] amount_in=258383874908 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=258383874908
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=258383874908
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=258372144163
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=258372144163
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=203119728175
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=203119728175
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=146906400645
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=146906400645
+[quote_exact_in] Bin -663: in=57189628672 out=13634953 fee=5718962868 | remaining=89716771973
+[quote_exact_in] Bin -664: amount_x=0 amount_y=13700191 price=4826347072730288 empty=false amount_left=89716771973
+[quote_exact_in] Bin -664: in=58181549762 out=13700191 fee=5818154977 | remaining=31535222211
+[quote_exact_in] Bin -665: amount_x=0 amount_y=13765430 price=4766762540968185 empty=false amount_left=31535222211
+[quote_exact_in] Bin -665: in=31535222211 out=7334021 fee=3153522222 | remaining=0
+[quote_exact_in] RESULT: amount_in=258383874908 total_out=61746257 out_transfer_fee=0 final_out=61746257 total_fee=25838387494
+[quote_exact_in] amount_in=159731306580 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=159731306580
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=159731306580
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=159719575835
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=159719575835
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=104467159847
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=104467159847
+[quote_exact_in] Bin -662: in=56213327530 out=13569714 fee=5621332753 | remaining=48253832317
+[quote_exact_in] Bin -663: amount_x=0 amount_y=13634953 price=4886676411139416 empty=false amount_left=48253832317
+[quote_exact_in] Bin -663: in=48253832317 out=11504511 fee=4825383232 | remaining=0
+[quote_exact_in] RESULT: amount_in=159731306580 total_out=38581603 out_transfer_fee=0 final_out=38581603 total_fee=15973130659
+[quote_exact_in] amount_in=98753676477 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=98753676477
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=98753676477
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=98741945732
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=98741945732
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=43489529744
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=43489529744
+[quote_exact_in] Bin -662: in=43489529744 out=10498230 fee=4348952975 | remaining=0
+[quote_exact_in] RESULT: amount_in=98753676477 total_out=24005608 out_transfer_fee=0 final_out=24005608 total_fee=9875367649
+[quote_exact_in] amount_in=61038406694 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=61038406694
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=61038406694
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=61026675949
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=61026675949
+[quote_exact_in] Bin -661: in=55252415988 out=13504475 fee=5525241599 | remaining=5774259961
+[quote_exact_in] Bin -662: amount_x=0 amount_y=13569714 price=4947759866278659 empty=false amount_left=5774259961
+[quote_exact_in] Bin -662: in=5774259961 out=1393887 fee=577425997 | remaining=0
+[quote_exact_in] RESULT: amount_in=61038406694 total_out=14901265 out_transfer_fee=0 final_out=14901265 total_fee=6103840671
+[quote_exact_in] amount_in=37733493899 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=37733493899
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=37733493899
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=37721763154
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=37721763154
+[quote_exact_in] Bin -661: in=37721763154 out=9219734 fee=3772176316 | remaining=0
+[quote_exact_in] RESULT: amount_in=37733493899 total_out=9222637 out_transfer_fee=0 final_out=9222637 total_fee=3773349391
+[quote_exact_in] amount_in=23321880918 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=23321880918
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=23321880918
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=23310150173
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=23310150173
+[quote_exact_in] Bin -661: in=23310150173 out=5697331 fee=2331015018 | remaining=0
+[quote_exact_in] RESULT: amount_in=23321880918 total_out=5700234 out_transfer_fee=0 final_out=5700234 total_fee=2332188093
+[quote_exact_in] amount_in=14417731863 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=14417731863
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=14417731863
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=14406001118
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=14406001118
+[quote_exact_in] Bin -661: in=14406001118 out=3521031 fee=1440600112 | remaining=0
+[quote_exact_in] RESULT: amount_in=14417731863 total_out=3523934 out_transfer_fee=0 final_out=3523934 total_fee=1441773187
+[quote_exact_in] amount_in=8911858374 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=8911858374
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=8911858374
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=8900127629
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=8900127629
+[quote_exact_in] Bin -661: in=8900127629 out=2175317 fee=890012763 | remaining=0
+[quote_exact_in] RESULT: amount_in=8911858374 total_out=2178220 out_transfer_fee=0 final_out=2178220 total_fee=891185838
+[quote_exact_in] amount_in=5510229476 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=5510229476
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=5510229476
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=5498498731
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=5498498731
+[quote_exact_in] Bin -661: in=5498498731 out=1343911 fee=549849874 | remaining=0
+[quote_exact_in] RESULT: amount_in=5510229476 total_out=1346814 out_transfer_fee=0 final_out=1346814 total_fee=551022949
+[quote_exact_in] amount_in=3406888599 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=3406888599
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=3406888599
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=3395157854
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=3395157854
+[quote_exact_in] Bin -661: in=3395157854 out=829824 fee=339515786 | remaining=0
+[quote_exact_in] RESULT: amount_in=3406888599 total_out=832727 out_transfer_fee=0 final_out=832727 total_fee=340688861
+[quote_exact_in] amount_in=2107430788 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=2107430788
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=2107430788
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=2095700043
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=2095700043
+[quote_exact_in] Bin -661: in=2095700043 out=512218 fee=209570005 | remaining=0
+[quote_exact_in] RESULT: amount_in=2107430788 total_out=515121 out_transfer_fee=0 final_out=515121 total_fee=210743080
+[quote_exact_in] amount_in=1303942694 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1303942694
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1303942694
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=1292211949
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=1292211949
+[quote_exact_in] Bin -661: in=1292211949 out=315834 fee=129221195 | remaining=0
+[quote_exact_in] RESULT: amount_in=1303942694 total_out=318737 out_transfer_fee=0 final_out=318737 total_fee=130394270
+[quote_exact_in] amount_in=807544472 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=807544472
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=807544472
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=795813727
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=795813727
+[quote_exact_in] Bin -661: in=795813727 out=194508 fee=79581373 | remaining=0
+[quote_exact_in] RESULT: amount_in=807544472 total_out=197411 out_transfer_fee=0 final_out=197411 total_fee=80754448
+[quote_exact_in] amount_in=500610492 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=500610492
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=500610492
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=488879747
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=488879747
+[quote_exact_in] Bin -661: in=488879747 out=119489 fee=48887975 | remaining=0
+[quote_exact_in] RESULT: amount_in=500610492 total_out=122392 out_transfer_fee=0 final_out=122392 total_fee=50061050
+[quote_exact_in] amount_in=310984866 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=310984866
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=310984866
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=299254121
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=299254121
+[quote_exact_in] Bin -661: in=299254121 out=73141 fee=29925413 | remaining=0
+[quote_exact_in] RESULT: amount_in=310984866 total_out=76044 out_transfer_fee=0 final_out=76044 total_fee=31098488
+[quote_exact_in] amount_in=193733320 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=193733320
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=193733320
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=182002575
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=182002575
+[quote_exact_in] Bin -661: in=182002575 out=44484 fee=18200258 | remaining=0
+[quote_exact_in] RESULT: amount_in=193733320 total_out=47387 out_transfer_fee=0 final_out=47387 total_fee=19373333
+[quote_exact_in] amount_in=121297532 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=121297532
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=121297532
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=109566787
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=109566787
+[quote_exact_in] Bin -661: in=109566787 out=26779 fee=10956679 | remaining=0
+[quote_exact_in] RESULT: amount_in=121297532 total_out=29682 out_transfer_fee=0 final_out=29682 total_fee=12129754
+[quote_exact_in] amount_in=76506284 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=76506284
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=76506284
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=64775539
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=64775539
+[quote_exact_in] Bin -661: in=64775539 out=15832 fee=6477554 | remaining=0
+[quote_exact_in] RESULT: amount_in=76506284 total_out=18735 out_transfer_fee=0 final_out=18735 total_fee=7650629
+[quote_exact_in] amount_in=48841216 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=48841216
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=48841216
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=37110471
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=37110471
+[quote_exact_in] Bin -661: in=37110471 out=9070 fee=3711048 | remaining=0
+[quote_exact_in] RESULT: amount_in=48841216 total_out=11973 out_transfer_fee=0 final_out=11973 total_fee=4884123
+[quote_exact_in] amount_in=31731421 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=31731421
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=31731421
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=20000676
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=20000676
+[quote_exact_in] Bin -661: in=20000676 out=4888 fee=2000068 | remaining=0
+[quote_exact_in] RESULT: amount_in=31731421 total_out=7791 out_transfer_fee=0 final_out=7791 total_fee=3173143
+[quote_exact_in] amount_in=21159747 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=21159747
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=21159747
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=9429002
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=9429002
+[quote_exact_in] Bin -661: in=9429002 out=2304 fee=942901 | remaining=0
+[quote_exact_in] RESULT: amount_in=21159747 total_out=5207 out_transfer_fee=0 final_out=5207 total_fee=2115976
+[quote_exact_in] amount_in=14621623 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=14621623
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=14621623
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=2890878
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=2890878
+[quote_exact_in] Bin -661: in=2890878 out=706 fee=289088 | remaining=0
+[quote_exact_in] RESULT: amount_in=14621623 total_out=3609 out_transfer_fee=0 final_out=3609 total_fee=1462163
+[quote_exact_in] amount_in=10588072 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=10588072
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=10588072
+[quote_exact_in] Bin -660: in=10588072 out=2620 fee=1058808 | remaining=0
+[quote_exact_in] RESULT: amount_in=10588072 total_out=2620 out_transfer_fee=0 final_out=2620 total_fee=1058808
+[quote_exact_in] amount_in=8091698 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=8091698
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=8091698
+[quote_exact_in] Bin -660: in=8091698 out=2002 fee=809170 | remaining=0
+[quote_exact_in] RESULT: amount_in=8091698 total_out=2002 out_transfer_fee=0 final_out=2002 total_fee=809170
+[quote_exact_in] amount_in=12125249 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=12125249
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=12125249
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=394504
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=394504
+[quote_exact_in] Bin -661: in=394504 out=96 fee=39451 | remaining=0
+[quote_exact_in] RESULT: amount_in=12125249 total_out=2999 out_transfer_fee=0 final_out=2999 total_fee=1212526
+[quote_exact_in] amount_in=9632973 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=9632973
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=9632973
+[quote_exact_in] Bin -660: in=9632973 out=2383 fee=963298 | remaining=0
+[quote_exact_in] RESULT: amount_in=9632973 total_out=2383 out_transfer_fee=0 final_out=2383 total_fee=963298
+[quote_exact_in] amount_in=11170150 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11170150
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11170150
+[quote_exact_in] Bin -660: in=11170150 out=2764 fee=1117015 | remaining=0
+[quote_exact_in] RESULT: amount_in=11170150 total_out=2764 out_transfer_fee=0 final_out=2764 total_fee=1117015
+[quote_exact_in] amount_in=11534973 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11534973
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11534973
+[quote_exact_in] Bin -660: in=11534973 out=2854 fee=1153498 | remaining=0
+[quote_exact_in] RESULT: amount_in=11534973 total_out=2854 out_transfer_fee=0 final_out=2854 total_fee=1153498
+[quote_exact_in] amount_in=11756326 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11756326
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11756326
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=25581
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=25581
+[quote_exact_in] Bin -661: in=25581 out=6 fee=2559 | remaining=0
+[quote_exact_in] RESULT: amount_in=11756326 total_out=2909 out_transfer_fee=0 final_out=2909 total_fee=1175634
+[quote_exact_in] amount_in=11899796 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11899796
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11899796
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=169051
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=169051
+[quote_exact_in] Bin -661: in=169051 out=41 fee=16906 | remaining=0
+[quote_exact_in] RESULT: amount_in=11899796 total_out=2944 out_transfer_fee=0 final_out=2944 total_fee=1189981
+[quote_exact_in] amount_in=11981779 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11981779
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11981779
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=251034
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=251034
+[quote_exact_in] Bin -661: in=251034 out=61 fee=25104 | remaining=0
+[quote_exact_in] RESULT: amount_in=11981779 total_out=2964 out_transfer_fee=0 final_out=2964 total_fee=1198179
+[quote_exact_in] amount_in=11846507 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11846507
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11846507
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=115762
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=115762
+[quote_exact_in] Bin -661: in=115762 out=28 fee=11577 | remaining=0
+[quote_exact_in] RESULT: amount_in=11846507 total_out=2931 out_transfer_fee=0 final_out=2931 total_fee=1184652
+[quote_exact_in] amount_in=11932589 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11932589
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11932589
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=201844
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=201844
+[quote_exact_in] Bin -661: in=201844 out=49 fee=20185 | remaining=0
+[quote_exact_in] RESULT: amount_in=11932589 total_out=2952 out_transfer_fee=0 final_out=2952 total_fee=1193260
+[quote_exact_in] amount_in=11948986 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11948986
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11948986
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=218241
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=218241
+[quote_exact_in] Bin -661: in=218241 out=53 fee=21825 | remaining=0
+[quote_exact_in] RESULT: amount_in=11948986 total_out=2956 out_transfer_fee=0 final_out=2956 total_fee=1194900
+[quote_exact_in] amount_in=11965382 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11965382
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11965382
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=234637
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=234637
+[quote_exact_in] Bin -661: in=234637 out=57 fee=23464 | remaining=0
+[quote_exact_in] RESULT: amount_in=11965382 total_out=2960 out_transfer_fee=0 final_out=2960 total_fee=1196539
+[quote_exact_in] amount_in=11969481 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11969481
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11969481
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=238736
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=238736
+[quote_exact_in] Bin -661: in=238736 out=58 fee=23874 | remaining=0
+[quote_exact_in] RESULT: amount_in=11969481 total_out=2961 out_transfer_fee=0 final_out=2961 total_fee=1196949
+[quote_exact_in] amount_in=11977680 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11977680
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11977680
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=246935
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=246935
+[quote_exact_in] Bin -661: in=246935 out=60 fee=24694 | remaining=0
+[quote_exact_in] RESULT: amount_in=11977680 total_out=2963 out_transfer_fee=0 final_out=2963 total_fee=1197769
+[quote_exact_in] amount_in=11977680 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11977680
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11977680
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=246935
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=246935
+[quote_exact_in] Bin -661: in=246935 out=60 fee=24694 | remaining=0
+[quote_exact_in] RESULT: amount_in=11977680 total_out=2963 out_transfer_fee=0 final_out=2963 total_fee=1197769
+[quote_exact_in] amount_in=11981779 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11981779
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11981779
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=251034
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=251034
+[quote_exact_in] Bin -661: in=251034 out=61 fee=25104 | remaining=0
+[quote_exact_in] RESULT: amount_in=11981779 total_out=2964 out_transfer_fee=0 final_out=2964 total_fee=1198179
+[quote_exact_in] amount_in=11981779 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11981779
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11981779
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=251034
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=251034
+[quote_exact_in] Bin -661: in=251034 out=61 fee=25104 | remaining=0
+[quote_exact_in] RESULT: amount_in=11981779 total_out=2964 out_transfer_fee=0 final_out=2964 total_fee=1198179
+[quote_exact_in] amount_in=11981779 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11981779
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11981779
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=251034
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=251034
+[quote_exact_in] Bin -661: in=251034 out=61 fee=25104 | remaining=0
+[quote_exact_in] RESULT: amount_in=11981779 total_out=2964 out_transfer_fee=0 final_out=2964 total_fee=1198179
+[quote_exact_in] amount_in=11981779 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11981779
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11981779
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=251034
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=251034
+[quote_exact_in] Bin -661: in=251034 out=61 fee=25104 | remaining=0
+[quote_exact_in] RESULT: amount_in=11981779 total_out=2964 out_transfer_fee=0 final_out=2964 total_fee=1198179
+[quote_exact_in] amount_in=1146000618 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1146000618
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1146000618
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=1131071356
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=1131071356
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=1116211358
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=1116211358
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=1101423848
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=1101423848
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=1086708825
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=1086708825
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=1072066290
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=1072066290
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=1057496243
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=1057496243
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=1042998684
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=1042998684
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=1028573612
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=1028573612
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=1014221028
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=1014221028
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=999940932
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=999940932
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=985733323
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=985733323
+[quote_exact_in] Bin -649: in=14135120 out=40356888001 fee=1413512 | remaining=971598203
+[quote_exact_in] Bin -648: amount_x=39654254624 amount_y=0 price=5887610347610248 empty=false amount_left=971598203
+[quote_exact_in] Bin -648: in=14062634 out=39654254624 fee=1406264 | remaining=957535569
+[quote_exact_in] Bin -647: amount_x=38962816528 amount_y=0 price=5961205476955376 empty=false amount_left=957535569
+[quote_exact_in] Bin -647: in=13990146 out=38962816528 fee=1399015 | remaining=943545423
+[quote_exact_in] Bin -646: amount_x=38282403135 amount_y=0 price=6035720545417318 empty=false amount_left=943545423
+[quote_exact_in] Bin -646: in=13917657 out=38282403135 fee=1391766 | remaining=929627766
+[quote_exact_in] Bin -645: amount_x=37612851946 amount_y=0 price=6111167052235035 empty=false amount_left=929627766
+[quote_exact_in] Bin -645: in=13845168 out=37612851946 fee=1384517 | remaining=915782598
+[quote_exact_in] Bin -644: amount_x=36954001021 amount_y=0 price=6187556640387973 empty=false amount_left=915782598
+[quote_exact_in] Bin -644: in=13772680 out=36954001021 fee=1377268 | remaining=902009918
+[quote_exact_in] Bin -643: amount_x=36305685229 amount_y=0 price=6264901098392822 empty=false amount_left=902009918
+[quote_exact_in] Bin -643: in=13700193 out=36305685229 fee=1370020 | remaining=888309725
+[quote_exact_in] Bin -642: amount_x=35667744862 amount_y=0 price=6343212362122733 empty=false amount_left=888309725
+[quote_exact_in] Bin -642: in=13627705 out=35667744862 fee=1362771 | remaining=874682020
+[quote_exact_in] Bin -641: amount_x=35040022548 amount_y=0 price=6422502516649267 empty=false amount_left=874682020
+[quote_exact_in] Bin -641: in=13555217 out=35040022548 fee=1355522 | remaining=861126803
+[quote_exact_in] Bin -640: amount_x=34422360388 amount_y=0 price=6502783798107383 empty=false amount_left=861126803
+[quote_exact_in] Bin -640: in=13482728 out=34422360388 fee=1348273 | remaining=847644075
+[quote_exact_in] Bin -639: amount_x=33814611292 amount_y=0 price=6584068595583725 empty=false amount_left=847644075
+[quote_exact_in] Bin -639: in=13410240 out=33814611292 fee=1341024 | remaining=834233835
+[quote_exact_in] Bin -638: amount_x=33216623181 amount_y=0 price=6666369453028522 empty=false amount_left=834233835
+[quote_exact_in] Bin -638: in=13337753 out=33216623181 fee=1333776 | remaining=820896082
+[quote_exact_in] Bin -637: amount_x=32628243672 amount_y=0 price=6749699071191378 empty=false amount_left=820896082
+[quote_exact_in] Bin -637: in=13265265 out=32628243672 fee=1326527 | remaining=807630817
+[quote_exact_in] Bin -636: amount_x=32049331670 amount_y=0 price=6834070309581270 empty=false amount_left=807630817
+[quote_exact_in] Bin -636: in=13192777 out=32049331670 fee=1319278 | remaining=794438040
+[quote_exact_in] Bin -635: amount_x=31479741314 amount_y=0 price=6919496188451036 empty=false amount_left=794438040
+[quote_exact_in] Bin -635: in=13120289 out=31479741314 fee=1312029 | remaining=781317751
+[quote_exact_in] Bin -634: amount_x=30919325887 amount_y=0 price=7005989890806674 empty=false amount_left=781317751
+[quote_exact_in] Bin -634: in=13047802 out=30919325887 fee=1304781 | remaining=768269949
+[quote_exact_in] Bin -633: amount_x=30367952449 amount_y=0 price=7093564764441758 empty=false amount_left=768269949
+[quote_exact_in] Bin -633: in=12975314 out=30367952449 fee=1297532 | remaining=755294635
+[quote_exact_in] Bin -632: amount_x=904169227010 amount_y=0 price=7182234323997280 empty=false amount_left=755294635
+[quote_exact_in] Bin -632: in=391153356 out=904169227010 fee=39115336 | remaining=364141279
+[quote_exact_in] Bin -631: amount_x=883555674307 amount_y=0 price=7272012253047246 empty=false amount_left=364141279
+[quote_exact_in] Bin -631: in=364141279 out=831337829219 fee=36414128 | remaining=0
+[quote_exact_in] RESULT: amount_in=1146000618 total_out=2826911081165 out_transfer_fee=0 final_out=2826911081165 total_fee=114600073
+[quote_exact_in] amount_in=1854000382 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1854000382
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1854000382
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=1839071120
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=1839071120
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=1824211122
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=1824211122
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=1809423612
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=1809423612
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=1794708589
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=1794708589
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=1780066054
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=1780066054
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=1765496007
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=1765496007
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=1750998448
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=1750998448
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=1736573376
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=1736573376
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=1722220792
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=1722220792
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=1707940696
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=1707940696
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=1693733087
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=1693733087
+[quote_exact_in] Bin -649: in=14135120 out=40356888001 fee=1413512 | remaining=1679597967
+[quote_exact_in] Bin -648: amount_x=39654254624 amount_y=0 price=5887610347610248 empty=false amount_left=1679597967
+[quote_exact_in] Bin -648: in=14062634 out=39654254624 fee=1406264 | remaining=1665535333
+[quote_exact_in] Bin -647: amount_x=38962816528 amount_y=0 price=5961205476955376 empty=false amount_left=1665535333
+[quote_exact_in] Bin -647: in=13990146 out=38962816528 fee=1399015 | remaining=1651545187
+[quote_exact_in] Bin -646: amount_x=38282403135 amount_y=0 price=6035720545417318 empty=false amount_left=1651545187
+[quote_exact_in] Bin -646: in=13917657 out=38282403135 fee=1391766 | remaining=1637627530
+[quote_exact_in] Bin -645: amount_x=37612851946 amount_y=0 price=6111167052235035 empty=false amount_left=1637627530
+[quote_exact_in] Bin -645: in=13845168 out=37612851946 fee=1384517 | remaining=1623782362
+[quote_exact_in] Bin -644: amount_x=36954001021 amount_y=0 price=6187556640387973 empty=false amount_left=1623782362
+[quote_exact_in] Bin -644: in=13772680 out=36954001021 fee=1377268 | remaining=1610009682
+[quote_exact_in] Bin -643: amount_x=36305685229 amount_y=0 price=6264901098392822 empty=false amount_left=1610009682
+[quote_exact_in] Bin -643: in=13700193 out=36305685229 fee=1370020 | remaining=1596309489
+[quote_exact_in] Bin -642: amount_x=35667744862 amount_y=0 price=6343212362122733 empty=false amount_left=1596309489
+[quote_exact_in] Bin -642: in=13627705 out=35667744862 fee=1362771 | remaining=1582681784
+[quote_exact_in] Bin -641: amount_x=35040022548 amount_y=0 price=6422502516649267 empty=false amount_left=1582681784
+[quote_exact_in] Bin -641: in=13555217 out=35040022548 fee=1355522 | remaining=1569126567
+[quote_exact_in] Bin -640: amount_x=34422360388 amount_y=0 price=6502783798107383 empty=false amount_left=1569126567
+[quote_exact_in] Bin -640: in=13482728 out=34422360388 fee=1348273 | remaining=1555643839
+[quote_exact_in] Bin -639: amount_x=33814611292 amount_y=0 price=6584068595583725 empty=false amount_left=1555643839
+[quote_exact_in] Bin -639: in=13410240 out=33814611292 fee=1341024 | remaining=1542233599
+[quote_exact_in] Bin -638: amount_x=33216623181 amount_y=0 price=6666369453028522 empty=false amount_left=1542233599
+[quote_exact_in] Bin -638: in=13337753 out=33216623181 fee=1333776 | remaining=1528895846
+[quote_exact_in] Bin -637: amount_x=32628243672 amount_y=0 price=6749699071191378 empty=false amount_left=1528895846
+[quote_exact_in] Bin -637: in=13265265 out=32628243672 fee=1326527 | remaining=1515630581
+[quote_exact_in] Bin -636: amount_x=32049331670 amount_y=0 price=6834070309581270 empty=false amount_left=1515630581
+[quote_exact_in] Bin -636: in=13192777 out=32049331670 fee=1319278 | remaining=1502437804
+[quote_exact_in] Bin -635: amount_x=31479741314 amount_y=0 price=6919496188451036 empty=false amount_left=1502437804
+[quote_exact_in] Bin -635: in=13120289 out=31479741314 fee=1312029 | remaining=1489317515
+[quote_exact_in] Bin -634: amount_x=30919325887 amount_y=0 price=7005989890806674 empty=false amount_left=1489317515
+[quote_exact_in] Bin -634: in=13047802 out=30919325887 fee=1304781 | remaining=1476269713
+[quote_exact_in] Bin -633: amount_x=30367952449 amount_y=0 price=7093564764441758 empty=false amount_left=1476269713
+[quote_exact_in] Bin -633: in=12975314 out=30367952449 fee=1297532 | remaining=1463294399
+[quote_exact_in] Bin -632: amount_x=904169227010 amount_y=0 price=7182234323997280 empty=false amount_left=1463294399
+[quote_exact_in] Bin -632: in=391153356 out=904169227010 fee=39115336 | remaining=1072141043
+[quote_exact_in] Bin -631: amount_x=883555674307 amount_y=0 price=7272012253047246 empty=false amount_left=1072141043
+[quote_exact_in] Bin -631: in=387013658 out=883555674307 fee=38701366 | remaining=685127385
+[quote_exact_in] RESULT: amount_in=1854000382 total_out=2879128926253 out_transfer_fee=0 final_out=2879128926253 total_fee=116887311
+[quote_exact_in] amount_in=708228764 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=708228764
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=708228764
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=693299502
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=693299502
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=678439504
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=678439504
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=663651994
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=663651994
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=648936971
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=648936971
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=634294436
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=634294436
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=619724389
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=619724389
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=605226830
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=605226830
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=590801758
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=590801758
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=576449174
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=576449174
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=562169078
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=562169078
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=547961469
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=547961469
+[quote_exact_in] Bin -649: in=14135120 out=40356888001 fee=1413512 | remaining=533826349
+[quote_exact_in] Bin -648: amount_x=39654254624 amount_y=0 price=5887610347610248 empty=false amount_left=533826349
+[quote_exact_in] Bin -648: in=14062634 out=39654254624 fee=1406264 | remaining=519763715
+[quote_exact_in] Bin -647: amount_x=38962816528 amount_y=0 price=5961205476955376 empty=false amount_left=519763715
+[quote_exact_in] Bin -647: in=13990146 out=38962816528 fee=1399015 | remaining=505773569
+[quote_exact_in] Bin -646: amount_x=38282403135 amount_y=0 price=6035720545417318 empty=false amount_left=505773569
+[quote_exact_in] Bin -646: in=13917657 out=38282403135 fee=1391766 | remaining=491855912
+[quote_exact_in] Bin -645: amount_x=37612851946 amount_y=0 price=6111167052235035 empty=false amount_left=491855912
+[quote_exact_in] Bin -645: in=13845168 out=37612851946 fee=1384517 | remaining=478010744
+[quote_exact_in] Bin -644: amount_x=36954001021 amount_y=0 price=6187556640387973 empty=false amount_left=478010744
+[quote_exact_in] Bin -644: in=13772680 out=36954001021 fee=1377268 | remaining=464238064
+[quote_exact_in] Bin -643: amount_x=36305685229 amount_y=0 price=6264901098392822 empty=false amount_left=464238064
+[quote_exact_in] Bin -643: in=13700193 out=36305685229 fee=1370020 | remaining=450537871
+[quote_exact_in] Bin -642: amount_x=35667744862 amount_y=0 price=6343212362122733 empty=false amount_left=450537871
+[quote_exact_in] Bin -642: in=13627705 out=35667744862 fee=1362771 | remaining=436910166
+[quote_exact_in] Bin -641: amount_x=35040022548 amount_y=0 price=6422502516649267 empty=false amount_left=436910166
+[quote_exact_in] Bin -641: in=13555217 out=35040022548 fee=1355522 | remaining=423354949
+[quote_exact_in] Bin -640: amount_x=34422360388 amount_y=0 price=6502783798107383 empty=false amount_left=423354949
+[quote_exact_in] Bin -640: in=13482728 out=34422360388 fee=1348273 | remaining=409872221
+[quote_exact_in] Bin -639: amount_x=33814611292 amount_y=0 price=6584068595583725 empty=false amount_left=409872221
+[quote_exact_in] Bin -639: in=13410240 out=33814611292 fee=1341024 | remaining=396461981
+[quote_exact_in] Bin -638: amount_x=33216623181 amount_y=0 price=6666369453028522 empty=false amount_left=396461981
+[quote_exact_in] Bin -638: in=13337753 out=33216623181 fee=1333776 | remaining=383124228
+[quote_exact_in] Bin -637: amount_x=32628243672 amount_y=0 price=6749699071191378 empty=false amount_left=383124228
+[quote_exact_in] Bin -637: in=13265265 out=32628243672 fee=1326527 | remaining=369858963
+[quote_exact_in] Bin -636: amount_x=32049331670 amount_y=0 price=6834070309581270 empty=false amount_left=369858963
+[quote_exact_in] Bin -636: in=13192777 out=32049331670 fee=1319278 | remaining=356666186
+[quote_exact_in] Bin -635: amount_x=31479741314 amount_y=0 price=6919496188451036 empty=false amount_left=356666186
+[quote_exact_in] Bin -635: in=13120289 out=31479741314 fee=1312029 | remaining=343545897
+[quote_exact_in] Bin -634: amount_x=30919325887 amount_y=0 price=7005989890806674 empty=false amount_left=343545897
+[quote_exact_in] Bin -634: in=13047802 out=30919325887 fee=1304781 | remaining=330498095
+[quote_exact_in] Bin -633: amount_x=30367952449 amount_y=0 price=7093564764441758 empty=false amount_left=330498095
+[quote_exact_in] Bin -633: in=12975314 out=30367952449 fee=1297532 | remaining=317522781
+[quote_exact_in] Bin -632: amount_x=904169227010 amount_y=0 price=7182234323997280 empty=false amount_left=317522781
+[quote_exact_in] Bin -632: in=317522781 out=733968717310 fee=31752279 | remaining=0
+[quote_exact_in] RESULT: amount_in=708228764 total_out=1825372742246 out_transfer_fee=0 final_out=1825372742246 total_fee=70822888
+[quote_exact_in] amount_in=437772855 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=437772855
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=437772855
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=422843593
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=422843593
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=407983595
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=407983595
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=393196085
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=393196085
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=378481062
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=378481062
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=363838527
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=363838527
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=349268480
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=349268480
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=334770921
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=334770921
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=320345849
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=320345849
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=305993265
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=305993265
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=291713169
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=291713169
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=277505560
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=277505560
+[quote_exact_in] Bin -649: in=14135120 out=40356888001 fee=1413512 | remaining=263370440
+[quote_exact_in] Bin -648: amount_x=39654254624 amount_y=0 price=5887610347610248 empty=false amount_left=263370440
+[quote_exact_in] Bin -648: in=14062634 out=39654254624 fee=1406264 | remaining=249307806
+[quote_exact_in] Bin -647: amount_x=38962816528 amount_y=0 price=5961205476955376 empty=false amount_left=249307806
+[quote_exact_in] Bin -647: in=13990146 out=38962816528 fee=1399015 | remaining=235317660
+[quote_exact_in] Bin -646: amount_x=38282403135 amount_y=0 price=6035720545417318 empty=false amount_left=235317660
+[quote_exact_in] Bin -646: in=13917657 out=38282403135 fee=1391766 | remaining=221400003
+[quote_exact_in] Bin -645: amount_x=37612851946 amount_y=0 price=6111167052235035 empty=false amount_left=221400003
+[quote_exact_in] Bin -645: in=13845168 out=37612851946 fee=1384517 | remaining=207554835
+[quote_exact_in] Bin -644: amount_x=36954001021 amount_y=0 price=6187556640387973 empty=false amount_left=207554835
+[quote_exact_in] Bin -644: in=13772680 out=36954001021 fee=1377268 | remaining=193782155
+[quote_exact_in] Bin -643: amount_x=36305685229 amount_y=0 price=6264901098392822 empty=false amount_left=193782155
+[quote_exact_in] Bin -643: in=13700193 out=36305685229 fee=1370020 | remaining=180081962
+[quote_exact_in] Bin -642: amount_x=35667744862 amount_y=0 price=6343212362122733 empty=false amount_left=180081962
+[quote_exact_in] Bin -642: in=13627705 out=35667744862 fee=1362771 | remaining=166454257
+[quote_exact_in] Bin -641: amount_x=35040022548 amount_y=0 price=6422502516649267 empty=false amount_left=166454257
+[quote_exact_in] Bin -641: in=13555217 out=35040022548 fee=1355522 | remaining=152899040
+[quote_exact_in] Bin -640: amount_x=34422360388 amount_y=0 price=6502783798107383 empty=false amount_left=152899040
+[quote_exact_in] Bin -640: in=13482728 out=34422360388 fee=1348273 | remaining=139416312
+[quote_exact_in] Bin -639: amount_x=33814611292 amount_y=0 price=6584068595583725 empty=false amount_left=139416312
+[quote_exact_in] Bin -639: in=13410240 out=33814611292 fee=1341024 | remaining=126006072
+[quote_exact_in] Bin -638: amount_x=33216623181 amount_y=0 price=6666369453028522 empty=false amount_left=126006072
+[quote_exact_in] Bin -638: in=13337753 out=33216623181 fee=1333776 | remaining=112668319
+[quote_exact_in] Bin -637: amount_x=32628243672 amount_y=0 price=6749699071191378 empty=false amount_left=112668319
+[quote_exact_in] Bin -637: in=13265265 out=32628243672 fee=1326527 | remaining=99403054
+[quote_exact_in] Bin -636: amount_x=32049331670 amount_y=0 price=6834070309581270 empty=false amount_left=99403054
+[quote_exact_in] Bin -636: in=13192777 out=32049331670 fee=1319278 | remaining=86210277
+[quote_exact_in] Bin -635: amount_x=31479741314 amount_y=0 price=6919496188451036 empty=false amount_left=86210277
+[quote_exact_in] Bin -635: in=13120289 out=31479741314 fee=1312029 | remaining=73089988
+[quote_exact_in] Bin -634: amount_x=30919325887 amount_y=0 price=7005989890806674 empty=false amount_left=73089988
+[quote_exact_in] Bin -634: in=13047802 out=30919325887 fee=1304781 | remaining=60042186
+[quote_exact_in] Bin -633: amount_x=30367952449 amount_y=0 price=7093564764441758 empty=false amount_left=60042186
+[quote_exact_in] Bin -633: in=12975314 out=30367952449 fee=1297532 | remaining=47066872
+[quote_exact_in] Bin -632: amount_x=904169227010 amount_y=0 price=7182234323997280 empty=false amount_left=47066872
+[quote_exact_in] Bin -632: in=47066872 out=108797268080 fee=4706688 | remaining=0
+[quote_exact_in] RESULT: amount_in=437772855 total_out=1200201293016 out_transfer_fee=0 final_out=1200201293016 total_fee=43777297
+[quote_exact_in] amount_in=270544006 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=270544006
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=270544006
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=255614744
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=255614744
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=240754746
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=240754746
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=225967236
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=225967236
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=211252213
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=211252213
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=196609678
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=196609678
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=182039631
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=182039631
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=167542072
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=167542072
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=153117000
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=153117000
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=138764416
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=138764416
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=124484320
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=124484320
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=110276711
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=110276711
+[quote_exact_in] Bin -649: in=14135120 out=40356888001 fee=1413512 | remaining=96141591
+[quote_exact_in] Bin -648: amount_x=39654254624 amount_y=0 price=5887610347610248 empty=false amount_left=96141591
+[quote_exact_in] Bin -648: in=14062634 out=39654254624 fee=1406264 | remaining=82078957
+[quote_exact_in] Bin -647: amount_x=38962816528 amount_y=0 price=5961205476955376 empty=false amount_left=82078957
+[quote_exact_in] Bin -647: in=13990146 out=38962816528 fee=1399015 | remaining=68088811
+[quote_exact_in] Bin -646: amount_x=38282403135 amount_y=0 price=6035720545417318 empty=false amount_left=68088811
+[quote_exact_in] Bin -646: in=13917657 out=38282403135 fee=1391766 | remaining=54171154
+[quote_exact_in] Bin -645: amount_x=37612851946 amount_y=0 price=6111167052235035 empty=false amount_left=54171154
+[quote_exact_in] Bin -645: in=13845168 out=37612851946 fee=1384517 | remaining=40325986
+[quote_exact_in] Bin -644: amount_x=36954001021 amount_y=0 price=6187556640387973 empty=false amount_left=40325986
+[quote_exact_in] Bin -644: in=13772680 out=36954001021 fee=1377268 | remaining=26553306
+[quote_exact_in] Bin -643: amount_x=36305685229 amount_y=0 price=6264901098392822 empty=false amount_left=26553306
+[quote_exact_in] Bin -643: in=13700193 out=36305685229 fee=1370020 | remaining=12853113
+[quote_exact_in] Bin -642: amount_x=35667744862 amount_y=0 price=6343212362122733 empty=false amount_left=12853113
+[quote_exact_in] Bin -642: in=12853113 out=33640409994 fee=1285312 | remaining=0
+[quote_exact_in] RESULT: amount_in=270544006 total_out=795438477667 out_transfer_fee=0 final_out=795438477667 total_fee=27054408
+[quote_exact_in] amount_in=167229849 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=167229849
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=167229849
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=152300587
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=152300587
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=137440589
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=137440589
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=122653079
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=122653079
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=107938056
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=107938056
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=93295521
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=93295521
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=78725474
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=78725474
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=64227915
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=64227915
+[quote_exact_in] Bin -653: in=14425072 out=43282890982 fee=1442508 | remaining=49802843
+[quote_exact_in] Bin -652: amount_x=42533717581 amount_y=0 price=5602204168770852 empty=false amount_left=49802843
+[quote_exact_in] Bin -652: in=14352584 out=42533717581 fee=1435259 | remaining=35450259
+[quote_exact_in] Bin -651: amount_x=41796445293 amount_y=0 price=5672231720880487 empty=false amount_left=35450259
+[quote_exact_in] Bin -651: in=14280096 out=41796445293 fee=1428010 | remaining=21170163
+[quote_exact_in] Bin -650: amount_x=41070897795 amount_y=0 price=5743134617391493 empty=false amount_left=21170163
+[quote_exact_in] Bin -650: in=14207609 out=41070897795 fee=1420761 | remaining=6962554
+[quote_exact_in] Bin -649: amount_x=40356888001 amount_y=0 price=5814923800108887 empty=false amount_left=6962554
+[quote_exact_in] Bin -649: in=6962554 out=19878643206 fee=696256 | remaining=0
+[quote_exact_in] RESULT: amount_in=167229849 total_out=513547810395 out_transfer_fee=0 final_out=513547810395 total_fee=16722990
+[quote_exact_in] amount_in=103348429 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=103348429
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=103348429
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=88419167
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=88419167
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=73559169
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=73559169
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=58771659
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=58771659
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=44056636
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=44056636
+[quote_exact_in] Bin -656: in=14642535 out=45603654684 fee=1464254 | remaining=29414101
+[quote_exact_in] Bin -655: amount_x=44817673137 amount_y=0 price=5397266177074550 empty=false amount_left=29414101
+[quote_exact_in] Bin -655: in=14570047 out=44817673137 fee=1457005 | remaining=14844054
+[quote_exact_in] Bin -654: amount_x=44044147825 amount_y=0 price=5464732004287982 empty=false amount_left=14844054
+[quote_exact_in] Bin -654: in=14497559 out=44044147825 fee=1449756 | remaining=346495
+[quote_exact_in] Bin -653: amount_x=43282890982 amount_y=0 price=5533041154341582 empty=false amount_left=346495
+[quote_exact_in] Bin -653: in=346495 out=1039667832 fee=34650 | remaining=0
+[quote_exact_in] RESULT: amount_in=103348429 total_out=326024883370 out_transfer_fee=0 final_out=326024883370 total_fee=10334846
+[quote_exact_in] amount_in=63882421 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=63882421
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=63882421
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=48953159
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=48953159
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=34093161
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=34093161
+[quote_exact_in] Bin -658: in=14787510 out=47213754696 fee=1478751 | remaining=19305651
+[quote_exact_in] Bin -657: amount_x=46402285212 amount_y=0 price=5264822974131553 empty=false amount_left=19305651
+[quote_exact_in] Bin -657: in=14715023 out=46402285212 fee=1471503 | remaining=4590628
+[quote_exact_in] Bin -656: amount_x=45603654684 amount_y=0 price=5330633261308198 empty=false amount_left=4590628
+[quote_exact_in] Bin -656: in=4590628 out=14297348634 fee=459063 | remaining=0
+[quote_exact_in] RESULT: amount_in=63882421 total_out=204817088526 out_transfer_fee=0 final_out=204817088526 total_fee=6388244
+[quote_exact_in] amount_in=39479718 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=39479718
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=39479718
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=24550456
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=24550456
+[quote_exact_in] Bin -659: in=14859998 out=48038256284 fee=1486000 | remaining=9690458
+[quote_exact_in] Bin -658: amount_x=47213754696 amount_y=0 price=5199825159636102 empty=false amount_left=9690458
+[quote_exact_in] Bin -658: in=9690458 out=30939820125 fee=969046 | remaining=0
+[quote_exact_in] RESULT: amount_in=39479718 total_out=127843520109 out_transfer_fee=0 final_out=127843520109 total_fee=3947973
+[quote_exact_in] amount_in=24403703 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=24403703
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=24403703
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=9474441
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=9474441
+[quote_exact_in] Bin -659: in=9474441 out=30628242191 fee=947445 | remaining=0
+[quote_exact_in] RESULT: amount_in=24403703 total_out=79493685891 out_transfer_fee=0 final_out=79493685891 total_fee=2440372
+[quote_exact_in] amount_in=15081871 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=15081871
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=15081871
+[quote_exact_in] Bin -660: in=14929262 out=48865443700 fee=1492927 | remaining=152609
+[quote_exact_in] Bin -659: amount_x=48038256284 amount_y=0 price=5135629787294915 empty=false amount_left=152609
+[quote_exact_in] Bin -659: in=152609 out=493342298 fee=15261 | remaining=0
+[quote_exact_in] RESULT: amount_in=15081871 total_out=49358785998 out_transfer_fee=0 final_out=49358785998 total_fee=1508188
+[quote_exact_in] amount_in=9322833 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=9322833
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=9322833
+[quote_exact_in] Bin -660: in=9322833 out=30514862910 fee=932284 | remaining=0
+[quote_exact_in] RESULT: amount_in=9322833 total_out=30514862910 out_transfer_fee=0 final_out=30514862910 total_fee=932284
+[quote_exact_in] amount_in=5761893 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=5761893
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=5761893
+[quote_exact_in] Bin -660: in=5761893 out=18859435316 fee=576190 | remaining=0
+[quote_exact_in] RESULT: amount_in=5761893 total_out=18859435316 out_transfer_fee=0 final_out=18859435316 total_fee=576190
+[quote_exact_in] amount_in=3561941 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=3561941
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=3561941
+[quote_exact_in] Bin -660: in=3561941 out=11658700725 fee=356195 | remaining=0
+[quote_exact_in] RESULT: amount_in=3561941 total_out=11658700725 out_transfer_fee=0 final_out=11658700725 total_fee=356195
+[quote_exact_in] amount_in=2201662 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=2201662
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=2201662
+[quote_exact_in] Bin -660: in=2201662 out=7206328010 fee=220167 | remaining=0
+[quote_exact_in] RESULT: amount_in=2201662 total_out=7206328010 out_transfer_fee=0 final_out=7206328010 total_fee=220167
+[quote_exact_in] amount_in=1361280 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1361280
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1361280
+[quote_exact_in] Bin -660: in=1361280 out=4455649484 fee=136128 | remaining=0
+[quote_exact_in] RESULT: amount_in=1361280 total_out=4455649484 out_transfer_fee=0 final_out=4455649484 total_fee=136128
+[quote_exact_in] amount_in=841653 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=841653
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=841653
+[quote_exact_in] Bin -660: in=841653 out=2754839041 fee=84166 | remaining=0
+[quote_exact_in] RESULT: amount_in=841653 total_out=2754839041 out_transfer_fee=0 final_out=2754839041 total_fee=84166
+[quote_exact_in] amount_in=520627 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=520627
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=520627
+[quote_exact_in] Bin -660: in=520627 out=1704079938 fee=52063 | remaining=0
+[quote_exact_in] RESULT: amount_in=520627 total_out=1704079938 out_transfer_fee=0 final_out=1704079938 total_fee=52063
+[quote_exact_in] amount_in=322130 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=322130
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=322130
+[quote_exact_in] Bin -660: in=322130 out=1054374095 fee=32213 | remaining=0
+[quote_exact_in] RESULT: amount_in=322130 total_out=1054374095 out_transfer_fee=0 final_out=1054374095 total_fee=32213
+[quote_exact_in] amount_in=199498 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=199498
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=199498
+[quote_exact_in] Bin -660: in=199498 out=652982612 fee=19950 | remaining=0
+[quote_exact_in] RESULT: amount_in=199498 total_out=652982612 out_transfer_fee=0 final_out=652982612 total_fee=19950
+[quote_exact_in] amount_in=123672 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=123672
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=123672
+[quote_exact_in] Bin -660: in=123672 out=404791903 fee=12368 | remaining=0
+[quote_exact_in] RESULT: amount_in=123672 total_out=404791903 out_transfer_fee=0 final_out=404791903 total_fee=12368
+[quote_exact_in] amount_in=76827 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=76827
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=76827
+[quote_exact_in] Bin -660: in=76827 out=251463841 fee=7683 | remaining=0
+[quote_exact_in] RESULT: amount_in=76827 total_out=251463841 out_transfer_fee=0 final_out=251463841 total_fee=7683
+[quote_exact_in] amount_in=47861 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=47861
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=47861
+[quote_exact_in] Bin -660: in=47861 out=156652110 fee=4787 | remaining=0
+[quote_exact_in] RESULT: amount_in=47861 total_out=156652110 out_transfer_fee=0 final_out=156652110 total_fee=4787
+[quote_exact_in] amount_in=29966 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=29966
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=29966
+[quote_exact_in] Bin -660: in=29966 out=98081226 fee=2997 | remaining=0
+[quote_exact_in] RESULT: amount_in=29966 total_out=98081226 out_transfer_fee=0 final_out=98081226 total_fee=2997
+[quote_exact_in] amount_in=18901 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=18901
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=18901
+[quote_exact_in] Bin -660: in=18901 out=61862199 fee=1891 | remaining=0
+[quote_exact_in] RESULT: amount_in=18901 total_out=61862199 out_transfer_fee=0 final_out=61862199 total_fee=1891
+[quote_exact_in] amount_in=12066 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=12066
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=12066
+[quote_exact_in] Bin -660: in=12066 out=39492159 fee=1207 | remaining=0
+[quote_exact_in] RESULT: amount_in=12066 total_out=39492159 out_transfer_fee=0 final_out=39492159 total_fee=1207
+[quote_exact_in] amount_in=7839 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=7839
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=7839
+[quote_exact_in] Bin -660: in=7839 out=25657720 fee=784 | remaining=0
+[quote_exact_in] RESULT: amount_in=7839 total_out=25657720 out_transfer_fee=0 final_out=25657720 total_fee=784
+[quote_exact_in] amount_in=5228 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=5228
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=5228
+[quote_exact_in] Bin -660: in=5228 out=17111208 fee=523 | remaining=0
+[quote_exact_in] RESULT: amount_in=5228 total_out=17111208 out_transfer_fee=0 final_out=17111208 total_fee=523
+[quote_exact_in] amount_in=3613 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=3613
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=3613
+[quote_exact_in] Bin -660: in=3613 out=11823281 fee=362 | remaining=0
+[quote_exact_in] RESULT: amount_in=3613 total_out=11823281 out_transfer_fee=0 final_out=11823281 total_fee=362
+[quote_exact_in] amount_in=2616 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=2616
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=2616
+[quote_exact_in] Bin -660: in=2616 out=8561059 fee=262 | remaining=0
+[quote_exact_in] RESULT: amount_in=2616 total_out=8561059 out_transfer_fee=0 final_out=8561059 total_fee=262
+[quote_exact_in] amount_in=1999 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1999
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1999
+[quote_exact_in] Bin -660: in=1999 out=6542627 fee=200 | remaining=0
+[quote_exact_in] RESULT: amount_in=1999 total_out=6542627 out_transfer_fee=0 final_out=6542627 total_fee=200
+[quote_exact_in] amount_in=1618 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1618
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1618
+[quote_exact_in] Bin -660: in=1618 out=5295200 fee=162 | remaining=0
+[quote_exact_in] RESULT: amount_in=1618 total_out=5295200 out_transfer_fee=0 final_out=5295200 total_fee=162
+[quote_exact_in] amount_in=1382 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1382
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1382
+[quote_exact_in] Bin -660: in=1382 out=4520559 fee=139 | remaining=0
+[quote_exact_in] RESULT: amount_in=1382 total_out=4520559 out_transfer_fee=0 final_out=4520559 total_fee=139
+[quote_exact_in] amount_in=1237 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1237
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1237
+[quote_exact_in] Bin -660: in=1237 out=4047773 fee=124 | remaining=0
+[quote_exact_in] RESULT: amount_in=1237 total_out=4047773 out_transfer_fee=0 final_out=4047773 total_fee=124
+[quote_exact_in] amount_in=1146 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1146
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1146
+[quote_exact_in] Bin -660: in=1146 out=3749554 fee=115 | remaining=0
+[quote_exact_in] RESULT: amount_in=1146 total_out=3749554 out_transfer_fee=0 final_out=3749554 total_fee=115
+[quote_exact_in] amount_in=1091 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1091
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1091
+[quote_exact_in] Bin -660: in=1091 out=3567714 fee=110 | remaining=0
+[quote_exact_in] RESULT: amount_in=1091 total_out=3567714 out_transfer_fee=0 final_out=3567714 total_fee=110
+[quote_exact_in] amount_in=1056 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1056
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1056
+[quote_exact_in] Bin -660: in=1056 out=3454972 fee=106 | remaining=0
+[quote_exact_in] RESULT: amount_in=1056 total_out=3454972 out_transfer_fee=0 final_out=3454972 total_fee=106
+[quote_exact_in] amount_in=1035 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1035
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1035
+[quote_exact_in] Bin -660: in=1035 out=3385873 fee=104 | remaining=0
+[quote_exact_in] RESULT: amount_in=1035 total_out=3385873 out_transfer_fee=0 final_out=3385873 total_fee=104
+[quote_exact_in] amount_in=1022 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1022
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1022
+[quote_exact_in] Bin -660: in=1022 out=3342231 fee=103 | remaining=0
+[quote_exact_in] RESULT: amount_in=1022 total_out=3342231 out_transfer_fee=0 final_out=3342231 total_fee=103
+[quote_exact_in] amount_in=1014 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1014
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1014
+[quote_exact_in] Bin -660: in=1014 out=3316774 fee=102 | remaining=0
+[quote_exact_in] RESULT: amount_in=1014 total_out=3316774 out_transfer_fee=0 final_out=3316774 total_fee=102
+[quote_exact_in] amount_in=1009 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1009
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1009
+[quote_exact_in] Bin -660: in=1009 out=3302226 fee=101 | remaining=0
+[quote_exact_in] RESULT: amount_in=1009 total_out=3302226 out_transfer_fee=0 final_out=3302226 total_fee=101
+[quote_exact_in] amount_in=1006 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1006
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1006
+[quote_exact_in] Bin -660: in=1006 out=3291316 fee=101 | remaining=0
+[quote_exact_in] RESULT: amount_in=1006 total_out=3291316 out_transfer_fee=0 final_out=3291316 total_fee=101
+[quote_exact_in] amount_in=1010 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1010
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1010
+[quote_exact_in] Bin -660: in=1010 out=3305863 fee=101 | remaining=0
+[quote_exact_in] RESULT: amount_in=1010 total_out=3305863 out_transfer_fee=0 final_out=3305863 total_fee=101
+[quote_exact_in] amount_in=1012 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1012
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1012
+[quote_exact_in] Bin -660: in=1012 out=3309500 fee=102 | remaining=0
+[quote_exact_in] RESULT: amount_in=1012 total_out=3309500 out_transfer_fee=0 final_out=3309500 total_fee=102
+[quote_exact_in] amount_in=1011 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1011
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1011
+[quote_exact_in] Bin -660: in=1011 out=3305863 fee=102 | remaining=0
+[quote_exact_in] RESULT: amount_in=1011 total_out=3305863 out_transfer_fee=0 final_out=3305863 total_fee=102
+[quote_exact_in] amount_in=1011 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1011
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1011
+[quote_exact_in] Bin -660: in=1011 out=3305863 fee=102 | remaining=0
+[quote_exact_in] RESULT: amount_in=1011 total_out=3305863 out_transfer_fee=0 final_out=3305863 total_fee=102
+[quote_exact_in] amount_in=1011 swap_for_y=false active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=1011
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=1011
+[quote_exact_in] Bin -660: in=1011 out=3305863 fee=102 | remaining=0
+[quote_exact_in] RESULT: amount_in=1011 total_out=3305863 out_transfer_fee=0 final_out=3305863 total_fee=102
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  CHECKER vs GOLDEN comparison                                               ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  Golden:       amount=      845094459     profit=    0.018880782 SOL
-║  Checker:      amount=      845213311     profit=    0.018880774 SOL
+║  Golden:       amount=           2960     profit=    0.000000004 SOL
+║  Checker:      amount=           2899     profit=    0.000000004 SOL
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  Checker vs Golden:  amount_diff=0.0141%   profit_gap=0.0000%
+║  Checker vs Golden:  amount_diff=2.0608%   profit_gap=0.0000%
 ║  Same path (golden vs checker): YES
 ║  Result: PASS
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  GOLDEN PATH:
-║    buy:  [OrcaWhirlpool] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2)
-║    sell: [RaydiumCPMM] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs)
+║    buy:  [PumpAmm] So11111111111111111111111111111111111111112 -> 495qCc14W5kNGnHvozvMDaVWWbpj6KLZbwX11373pump (pool A9AbvoCw63ZxkhbwAkxqNeJfpx8GXkMofQ3mkCGeCWHc)
+║    sell: [MeteoraDLMM] 495qCc14W5kNGnHvozvMDaVWWbpj6KLZbwX11373pump -> So11111111111111111111111111111111111111112 (pool 2jcYrSUjp1m15GBdgaThK1Rye2u9jHKJQfaymFhahECe)
 ║  CHECKER PATH:
-║    buy:  [OrcaWhirlpool] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2)
-║    sell: [RaydiumCPMM] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs)
+║    buy:  [PumpAmm] So11111111111111111111111111111111111111112 -> 495qCc14W5kNGnHvozvMDaVWWbpj6KLZbwX11373pump (pool A9AbvoCw63ZxkhbwAkxqNeJfpx8GXkMofQ3mkCGeCWHc)
+║    sell: [MeteoraDLMM] 495qCc14W5kNGnHvozvMDaVWWbpj6KLZbwX11373pump -> So11111111111111111111111111111111111111112 (pool 2jcYrSUjp1m15GBdgaThK1Rye2u9jHKJQfaymFhahECe)
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-Hop 1: [OrcaWhirlpool] So111111..-> 6p6xgHyF..  |  in=845213311 (0.845213311) -> out=24163650 (24.163650)  |  swap_base_out max_in=845213311 (0.845213311)  |  diff=0
-Hop 2: [RaydiumCPMM] 6p6xgHyF..-> So111111..  |  in=24163650 (24.163650) -> out=864094085 (0.864094085)  |  swap_base_out max_in=24163650 (24.163650)  |  diff=0
+Hop 1: [PumpAmm] So111111..-> 495qCc14..  |  in=2899 (0.000002899) -> out=11731732 (11.731732)  |  swap_base_out max_in=2900 (0.000002900)  |  diff=-1
+[quote_exact_in] amount_in=11731732 swap_for_y=true active_id=-660 bin_step=125 transfer_fee=0 amount_after_fee=11731732
+[quote_exact_in] Bin -660: amount_x=48865443700 amount_y=2903 price=5072226950414731 empty=false amount_left=11731732
+[quote_exact_in] Bin -660: in=11730745 out=2903 fee=1173075 | remaining=987
+[quote_exact_in] Bin -661: amount_x=0 amount_y=13504475 price=5009606864607142 empty=false amount_left=987
+[quote_exact_in] Bin -661: in=987 out=0 fee=99 | remaining=0
+[quote_exact_in] RESULT: amount_in=11731732 total_out=2903 out_transfer_fee=0 final_out=2903 total_fee=1173174
+Hop 2: [MeteoraDLMM] 495qCc14..-> So111111..  |  in=11731732 (11.731732) -> out=2903 (0.000002903)  |  swap_base_out max_in=11730745 (11.730745)  |  diff=987
 ---
-PROFIT: 18880774 (0.018880774) (2.2338%)
-Final: in=845213311 (0.845213311) -> out=864094085 (0.864094085)
+PROFIT: 4 (0.000000004) (0.1380%)
+Final: in=2899 (0.000002899) -> out=2903 (0.000002903)
 Executing 2 hops
-Swap 845213311 So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN
-Swap 0 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112
-Done: 845213311 -> 1042790778 (profit: 197577467)
+Swap 2899 So11111111111111111111111111111111111111112 -> 495qCc14W5kNGnHvozvMDaVWWbpj6KLZbwX11373pump

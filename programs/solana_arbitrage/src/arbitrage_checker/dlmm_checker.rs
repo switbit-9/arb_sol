@@ -474,8 +474,14 @@ fn analytical_amm_to_dlmm(
         (FD - amm.sell_input_fee as u128, FD - amm.sell_output_fee as u128)
     };
 
-    let mut virt_base = amm.base_vault as u128;
-    let mut virt_quote = amm.quote_vault as u128;
+    // virt_base = reserve of what the AMM outputs (mid token), virt_quote = reserve receiving input.
+    // When amm_buys_base: input=quote, output=base → virt_base=base, virt_quote=quote.
+    // When !amm_buys_base: input=base, output=quote → virt_base=quote, virt_quote=base.
+    let (mut virt_base, mut virt_quote) = if amm_buys_base {
+        (amm.base_vault as u128, amm.quote_vault as u128)
+    } else {
+        (amm.quote_vault as u128, amm.base_vault as u128)
+    };
 
     let mut cursor = match dlmm.start_cursor(swap_for_y) { Some(c) => c, None => { debug_eprintln!("[amm_to_dlmm] no start_cursor"); return ArbitrageResult::none() } };
     let mut vol_acc = dlmm.initial_vol_acc();

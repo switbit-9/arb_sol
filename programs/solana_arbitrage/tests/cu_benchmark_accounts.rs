@@ -1,3 +1,5 @@
+#![cfg(feature = "benchmark")]
+
 use solana_arbitrage::test_fixtures::{PUBKEYS_LIST, make_instruction_data};
 use solana_arbitrage::InstructionData;
 use solana_client::nonblocking::rpc_client::RpcClient;

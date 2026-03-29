@@ -604,11 +604,11 @@ pub fn parse_lb_pair_params(data: &[u8]) -> Option<DlmmPoolParams> {
     // LbPair layout (from bytemuck Pod):
     // offset 0: parameters (StaticParameters, 32 bytes)
     // offset 32: v_parameters (VariableParameters, 32 bytes)
-    // offset 64: bump_seed (2 bytes)
-    // offset 66: bin_step_seed (2 bytes)
-    // offset 68: pair_type (1 byte)
-    // offset 69: active_id (4 bytes, i32)
-    // offset 73: bin_step (2 bytes, u16)
+    // offset 64: bump_seed (1 byte)
+    // offset 65: bin_step_seed (2 bytes)
+    // offset 67: pair_type (1 byte)
+    // offset 68: active_id (4 bytes, i32)
+    // offset 72: bin_step (2 bytes, u16)
     // ...
 
     // StaticParameters (at offset 0):
@@ -619,14 +619,14 @@ pub fn parse_lb_pair_params(data: &[u8]) -> Option<DlmmPoolParams> {
     // variable_fee_control: u32 (offset 8)
     // max_volatility_accumulator: u32 (offset 12)
     // ...
-    // base_fee_power_factor: u8 (offset 24)
+    // base_fee_power_factor: u8 (offset 26)
     // ...
     // protocol_share: u16 (offset 16)
 
     let base_factor = u16::from_le_bytes(d[0..2].try_into().ok()?);
     let variable_fee_control = u32::from_le_bytes(d[8..12].try_into().ok()?);
     let max_volatility_accumulator = u32::from_le_bytes(d[12..16].try_into().ok()?);
-    let base_fee_power_factor = d[24];
+    let base_fee_power_factor = d[26];
 
     // VariableParameters (at offset 32):
     // volatility_accumulator: u32 (offset 0)
@@ -638,8 +638,8 @@ pub fn parse_lb_pair_params(data: &[u8]) -> Option<DlmmPoolParams> {
     let index_reference = i32::from_le_bytes(d[40..44].try_into().ok()?);
 
     // active_id at offset 69, bin_step at offset 73
-    let active_id = i32::from_le_bytes(d[69..73].try_into().ok()?);
-    let bin_step = u16::from_le_bytes(d[73..75].try_into().ok()?);
+    let active_id = i32::from_le_bytes(d[68..72].try_into().ok()?);
+    let bin_step = u16::from_le_bytes(d[72..74].try_into().ok()?);
 
     Some(DlmmPoolParams {
         active_id,
