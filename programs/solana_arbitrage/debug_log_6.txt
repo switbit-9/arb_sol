@@ -1,0 +1,48 @@
+max_amount_in: 3000000000
+OrcaWhirlpool
+OrcaWhirlpool: pool_id Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2 , price 0.028880592957264185, inverse_price 34.62532786219942, fee_rate 0.05%
+OrcaWhirlpool
+OrcaWhirlpool: pool_id 6KX9iiLFBcwfjq3uMqeeMukaMZt5rQYTsbZZTnxbzsz6 , price 0.02884479342713401, inverse_price 34.66830166512165, fee_rate 0.16%
+RaydiumCPMM
+RaydiumCPMM: pool_id HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs , price 0.02811656419378146, inverse_price 35.56622328062296, fee_rate 0.25%
+iteration bi=0 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.028881 -> sell_price=0.028117, profit=2.41% buy_fee=0.0500% sell_fee=0.2500%
+iteration bi=1 si=2: OrcaWhirlpool -> RaydiumCPMM, buy_price=0.028845 -> sell_price=0.028117, profit=2.17% buy_fee=0.1600% sell_fee=0.2500%
+checker: 2 candidates ranked by score
+[check_wp_to_amm] wp: sqrt_p=3134893384084703059 liq=4400012051845 tick=-35448 fee=500 a_to_b=true | amm: base=38545849718 quote=1083776858 sells_base=false | max_in=3000000000
+[check_wp_to_amm] range: tick=-36216 v_in=25891118547663 v_out=747750855983 cap_net=1014005298229 cap_gross=1014512554507 opt_amt=450072679 opt_profit=5389552
+[check_wp_to_amm] filled: amt=450072679 mid=12991640 out=455462231 total_in=450072679 total_out=455462231
+[check_wp_to_amm] RESULT: total_in=450072679 total_out=455462231 profit=5389552
+[check_wp_to_amm] wp: sqrt_p=3132949820972351609 liq=7919573996 tick=-35461 fee=1600 a_to_b=true | amm: base=38545849718 quote=1083776858 sells_base=false | max_in=3000000000
+[check_wp_to_amm] range: tick=-35840 v_in=46630288713 v_out=1345041045 cap_net=894327933 cap_gross=895761151 opt_amt=225200023 opt_profit=2430088
+[check_wp_to_amm] filled: amt=225200023 mid=6454333 out=227630111 total_in=225200023 total_out=227630111
+[check_wp_to_amm] RESULT: total_in=225200023 total_out=227630111 profit=2430088
+checker: early exit after top-2 (profit=5389552)
+==============================================
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  CHECKER vs GOLDEN comparison                                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Golden:       amount=      449907281     profit=    0.005389562 SOL
+║  Checker:      amount=      450072679     profit=    0.005389552 SOL
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Checker vs Golden:  amount_diff=0.0368%   profit_gap=0.0002%
+║  Same path (golden vs checker): YES
+║  Result: PASS
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  GOLDEN PATH:
+║    buy:  [OrcaWhirlpool] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2)
+║    sell: [RaydiumCPMM] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs)
+║  CHECKER PATH:
+║    buy:  [OrcaWhirlpool] So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN (pool Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2)
+║    sell: [RaydiumCPMM] 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112 (pool HKuJrP5tYQLbEUdjKwjgnHs2957QKjR2iWhJKTtMa1xs)
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+Hop 1: [OrcaWhirlpool] So111111..-> 6p6xgHyF..  |  in=450072679 (0.450072679) -> out=12991640 (12.991640)  |  swap_base_out max_in=450072648 (0.450072648)  |  diff=31
+Hop 2: [RaydiumCPMM] 6p6xgHyF..-> So111111..  |  in=12991640 (12.991640) -> out=455462231 (0.455462231)  |  swap_base_out max_in=12991640 (12.991640)  |  diff=0
+---
+PROFIT: 5389552 (0.005389552) (1.1975%)
+Final: in=450072679 (0.450072679) -> out=455462231 (0.455462231)
+Executing 2 hops
+Swap 450072679 So11111111111111111111111111111111111111112 -> 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN
+Swap 0 6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN -> So11111111111111111111111111111111111111112
+Done: 450072679 -> 1042790778 (profit: 592718099)
